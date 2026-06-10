@@ -1,0 +1,87 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AI Agent Platform — Local Development Stack
+#
+# Start everything:    docker compose up
+# Rebuild images:      docker compose up --build
+# Tear down + wipe DB: docker compose down -v
+#
+# Useful one-offs (while stack is running):
+#   Seed dev account:  docker compose exec backend python scripts/seed.py
+#   Run tests:         docker compose exec backend pytest -v
+#   Open psql shell:   docker compose exec postgres psql -U postgres -d ai_agent_dev
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ai_agent_dev
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ai_agent_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ── FastAPI backend ─────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # Live-reload: mount source so uvicorn --reload picks up edits.
+      # Node modules / venv are NOT mounted — they live inside the image.
+      - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic
+      - ./backend/scripts:/app/scripts
+    # env_file provides all API keys from the same file setup.sh uses.
+    # The DATABASE_URL override below replaces the localhost URL in .env.local
+    # with the Docker-internal service hostname.
+    env_file:
+      - ./backend/.env.local
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ai_agent_dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ── Vite + React frontend ───────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      # Mount only src/ so Vite HMR picks up edits.
+      # node_modules is kept in a named volume (image-built, not host-linked)
+      # to avoid OS/arch incompatibilities between host and container.
+      - ./frontend/src:/app/src
+      - ./frontend/index.html:/app/index.html
+      - ./frontend/public:/app/public
+      - frontend_node_modules:/app/node_modules
+    environment:
+      # Vite dev-server proxy target — must be the Docker service name, not localhost.
+      VITE_BACKEND_URL: http://backend:8000
+    depends_on:
+      - backend
+
+# ── Named volumes ─────────────────────────────────────────────────────────────
+volumes:
+  postgres_data:        # Postgres data — persists across `docker compose down`
+  frontend_node_modules: # node_modules built inside the image, not from host
