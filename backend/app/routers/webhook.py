@@ -273,7 +273,7 @@ def _should_use_buttons(stage: str, ai_reply: str, accepts_cod: bool) -> str:
     The payment_buttons variant respects accepts_cod — when False only
     the UPI button is shown (handled at call site, not here).
     """
-    if stage != "order_collection":
+    if stage not in ("order_collection", "awaiting_final_confirmation"):
         return "text"
 
     lower = ai_reply.lower()
@@ -568,6 +568,36 @@ async def receive_message(
         if sku_products and _can_switch_sku:
             first_sku = getattr(sku_products[0], "sku", None)
             if first_sku:
+                _old_sku = getattr(conv, "pending_product_sku", None)
+                # Any new SKU = new product intent → reset all order slots so stale
+                # data from a previous product doesn't bleed into the new flow.
+                if first_sku != _old_sku:
+                    _order_reset_fields = [
+                        ("pending_order_quantity", None),
+                        ("selected_color", None),
+                        ("selected_size", None),
+                        ("selected_material", None),
+                        ("customer_name", None),
+                        ("delivery_address", None),
+                        ("payment_method", None),
+                        ("summary_shown", False),
+                    ]
+                    for _rf, _rv in _order_reset_fields:
+                        try:
+                            await conversation_service.update_order_field(db, conv.id, _rf, _rv)
+                            setattr(conv, _rf, _rv)
+                        except Exception as exc:
+                            logger.error("New-SKU slot reset (%s): %s", _rf, exc)
+                    # Unlock the stage so detect_stage runs without the forward-lock
+                    try:
+                        await conversation_service.update_stage(db, conv.id, "product_inquiry")
+                        conv.current_stage = "product_inquiry"
+                    except Exception as exc:
+                        logger.error("New-SKU stage reset: %s", exc)
+                    logger.info(
+                        "New SKU %s detected (was %s, stage=%s) — reset all order slots.",
+                        first_sku, _old_sku, conv.current_stage,
+                    )
                 try:
                     await conversation_service.update_order_field(
                         db, conv.id, "pending_product_sku", first_sku
@@ -619,7 +649,7 @@ async def receive_message(
     # like "Product: Designer Lehenga\nSKU: LH10042\nColor: Red\nSize: XL" is
     # sent. Extract and persist those fields immediately so the agent skips the
     # questions that were already answered by the catalogue form.
-    if client and stage == "order_collection":
+    if client and stage in ("order_collection", "awaiting_final_confirmation"):
         import re as _re
         _pre_sku = _re.search(r"SKU:\s*(\S+)", user_text)
         _pre_color = _re.search(r"Color:\s*(.+)", user_text)
@@ -649,33 +679,259 @@ async def receive_message(
             except Exception as exc:
                 logger.error("Pre-fill size error: %s", exc)
 
-    # During order_collection, persist whichever field the customer's reply
-    # most likely answers so progress survives across turns and the agent
-    # never re-asks an already-answered question.
-    if stage == "order_collection":
-        extracted = conversation_flow.extract_order_field(conv, user_text, variant_info=variant_info)
-        if extracted:
-            field, value = extracted
+    # ── Compute available_stock for the pinned product (variant-aware) ─────────
+    # This is passed into extract_order_field so the quantity slot can
+    # validate against real availability before advancing.
+    available_stock: int | None = None
+    if pinned_product:
+        if pinned_product.has_variants:
+            sel_color = getattr(conv, "selected_color", None)
+            sel_size = getattr(conv, "selected_size", None)
+            if sel_color or sel_size:
+                from app.models.product_variant import ProductVariant as _PV
+                _vstmt = select(_PV).where(
+                    _PV.product_id == pinned_product.id,
+                    _PV.is_active == True,  # noqa: E712
+                )
+                if sel_color:
+                    _vstmt = _vstmt.where(_PV.color == sel_color)
+                if sel_size:
+                    _vstmt = _vstmt.where(_PV.size == sel_size)
+                _vr = await db.execute(_vstmt)
+                _variant = _vr.scalar_one_or_none()
+                available_stock = _variant.stock if _variant else 0
+            else:
+                available_stock = pinned_product.stock
+        else:
+            available_stock = pinned_product.stock
+
+    # ── Slot-machine: detect quantity_invalid flag before building prompt ──────
+    _quantity_invalid = False
+
+    # ── awaiting_final_confirmation: handle negative confirmation slot resets ──
+    if stage == "order_collection" and conv.current_stage == "awaiting_final_confirmation":
+        # Customer said "no / change" — inspect their message to reset the
+        # specific slot(s) they want to change, keeping the rest intact.
+        _msg_lower = user_text.lower()
+        _slots_to_reset: list[tuple[str, str]] = []
+        if any(kw in _msg_lower for kw in ("color", "colour", "rang")):
+            _slots_to_reset.append(("selected_color", None))
+        if any(kw in _msg_lower for kw in ("size", "saiz")):
+            _slots_to_reset.append(("selected_size", None))
+        if any(kw in _msg_lower for kw in ("material", "kapda", "fabric")):
+            _slots_to_reset.append(("selected_material", None))
+        if any(kw in _msg_lower for kw in ("quantity", "kitne", "pieces", "amount")):
+            _slots_to_reset.append(("pending_order_quantity", None))
+        if any(kw in _msg_lower for kw in ("name", "naam")):
+            _slots_to_reset.append(("customer_name", None))
+        if any(kw in _msg_lower for kw in ("address", "pata")):
+            _slots_to_reset.append(("delivery_address", None))
+        if any(kw in _msg_lower for kw in ("payment", "pay", "bhugtan")):
+            _slots_to_reset.append(("payment_method", None))
+        # If customer said "no" without specifying what to change, reset
+        # the last-filled slot so they can revise it.
+        if not _slots_to_reset:
+            _slots_to_reset = [("payment_method", None)]
+        for _field, _val in _slots_to_reset:
             try:
-                await conversation_service.update_order_field(db, conv.id, field, value)
-                setattr(conv, field, value)
+                await conversation_service.update_order_field(db, conv.id, _field, _val)
+                setattr(conv, _field, _val)
             except Exception as exc:
-                logger.error("Order field update error: %s", exc)
-        # Persist payment method if customer specifies COD or UPI
-        if not conv.payment_method:
-            upper = user_text.upper()
-            if "COD" in upper or "CASH" in upper:
+                logger.error("Slot reset error (%s): %s", _field, exc)
+
+    # ── Slot-machine extraction during order_collection ────────────────────────
+    # Intent pre-classification: before extracting a slot value, check whether
+    # the customer is actually answering the question or doing something else
+    # (switching product, cancelling, or asking an off-topic question).
+    _intent_override: str | None = None  # set to a _current_instruction override when intent != ANSWER
+
+    if stage == "order_collection":
+        _next_slot_pre = conversation_flow.get_next_required_slot(conv, variant_info)
+
+        # ── interrupted_sku followup: customer is choosing continue vs switch ──
+        _interrupted_sku = getattr(conv, "interrupted_sku", None)
+        if _interrupted_sku:
+            _msg_lower_int = user_text.lower().strip()
+            _continue_kw = {"1", "continue", "pehla", "first", "current", "wahi", "same"}
+            _switch_kw = {"2", "new", "switch", "doosra", "second", "naya", "change"}
+            _words_int = set(_msg_lower_int.split())
+            if _words_int & _continue_kw or _msg_lower_int in _continue_kw:
+                # Continue current order — clear interrupted_sku
                 try:
-                    await conversation_service.update_order_field(db, conv.id, "payment_method", "COD")
-                    conv.payment_method = "COD"
-                except Exception:
-                    pass
-            elif "UPI" in upper or "GPAY" in upper or "PAYTM" in upper or "PHONEPE" in upper:
+                    await conversation_service.update_order_field(db, conv.id, "interrupted_sku", None)
+                    conv.interrupted_sku = None
+                except Exception as exc:
+                    logger.error("interrupted_sku clear error: %s", exc)
+                logger.info("conv=%s: customer chose to CONTINUE current order (interrupted_sku cleared)", conv.id)
+            elif _words_int & _switch_kw or _msg_lower_int in _switch_kw:
+                # Switch to the interrupted product — full order reset with new SKU
+                _new_sku = _interrupted_sku
+                _reset_fields = [
+                    ("pending_order_quantity", None), ("selected_color", None),
+                    ("selected_size", None), ("selected_material", None),
+                    ("customer_name", None), ("delivery_address", None),
+                    ("payment_method", None), ("summary_shown", False),
+                    ("interrupted_sku", None),
+                ]
+                for _rf, _rv in _reset_fields:
+                    try:
+                        await conversation_service.update_order_field(db, conv.id, _rf, _rv)
+                        setattr(conv, _rf, _rv)
+                    except Exception as exc:
+                        logger.error("interrupted_sku switch reset (%s): %s", _rf, exc)
                 try:
-                    await conversation_service.update_order_field(db, conv.id, "payment_method", "UPI")
-                    conv.payment_method = "UPI"
-                except Exception:
-                    pass
+                    await conversation_service.update_order_field(db, conv.id, "pending_product_sku", _new_sku)
+                    conv.pending_product_sku = _new_sku
+                    await conversation_service.update_stage(db, conv.id, "order_collection")
+                    conv.current_stage = "order_collection"
+                    # Reload pinned product + variant info for the new SKU
+                    if client:
+                        pinned_product = await catalogue_service.find_product_by_sku(db, client.id, _new_sku)
+                        if pinned_product:
+                            variant_info = await catalogue_service.get_product_variant_info(db, pinned_product)
+                except Exception as exc:
+                    logger.error("interrupted_sku switch SKU pin error: %s", exc)
+                logger.info("conv=%s: customer chose to SWITCH to new SKU %s", conv.id, _new_sku)
+            # Whether continuing or switching, skip normal extraction this turn
+            # (the AI will ask the first slot for the chosen order).
+        elif _next_slot_pre is not None:
+            # ── Intent classification ──────────────────────────────────────────
+            _product_name = getattr(pinned_product, "name", None) or getattr(conv, "pending_product_sku", "current product") or "current product"
+            try:
+                _intent = await conversation_flow.classify_user_intent(
+                    user_text, _next_slot_pre, _product_name
+                )
+            except Exception as exc:
+                logger.warning("Intent classification error (defaulting ANSWER): %s", exc)
+                _intent = "ANSWER"
+
+            logger.info("conv=%s intent=%s next_slot=%s", conv.id, _intent, _next_slot_pre)
+
+            if _intent == "NEW_PRODUCT":
+                # Store the SKU they mentioned for the continue/switch prompt
+                from app.services.catalogue_service import extract_skus_from_text as _extract_skus
+                _mentioned_skus = _extract_skus(user_text)
+                _new_sku_candidate = _mentioned_skus[0] if _mentioned_skus else None
+                if _new_sku_candidate:
+                    try:
+                        await conversation_service.update_order_field(db, conv.id, "interrupted_sku", _new_sku_candidate)
+                        conv.interrupted_sku = _new_sku_candidate
+                    except Exception as exc:
+                        logger.error("interrupted_sku save error: %s", exc)
+                _current_product_name = getattr(pinned_product, "name", None) or getattr(conv, "pending_product_sku", "current product") or "current product"
+                _new_item_label = _new_sku_candidate or "the new item"
+                _intent_override = (
+                    f"Customer is mid-order for {_current_product_name} (some slots already filled) "
+                    f"but mentioned a different product ({_new_item_label}). "
+                    f"Ask: 'You have an order in progress for {_current_product_name}. "
+                    f"Would you like to (1) continue that order, or (2) start a new order for {_new_item_label} instead?' "
+                    f"Do not extract any field this turn."
+                )
+                logger.info("conv=%s NEW_PRODUCT interrupt — interrupted_sku=%s", conv.id, _new_sku_candidate)
+
+            elif _intent == "CANCEL":
+                # Reset all order slots and go back to greeting
+                _cancel_fields = [
+                    ("pending_order_quantity", None), ("selected_color", None),
+                    ("selected_size", None), ("selected_material", None),
+                    ("customer_name", None), ("delivery_address", None),
+                    ("payment_method", None), ("summary_shown", False),
+                    ("pending_product_sku", None), ("interrupted_sku", None),
+                ]
+                for _rf, _rv in _cancel_fields:
+                    try:
+                        await conversation_service.update_order_field(db, conv.id, _rf, _rv)
+                        setattr(conv, _rf, _rv)
+                    except Exception as exc:
+                        logger.error("Cancel slot reset (%s): %s", _rf, exc)
+                try:
+                    await conversation_service.update_stage(db, conv.id, "greeting")
+                    stage = "greeting"
+                    conv.current_stage = "greeting"
+                except Exception as exc:
+                    logger.error("Cancel stage reset error: %s", exc)
+                _intent_override = (
+                    "Acknowledge the cancellation politely and ask how else you can help. "
+                    "Do not mention any order details."
+                )
+                logger.info("conv=%s CANCEL — all slots reset, stage=greeting", conv.id)
+
+            elif _intent == "OTHER":
+                # Skip extraction but don't reset — remind after answering
+                _intent_override = (
+                    f"Answer their question briefly, then gently return to asking for {_next_slot_pre} again. "
+                    f"Do not save any order slot this turn."
+                )
+                logger.info("conv=%s OTHER — skipping extraction, will re-ask slot", conv.id)
+
+            else:  # ANSWER — normal slot extraction
+                extracted = conversation_flow.extract_order_field(
+                    conv,
+                    user_text,
+                    variant_info=variant_info,
+                    conversation_history=history_dicts,
+                    available_stock=available_stock,
+                )
+                if extracted:
+                    field, value = extracted
+                    if field == "quantity_invalid":
+                        _quantity_invalid = True
+                        logger.info(
+                            "Quantity %s exceeds available stock %s for conv %s — re-prompting.",
+                            getattr(conv, "pending_order_quantity", "?"),
+                            value,
+                            conv.id,
+                        )
+                    else:
+                        try:
+                            await conversation_service.update_order_field(db, conv.id, field, value)
+                            setattr(conv, field, value)
+                            logger.info("Slot filled: conv=%s %s=%r", conv.id, field, value)
+                        except Exception as exc:
+                            logger.error("Order field update error: %s", exc)
+        else:
+            # next_slot is None (all slots filled) — no extraction needed
+            pass
+
+    # ── Determine next_slot AFTER extraction (slot may have advanced) ──────────
+    logger.info(
+        "SLOT-DEBUG conv=%s stage=%s variant_info=%s | qty=%r color=%r size=%r material=%r name=%r address=%r payment=%r",
+        conv.id, stage, variant_info,
+        getattr(conv, "pending_order_quantity", None),
+        getattr(conv, "selected_color", None),
+        getattr(conv, "selected_size", None),
+        getattr(conv, "selected_material", None),
+        getattr(conv, "customer_name", None),
+        getattr(conv, "delivery_address", None),
+        getattr(conv, "payment_method", None),
+    )
+    _next_slot: str | None = conversation_flow.get_next_required_slot(conv, variant_info)
+    logger.info("SLOT-DEBUG conv=%s next_slot=%r", conv.id, _next_slot)
+
+    # When quantity was invalid we stay in order_collection but tell the AI
+    # to re-ask with the stock limit rather than asking the next slot.
+    if _quantity_invalid:
+        _next_slot = "quantity_invalid"
+
+    # If all slots are filled and we're still in order_collection, advance
+    # stage to awaiting_final_confirmation so detect_stage locks correctly.
+    if stage == "order_collection" and _next_slot is None:
+        stage = "awaiting_final_confirmation"
+
+    # ── Build slot-machine instruction for the system prompt ───────────────────
+    # _intent_override takes priority: it's set when the classifier detected
+    # NEW_PRODUCT / CANCEL / OTHER so the AI knows what to do this turn.
+    _current_instruction = ""
+    if _intent_override:
+        _current_instruction = _intent_override
+    elif stage in ("order_collection", "awaiting_final_confirmation"):
+        _current_instruction = conversation_flow.get_next_slot_prompt_instruction(
+            next_slot=_next_slot,
+            variant_info=variant_info,
+            product=pinned_product,
+            available_stock=available_stock,
+            language=language,
+        )
 
     # Fetch all catalogue products for this client (for master prompt)
     catalogue_products: list = []
@@ -779,6 +1035,7 @@ RULES:
             variant_info=variant_info,
             kb_context=kb_context,
             customer_context=customer_context,
+            current_instruction=_current_instruction,
         )
     else:
         system_prompt = _get_system_prompt(client)
@@ -854,6 +1111,11 @@ RULES:
                 return {"status": "ok"}
     except Exception as exc:
         logger.error("Escalation check error: %s", exc)
+
+    # Truncate history in structured slot-filling stages — full history isn't needed
+    # once deep into order collection, and long histories exceed Groq's 6k TPM limit.
+    if stage in ("order_collection", "awaiting_final_confirmation"):
+        history_dicts = history_dicts[-10:]
 
     transcribed_text: str | None = None
     original_type: str | None = None
@@ -966,10 +1228,10 @@ RULES:
     except Exception as exc:
         logger.error("Stage update error: %s", exc)
 
-    # Mark summary_shown when all order fields are collected and the AI just
-    # replied in order_collection stage — the summary was sent in this turn.
+    # Mark summary_shown when the AI shows the order summary (either in the
+    # old order_collection stage or the new awaiting_final_confirmation stage).
     if (
-        stage == "order_collection"
+        stage in ("order_collection", "awaiting_final_confirmation")
         and not getattr(conv, "summary_shown", False)
         and getattr(conv, "pending_order_quantity", None)
         and getattr(conv, "customer_name", None)
@@ -1010,6 +1272,22 @@ RULES:
     except Exception as exc:
         logger.error("Lead tagging error: %s", exc)
 
+    # Default quantity to 1 if somehow not set (e.g. customer skipped the
+    # quantity question and went straight to name+address). Never leave it None
+    # at order-creation time — that was the source of the "702 from address" bug.
+    if (
+        stage == "completed"
+        and client
+        and getattr(conv, "customer_name", None)
+        and getattr(conv, "delivery_address", None)
+        and not getattr(conv, "pending_order_quantity", None)
+    ):
+        try:
+            await conversation_service.update_order_field(db, conv.id, "pending_order_quantity", 1)
+            conv.pending_order_quantity = 1
+        except Exception as exc:
+            logger.warning("Quantity default-to-1 failed: %s", exc)
+
     # Auto-create order when the conversation reaches 'completed' stage and all
     # required fields have been collected (name, address, quantity).
     if (
@@ -1044,6 +1322,32 @@ RULES:
                     relevant = catalogue_service.search_products(all_prods, full_text)
                     if relevant:
                         product = relevant[0]
+
+                # ── Stock validation ──────────────────────────────────────
+                # Abort order creation if requested quantity exceeds stock.
+                # The agent's system-prompt QUANTITY VALIDATION rule already
+                # asks the AI to catch this, but we enforce it here as a hard
+                # guard so no bad order ever reaches the DB.
+                if product and conv.pending_order_quantity:
+                    available_stock = getattr(product, "stock", None)
+                    if available_stock is not None and conv.pending_order_quantity > available_stock:
+                        logger.warning(
+                            "Order blocked: requested qty %d > stock %d for product %s",
+                            conv.pending_order_quantity, available_stock, product.sku,
+                        )
+                        # Reset quantity so it can be re-collected correctly next turn
+                        try:
+                            await conversation_service.update_order_field(
+                                db, conv.id, "pending_order_quantity", None
+                            )
+                            conv.pending_order_quantity = None
+                        except Exception:
+                            pass
+                        # Skip order creation — the AI prompt already instructs the
+                        # agent to ask the customer for a reduced quantity.
+                        raise ValueError(
+                            f"qty_exceeds_stock:{conv.pending_order_quantity}:{available_stock}"
+                        )
 
                 # Resolve payment method: honour customer's explicit choice if
                 # captured; if COD is disabled on this client default to UPI.

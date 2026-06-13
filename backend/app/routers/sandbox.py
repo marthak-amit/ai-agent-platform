@@ -151,7 +151,9 @@ async def sandbox_message(
     # ── Extract and persist order fields during order_collection ─────────────
     if stage == "order_collection":
         try:
-            extracted = conversation_flow.extract_order_field(conv, user_text, variant_info=variant_info)
+            extracted = conversation_flow.extract_order_field(
+                conv, user_text, variant_info=variant_info, conversation_history=history_dicts
+            )
             if extracted:
                 field, value = extracted
                 await conversation_service.update_order_field(db, conv.id, field, value)

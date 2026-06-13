@@ -60,9 +60,13 @@ class Conversation(Base):
     # and to correctly advance to the payment step (migration 0031)
     summary_shown: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
 
-    # Variant selections — only populated when product.has_variants=True (migration 0032)
+    # Variant selections — only populated when product.has_variants=True (migration 0032/0033)
     selected_color: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     selected_size: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    selected_material: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+    # SKU mentioned mid-order when customer may want to switch products (migration 0034)
+    interrupted_sku: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     # Sandbox flag — sandbox conversations are excluded from analytics/leads (migration 0028)
     is_sandbox: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")

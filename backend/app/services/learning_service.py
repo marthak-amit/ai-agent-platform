@@ -51,11 +51,14 @@ async def get_live_examples_for_prompt(
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
 
-    # Find conversation IDs that have a completed order for this client
+    # Find conversation IDs that have a REAL completed order (stock actually deducted).
+    # Conversations that reached "completed" stage text-wise but have no order row
+    # (or where stock_deducted is False) are broken/buggy transcripts — exclude them.
     order_result = await db.execute(
         select(Order.conversation_id).where(
             Order.client_id == client_id,
             Order.created_at > cutoff,
+            Order.stock_deducted == True,  # noqa: E712
         ).limit(50)
     )
     completed_conv_ids = [row[0] for row in order_result if row[0] is not None]

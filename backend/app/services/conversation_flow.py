@@ -8,7 +8,13 @@ then get_stage_instructions() returns focused guidance for that stage.
 
 from __future__ import annotations
 
+import logging
 import re
+
+logger = logging.getLogger(__name__)
+
+# Matches a standalone SKU token (2–4 letters + 4–6 digits), same as catalogue_service.SKU_PATTERN.
+_SKU_ONLY_PATTERN = re.compile(r"^[A-Za-z]{2,4}\d{4,6}$")
 
 # Words that must never be saved as a customer name.
 # Includes command/reset words the test simulator sends, common short tokens,
@@ -72,9 +78,14 @@ STAGES: dict[str, dict] = {
         "next": "order_collection",
     },
     "order_collection": {
-        "description": "Customer agreed to buy",
-        "goal": "Collect name, address, quantity",
-        "next": "payment",
+        "description": "Customer agreed to buy — slot machine collecting details",
+        "goal": "Collect quantity, variants, name, address, payment one slot at a time",
+        "next": "awaiting_final_confirmation",
+    },
+    "awaiting_final_confirmation": {
+        "description": "All order details collected — waiting for explicit yes/no",
+        "goal": "Show summary, get customer's explicit confirmation",
+        "next": "completed",
     },
     "payment": {
         "description": "Order details collected",
@@ -94,6 +105,16 @@ STAGES: dict[str, dict] = {
 }
 
 _VALID_STAGES = set(STAGES.keys())
+
+# Affirmative / negative keywords for the awaiting_final_confirmation stage.
+_CONFIRMATION_YES = frozenset({
+    "yes", "haan", "han", "ha", "confirm", "ok", "okay", "sahi", "theek",
+    "bilkul", "zaroor", "done", "proceed", "place", "book",
+})
+_CONFIRMATION_NO = frozenset({
+    "no", "nahi", "nope", "cancel", "change", "badal", "nhi",
+    "different", "wrong", "incorrect",
+})
 
 # Words that mean "I've paid" — when detected in payment stage, move to completed.
 PAYMENT_CONFIRMATION_WORDS = {
@@ -143,6 +164,62 @@ _ORDER_FOLLOWUP_CUES = (
     "order summary", "confirm karein", "confirm?", "sab sahi hai",
 )
 
+# Keywords in the AI's last message indicating it just asked for QUANTITY.
+# Quantity is ONLY extracted when the agent explicitly requested it.
+_QUANTITY_ASK_CUES = (
+    "how many", "kitne piece", "kitne pieces", "ketla piece", "ketla pieces",
+    "quantity", "kitne chahiye", "how many pieces", "kitna chahiye",
+    "kitne loge", "ketla joiye",
+)
+
+# Keywords in the AI's last message indicating it just asked for NAME+ADDRESS
+# together in a single question (e.g. "May I have your name and delivery address?").
+_NAME_AND_ADDRESS_CUES = (
+    "name and", "naam aur", "naam aur address", "name and address",
+    "naam aur delivery", "name and delivery",
+)
+
+
+def _last_agent_asked_quantity(conversation_history: list[dict]) -> bool:
+    """
+    True if the agent's most recent message explicitly asked for quantity.
+    Used to guard quantity extraction so a number inside an address reply
+    (e.g. "702 Somerset St") is never mistaken for a piece count.
+
+    Args:
+        conversation_history: List of {'role': str, 'content': str} dicts,
+                              most recent last.
+
+    Returns:
+        True when the last assistant turn contains a quantity-ask cue.
+    """
+    for m in reversed(conversation_history):
+        if m.get("role") in ("model", "assistant"):
+            text = (m.get("content") or "").lower()
+            return any(cue in text for cue in _QUANTITY_ASK_CUES)
+    return False
+
+
+def _last_agent_asked_name_and_address(conversation_history: list[dict]) -> bool:
+    """
+    True if the agent's most recent message asked for name AND address together
+    (e.g. "May I have your name and delivery address?"). When this is the case,
+    a combined reply like "Amit, 702 Somerset, CA" should be split into name +
+    address — never parsed for quantity.
+
+    Args:
+        conversation_history: List of {'role': str, 'content': str} dicts,
+                              most recent last.
+
+    Returns:
+        True when the last assistant turn contains a combined name+address cue.
+    """
+    for m in reversed(conversation_history):
+        if m.get("role") in ("model", "assistant"):
+            text = (m.get("content") or "").lower()
+            return any(cue in text for cue in _NAME_AND_ADDRESS_CUES)
+    return False
+
 
 def _is_order_followup(conversation_history: list[dict]) -> bool:
     """
@@ -162,6 +239,68 @@ def _is_order_followup(conversation_history: list[dict]) -> bool:
             text = (m.get("content") or "").lower()
             return any(cue in text for cue in _ORDER_FOLLOWUP_CUES)
     return False
+
+
+async def classify_user_intent(
+    user_text: str,
+    next_slot: str,
+    pinned_product_name: str,
+) -> str:
+    """
+    Lightweight intent classifier — called before slot extraction when the
+    conversation is in order_collection/awaiting_final_confirmation.
+
+    Makes a single Groq call (llama-3.1-8b-instant, max_tokens=50) and returns
+    one of: ANSWER | NEW_PRODUCT | CANCEL | OTHER.
+
+    Args:
+        user_text:           The customer's latest message.
+        next_slot:           The slot currently being collected.
+        pinned_product_name: Display name of the product currently being ordered.
+
+    Returns:
+        One of "ANSWER", "NEW_PRODUCT", "CANCEL", "OTHER".
+        Falls back to "ANSWER" on any error so slot-filling is never blocked.
+    """
+    from openai import AsyncOpenAI
+    from app.config import get_settings
+
+    prompt = (
+        f"Current order: {pinned_product_name}. "
+        f"We just asked the customer for: {next_slot}. "
+        f"Customer replied: '{user_text}'.\n\n"
+        "Classify into exactly one of:\n"
+        "- ANSWER: a direct answer to the question\n"
+        "- NEW_PRODUCT: contains a different product code/SKU or asks about a different product\n"
+        "- CANCEL: wants to cancel/stop the current order\n"
+        "- OTHER: anything else (general question, off-topic)\n\n"
+        "Respond with ONLY one word: ANSWER, NEW_PRODUCT, CANCEL, or OTHER."
+    )
+
+    try:
+        settings = get_settings()
+        client = AsyncOpenAI(
+            api_key=settings.groq_api_key,
+            base_url="https://api.groq.com/openai/v1",
+            max_retries=0,
+        )
+        resp = await client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=10,
+            temperature=0,
+        )
+        raw = (resp.choices[0].message.content or "").strip().upper()
+        if raw in ("ANSWER", "NEW_PRODUCT", "CANCEL", "OTHER"):
+            return raw
+        # If response contains the keyword, extract it
+        for label in ("NEW_PRODUCT", "CANCEL", "OTHER", "ANSWER"):
+            if label in raw:
+                return label
+    except Exception as exc:
+        logger.warning("classify_user_intent failed (defaulting to ANSWER): %s", exc)
+
+    return "ANSWER"
 
 
 def detect_stage(
@@ -201,6 +340,19 @@ def detect_stage(
             return "completed"
         # Stay in payment unless customer explicitly changes stage (never go back).
         return "payment"
+
+    # In awaiting_final_confirmation: only yes/no/change advance the state.
+    # Everything else keeps the customer in this stage to re-confirm.
+    if stored_stage == "awaiting_final_confirmation":
+        msg_lower = latest_message.lower().strip()
+        words = set(msg_lower.split())
+        if words & _CONFIRMATION_YES:
+            return "completed"
+        if words & _CONFIRMATION_NO:
+            # Slot resets happen in webhook.py after stage detection.
+            return "order_collection"
+        # Customer said something else (off-topic, question) — stay put.
+        return "awaiting_final_confirmation"
 
     if _is_order_followup(conversation_history):
         return "order_collection"
@@ -253,76 +405,338 @@ def extract_order_field(
     conversation,
     user_text: str,
     variant_info: dict | None = None,
+    conversation_history: list[dict] | None = None,
+    available_stock: int | None = None,
 ) -> tuple[str, object] | None:
     """
-    Heuristically determine which order-collection field the customer's latest
-    reply most likely answers, by matching TEXT SHAPE against whichever fields
-    are still missing on the conversation row.
+    Strict slot-filling extractor: determines which slot we're currently
+    collecting via get_next_required_slot(), then runs ONLY the extraction
+    logic relevant to that slot.
 
-    When variant_info is provided (from catalogue_service.get_product_variant_info),
-    color and size extraction is attempted before name/address so the variant
-    questions are resolved in order.
-
-    Field types are checked independently (not strictly gated) so a single missed
-    turn never permanently blocks progress. Each field is only written once.
+    Returns one of:
+      - (field_name, value)         — valid value for the current slot
+      - ("quantity_invalid", stock) — customer requested more than available_stock;
+                                      caller should re-prompt without advancing
+      - None                        — extraction failed; caller should re-prompt
 
     Args:
-        conversation: Conversation ORM instance.
-        user_text:    The customer's latest message text.
-        variant_info: Optional dict from get_product_variant_info with keys
-                      has_variants, needs_color, needs_size, available_colors,
-                      available_sizes. Pass None for non-variant products.
+        conversation:         Conversation ORM instance.
+        user_text:            The customer's latest message text.
+        variant_info:         Dict from catalogue_service.get_product_variant_info.
+        conversation_history: List of {'role', 'content'} dicts, most recent last.
+        available_stock:      Units available for the pinned product/variant.
+                              Used for quantity validation only.
 
     Returns:
-        (field_name, value) tuple for conversation_service.update_order_field,
-        or None if nothing could be confidently extracted.
+        Tuple or None as described above.
     """
     text = user_text.strip()
     if not text:
         return None
 
-    text_lower = text.lower()
+    vi = variant_info or {}
+    next_slot = get_next_required_slot(conversation, vi)
 
-    digit_match = re.fullmatch(r"\d{1,3}", text) or re.search(r"\b(\d{1,3})\b", text)
+    # All slots already filled — nothing to extract.
+    if next_slot is None:
+        return None
+
+    text_lower = text.lower()
     words = text.split()
-    looks_like_name = (
-        not digit_match
-        and 1 <= len(words) <= 4
-        and all(w.replace(".", "").isalpha() for w in words)
-        and is_valid_name(text)
+
+    # ── QUANTITY ──────────────────────────────────────────────────────────────
+    if next_slot == "quantity":
+        digit_match = re.search(r"\b(\d{1,4})\b", text)
+        qty = int(digit_match.group(1)) if digit_match else 1
+        qty = max(1, qty)
+        if available_stock is not None and qty > available_stock:
+            return ("quantity_invalid", available_stock)
+        return ("pending_order_quantity", qty)
+
+    # ── COLOUR ────────────────────────────────────────────────────────────────
+    if next_slot == "color":
+        for color in vi.get("available_colors", []):
+            if color.lower() in text_lower:
+                return ("selected_color", color)
+        return None
+
+    # ── SIZE ──────────────────────────────────────────────────────────────────
+    if next_slot == "size":
+        size_map = {s.lower(): s for s in vi.get("available_sizes", [])}
+        for token in words:
+            canonical = size_map.get(token.lower())
+            if canonical:
+                return ("selected_size", canonical)
+        return None
+
+    # ── MATERIAL ─────────────────────────────────────────────────────────────
+    if next_slot == "material":
+        for mat in vi.get("available_materials", []):
+            if mat.lower() in text_lower:
+                return ("selected_material", mat)
+        return None
+
+    # ── CUSTOMER NAME ─────────────────────────────────────────────────────────
+    # If the agent asked for name+address together and customer replied with a
+    # comma-separated "Name, Address" string, split and capture name now;
+    # the address half will be captured when delivery_address becomes next_slot.
+    if next_slot == "customer_name":
+        history = conversation_history or []
+        if _last_agent_asked_name_and_address(history):
+            comma_idx = text.find(",")
+            if comma_idx > 0:
+                name_part = text[:comma_idx].strip()
+                if is_valid_name(name_part):
+                    return ("customer_name", name_part.title())
+        looks_like_name = (
+            1 <= len(words) <= 4
+            and all(w.replace(".", "").isalpha() for w in words)
+            and is_valid_name(text)
+        )
+        if looks_like_name:
+            return ("customer_name", text.title())
+        return None
+
+    # ── DELIVERY ADDRESS ─────────────────────────────────────────────────────
+    if next_slot == "delivery_address":
+        history = conversation_history or []
+        # If last agent message asked for name+address and name wasn't extracted
+        # yet (customer skipped the name turn), split the reply.
+        if _last_agent_asked_name_and_address(history) and not conversation.customer_name:
+            comma_idx = text.find(",")
+            if comma_idx > 0:
+                name_part = text[:comma_idx].strip()
+                if is_valid_name(name_part):
+                    # Return name first; address will be captured next turn.
+                    return ("customer_name", name_part.title())
+        # Guard: a bare SKU token (e.g. "SR27754") is not an address.
+        if _SKU_ONLY_PATTERN.match(text.strip()):
+            return None
+        if len(text) >= 4:
+            return ("delivery_address", text)
+        return None
+
+    # ── PAYMENT METHOD ────────────────────────────────────────────────────────
+    if next_slot == "payment_method":
+        upper = text.upper()
+        if "COD" in upper or "CASH" in upper:
+            return ("payment_method", "COD")
+        if any(kw in upper for kw in ("UPI", "GPAY", "PAYTM", "PHONEPE", "PHONEPAY")):
+            return ("payment_method", "UPI")
+        return None
+
+    return None
+
+
+def get_next_slot_prompt_instruction(
+    next_slot: str | None,
+    variant_info: dict,
+    product,
+    available_stock: int | None,
+    language: str = "english",
+) -> str:
+    """
+    Return a short, laser-focused instruction for the AI for the current slot.
+
+    This string is injected as a ``current_instruction`` override in the system
+    prompt, replacing the general stage instructions when in order_collection or
+    awaiting_final_confirmation.  Each instruction asks for EXACTLY ONE piece of
+    information so the AI cannot wander.
+
+    Args:
+        next_slot:       Current unfilled slot name, "quantity_invalid", or None
+                         (all slots filled → show summary).
+        variant_info:    Dict from catalogue_service.get_product_variant_info.
+        product:         Pinned Product ORM instance (may be None).
+        available_stock: Available units for the selected variant/product.
+        language:        Customer's detected language.
+
+    Returns:
+        Instruction string for the system prompt current_instruction field.
+    """
+    vi = variant_info or {}
+    product_name = getattr(product, "name", "the product") or "the product"
+    unit_price = getattr(product, "price", 0) or 0
+
+    if next_slot == "quantity_invalid":
+        stock_str = str(available_stock) if available_stock is not None else "limited"
+        return (
+            f"⚠️ QUANTITY EXCEEDS STOCK — MANDATORY ACTION:\n"
+            f"Tell the customer that only {stock_str} piece(s) of {product_name} are available.\n"
+            f"Ask them to choose a quantity within that limit.\n"
+            f"Do NOT proceed to any other question. Do NOT confirm the order.\n"
+            f"Example (English): 'Sorry, only {stock_str} pieces available. How many would you like (1–{stock_str})?'\n"
+            f"Example (Hindi): 'Maafi, sirf {stock_str} pieces available hain. Aap kitne lenge (1–{stock_str})?'"
+        )
+
+    if next_slot == "quantity":
+        return (
+            "CURRENT SLOT: QUANTITY\n"
+            "Ask ONLY: 'How many pieces would you like?' (or Hindi/Gujarati equivalent).\n"
+            "Do NOT mention color, size, name, address, or payment.\n"
+            "Do NOT confirm the order or show a summary.\n"
+            "ONE question only."
+        )
+
+    if next_slot == "color":
+        colors = vi.get("available_colors", [])
+        color_list = ", ".join(colors) if colors else "see catalogue"
+        return (
+            f"CURRENT SLOT: COLOR\n"
+            f"Ask ONLY which color the customer wants.\n"
+            f"Available colors: {color_list}\n"
+            f"Do NOT ask about size, name, address, or payment yet.\n"
+            f"Example (English): 'Which color would you like? Available: {color_list}'\n"
+            f"NEVER suggest colors not in this list."
+        )
+
+    if next_slot == "size":
+        sizes = vi.get("available_sizes", [])
+        size_list = ", ".join(sizes) if sizes else "see catalogue"
+        return (
+            f"CURRENT SLOT: SIZE\n"
+            f"Ask ONLY which size the customer wants.\n"
+            f"Available sizes: {size_list}\n"
+            f"Do NOT ask about name, address, or payment yet.\n"
+            f"Example (English): 'Which size? Available: {size_list}'\n"
+            f"NEVER suggest sizes not in this list."
+        )
+
+    if next_slot == "material":
+        materials = vi.get("available_materials", [])
+        mat_list = ", ".join(materials) if materials else "see catalogue"
+        return (
+            f"CURRENT SLOT: MATERIAL\n"
+            f"Ask ONLY which material the customer wants.\n"
+            f"Available materials: {mat_list}\n"
+            f"Do NOT ask about name, address, or payment yet."
+        )
+
+    if next_slot == "customer_name":
+        return (
+            "CURRENT SLOT: CUSTOMER NAME\n"
+            "Ask ONLY for the customer's name.\n"
+            "Do NOT ask for address or payment yet.\n"
+            "Example (English): 'May I have your name please?'\n"
+            "Example (Hindi): 'Aapka naam kya hai?'\n"
+            "Example (Gujarati): 'Tamaru naam shu chhe?'"
+        )
+
+    if next_slot == "delivery_address":
+        return (
+            "CURRENT SLOT: DELIVERY ADDRESS\n"
+            "Ask ONLY for the delivery address.\n"
+            "Do NOT ask for payment yet.\n"
+            "Example (English): 'What is your delivery address?'\n"
+            "Example (Hindi): 'Delivery address kya hai?'\n"
+            "Example (Gujarati): 'Delivery address shu chhe?'"
+        )
+
+    if next_slot == "payment_method":
+        return (
+            "CURRENT SLOT: PAYMENT METHOD\n"
+            "Ask ONLY how the customer would like to pay (UPI or COD if accepted).\n"
+            "Do NOT show the order summary yet.\n"
+            "Example (English): 'How would you like to pay — UPI or Cash on Delivery?'\n"
+            "Example (Hindi): 'Aap UPI se denge ya COD?'"
+        )
+
+    # next_slot is None → all slots filled, show summary and ask for confirmation.
+    qty = getattr(product, "_order_qty", 0) if product else 0
+    total = (unit_price * qty) if (unit_price and qty) else 0
+    total_str = f"₹{int(total):,}" if total > 0 else "₹(qty × price)"
+
+    color_line = ""
+    size_line = ""
+    material_line = ""
+    if vi.get("needs_color"):
+        color_line = "\n  🎨 Color: [use selected_color from order context]"
+    if vi.get("needs_size"):
+        size_line = "\n  📐 Size: [use selected_size from order context]"
+    if vi.get("needs_material"):
+        material_line = "\n  🧵 Material: [use selected_material from order context]"
+
+    return (
+        "ALL SLOTS COLLECTED — SHOW FINAL ORDER SUMMARY:\n"
+        "Display the complete order summary using EXACT values from the CURRENT ORDER block above.\n"
+        f"Include: product name, {color_line}{size_line}{material_line} quantity, "
+        f"total price (quantity × unit price), customer name, delivery address, payment method.\n"
+        "Then ask: 'Confirm? (yes/no)' — in the customer's language.\n"
+        "Do NOT say the order is placed yet. Wait for explicit yes.\n"
+        "Format example:\n"
+        "  ✅ Order Summary:\n"
+        "  ━━━━━━━━━━━━━━━━\n"
+        "  📦 [Product] × [Qty] = ₹[Total]\n"
+        "  👤 [Name]\n"
+        "  📍 [Address]\n"
+        "  💳 [Payment]\n"
+        "  ━━━━━━━━━━━━━━━━\n"
+        "  Confirm? (yes/no)"
     )
 
-    # A bare number → quantity (only while quantity is still unknown)
-    if conversation.pending_order_quantity is None and digit_match:
-        return ("pending_order_quantity", int(digit_match.group(0)))
 
-    # Variant extraction — only when product has variants
-    vi = variant_info or {}
-    if vi.get("has_variants"):
-        # Color extraction — match against available colors (case-insensitive)
-        if vi.get("needs_color") and not getattr(conversation, "selected_color", None):
-            for color in vi.get("available_colors", []):
-                if color.lower() in text_lower:
-                    return ("selected_color", color)
+# ── Slot-filling state machine ────────────────────────────────────────────────
 
-        # Size extraction — match against available sizes (case-insensitive)
-        if vi.get("needs_size") and not getattr(conversation, "selected_size", None):
-            size_map = {s.lower(): s for s in vi.get("available_sizes", [])}
-            # Also handle common abbreviations
-            for token in words:
-                canonical = size_map.get(token.lower())
-                if canonical:
-                    return ("selected_size", canonical)
+# Maps logical slot name → conversation ORM column name.
+_SLOT_TO_FIELD: dict[str, str] = {
+    "quantity": "pending_order_quantity",
+    "color": "selected_color",
+    "size": "selected_size",
+    "material": "selected_material",
+    "customer_name": "customer_name",
+    "delivery_address": "delivery_address",
+    "payment_method": "payment_method",
+}
 
-    # A short alphabetic phrase → name (only while name is still unknown)
-    # Double-check with is_valid_name to guard against command words slipping through.
-    if not conversation.customer_name and looks_like_name and is_valid_name(text):
-        return ("customer_name", text.title())
 
-    # Anything longer and not name-shaped, once we have a name → address
-    if not conversation.delivery_address and conversation.customer_name and len(text) >= 4:
-        return ("delivery_address", text)
+def get_order_slots(variant_info: dict) -> list[str]:
+    """
+    Return the ordered list of slots that must be filled for this product.
 
+    Base order: quantity → (color?) → (size?) → (material?) → customer_name
+    → delivery_address → payment_method.  Variant slots are only included when
+    the matching needs_* flag is True in variant_info.
+
+    Args:
+        variant_info: Dict returned by catalogue_service.get_product_variant_info.
+
+    Returns:
+        Ordered list of slot name strings.
+    """
+    slots = ["quantity"]
+    if variant_info.get("needs_color"):
+        slots.append("color")
+    if variant_info.get("needs_size"):
+        slots.append("size")
+    if variant_info.get("needs_material"):
+        slots.append("material")
+    slots += ["customer_name", "delivery_address", "payment_method"]
+    return slots
+
+
+def get_next_required_slot(conversation, variant_info: dict) -> str | None:
+    """
+    Return the first unfilled slot for the current order, or None if all filled.
+
+    Iterates get_order_slots() in order and returns the first slot whose
+    corresponding conversation column is None/empty.  None means all slots are
+    collected and the flow is ready for the final confirmation summary.
+
+    Args:
+        conversation: Conversation ORM instance.
+        variant_info: Dict returned by catalogue_service.get_product_variant_info.
+
+    Returns:
+        Slot name string, or None when everything is collected.
+    """
+    for slot in get_order_slots(variant_info):
+        field = _SLOT_TO_FIELD[slot]
+        val = getattr(conversation, field, None)
+        # quantity is an int — None or 0 both count as unfilled.
+        if val is None or val == "":
+            return slot
+        if slot == "quantity" and val == 0:
+            return slot
     return None
 
 

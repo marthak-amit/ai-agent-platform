@@ -12,7 +12,7 @@ import re
 import uuid
 from typing import Any, Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.product import Product
@@ -49,9 +49,9 @@ _CATEGORY_PREFIXES: dict[str, str] = {
 }
 _DEFAULT_PREFIX = "PR"
 
-# Regex that matches a SKU-like token: 2+ uppercase letters followed by 4+ digits
-# e.g.  SR27754  LH00123  KU99001
-SKU_PATTERN = re.compile(r"\b([A-Z]{2,4})(\d{4,6})\b")
+# Regex that matches a SKU-like token: 2–4 letters followed by 4–6 digits (case-insensitive)
+# e.g.  SR27754  LH00123  KU99001  sr27754
+SKU_PATTERN = re.compile(r"\b([A-Za-z]{2,4})(\d{4,6})\b")
 
 
 def generate_sku(category: Optional[str] = None) -> str:
@@ -79,24 +79,41 @@ async def find_product_by_sku(
     db: AsyncSession, client_id: int, sku: str
 ) -> Optional[Product]:
     """
-    Look up a product by its exact SKU for the given client.
+    Look up a product by SKU for the given client (case-insensitive).
 
-    Used by the AI webhook to resolve product codes mentioned in customer
-    messages (e.g. "SR27754 ka price kya hai?").
+    Strategy:
+      1. Case-insensitive exact match (func.upper both sides).
+      2. If not found, partial/prefix match — returns the first active product
+         whose SKU starts with the candidate, so "SR277" matches "SR27754".
 
     Args:
         db:        Active async DB session.
         client_id: Must match the product's client_id (ownership check).
-        sku:       Exact SKU string (case-sensitive).
+        sku:       SKU string (any case).
 
     Returns:
         Product if found and owned by client_id, else None.
     """
+    upper_sku = sku.strip().upper()
+
+    # 1. Case-insensitive exact match
     result = await db.execute(
         select(Product).where(
             Product.client_id == client_id,
-            Product.sku == sku,
+            func.upper(Product.sku) == upper_sku,
         )
+    )
+    product = result.scalar_one_or_none()
+    if product:
+        return product
+
+    # 2. Prefix/partial fallback — catches truncated or slightly mistyped codes
+    result = await db.execute(
+        select(Product).where(
+            Product.client_id == client_id,
+            Product.is_active == True,  # noqa: E712
+            func.upper(Product.sku).like(f"{upper_sku}%"),
+        ).limit(1)
     )
     return result.scalar_one_or_none()
 
@@ -105,17 +122,17 @@ def extract_skus_from_text(text: str) -> list[str]:
     """
     Extract all SKU-like tokens from a customer message.
 
-    Matches patterns of 2–4 uppercase letters followed by 4–6 digits,
-    e.g. "SR27754", "LH00123". Used to do exact-SKU lookups before the
-    general keyword search.
+    Matches patterns of 2–4 letters followed by 4–6 digits (case-insensitive).
+    Returns tokens uppercased so they can be compared against DB SKUs directly.
+    e.g. "sr27754" → "SR27754", "LH00123" → "LH00123".
 
     Args:
         text: Raw customer message text.
 
     Returns:
-        List of candidate SKU strings, possibly empty.
+        List of candidate SKU strings (uppercased), possibly empty.
     """
-    return ["".join(m) for m in SKU_PATTERN.findall(text)]
+    return ["".join(m).upper() for m in SKU_PATTERN.findall(text)]
 
 
 # ── CRUD ─────────────────────────────────────────────────────────────────────
@@ -676,8 +693,10 @@ async def get_product_variant_info(db: AsyncSession, product: Product) -> dict:
             "has_variants": False,
             "needs_color": False,
             "needs_size": False,
+            "needs_material": False,
             "available_colors": [],
             "available_sizes": [],
+            "available_materials": [],
         }
 
     result = await db.execute(
@@ -690,11 +709,14 @@ async def get_product_variant_info(db: AsyncSession, product: Product) -> dict:
 
     colors = sorted({v.color for v in variants if v.color and (v.stock or 0) > 0})
     sizes = sorted({v.size for v in variants if v.size and (v.stock or 0) > 0})
+    materials = sorted({v.material for v in variants if v.material and (v.stock or 0) > 0})
 
     return {
         "has_variants": True,
         "needs_color": bool(colors),
         "needs_size": bool(sizes),
+        "needs_material": bool(materials),
         "available_colors": colors,
         "available_sizes": sizes,
+        "available_materials": materials,
     }

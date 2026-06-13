@@ -75,7 +75,7 @@ class ContactProfile(BaseModel):
 class Contact(BaseModel):
     """Contact entry in the webhook value."""
 
-    profile: ContactProfile
+    profile: Optional[ContactProfile] = None
     wa_id: str
 
 

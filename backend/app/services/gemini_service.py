@@ -342,6 +342,7 @@ def build_master_system_prompt(
     variant_info: dict | None = None,
     kb_context: str = "",
     customer_context: str = "",
+    current_instruction: str = "",
 ) -> str:
     """
     Build a laser-focused sales system prompt for the given client and stage.
@@ -362,6 +363,11 @@ def build_master_system_prompt(
         customer_profile:    Optional Customer ORM instance for richer personalisation.
         accepts_cod:         Ignored — read directly from client.accepts_cod so the
                              prompt is always in sync with the client's settings.
+        current_instruction: When non-empty and stage is order_collection or
+                             awaiting_final_confirmation, this string REPLACES the
+                             output of get_stage_instructions() — it contains a
+                             single-slot instruction from the slot-filling state
+                             machine that the AI must follow exactly.
 
     Returns:
         Full system prompt string.
@@ -396,18 +402,30 @@ def build_master_system_prompt(
     upi_id = getattr(client, "upi_id", None)
     client_accepts_cod = getattr(client, "accepts_cod", False) or False
 
-    stage_instructions = get_stage_instructions(
-        conversation_stage,
-        getattr(client, "business_type", "") or "",
-        products,
-        collected=collected,
-        accepts_cod=client_accepts_cod,
-        upi_id=upi_id,
-        order_total=order_total,
-        order_product_name=order_product_name,
-        order_qty=order_qty,
-        variant_info=variant_info,
-    )
+    _slot_machine_stages = {"order_collection", "awaiting_final_confirmation"}
+    if current_instruction and conversation_stage in _slot_machine_stages:
+        # Slot-machine override: use the single-slot instruction from webhook.py.
+        # Wrap it so formatting is consistent with other stage instruction blocks.
+        stage_instructions = (
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"CURRENT TASK — FOLLOW THIS EXACTLY, IGNORE EVERYTHING ELSE:\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{current_instruction}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
+    else:
+        stage_instructions = get_stage_instructions(
+            conversation_stage,
+            getattr(client, "business_type", "") or "",
+            products,
+            collected=collected,
+            accepts_cod=client_accepts_cod,
+            upi_id=upi_id,
+            order_total=order_total,
+            order_product_name=order_product_name,
+            order_qty=order_qty,
+            variant_info=variant_info,
+        )
 
     repeat_customer_note = ""
     # Prefer richer Customer profile data; fall back to legacy conversation history dict
