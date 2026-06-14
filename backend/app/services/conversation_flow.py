@@ -14,11 +14,48 @@ import re
 logger = logging.getLogger(__name__)
 
 # Matches a standalone SKU token (2–4 letters + 4–6 digits), same as catalogue_service.SKU_PATTERN.
-_SKU_ONLY_PATTERN = re.compile(r"^[A-Za-z]{2,4}\d{4,6}$")
+# Also accepts a single optional space between the letter-prefix and digits (voice-transcription tolerance).
+_SKU_ONLY_PATTERN = re.compile(r"^[A-Za-z]{2,4}\s?\d{4,6}$")
 
 # Words that must never be saved as a customer name.
 # Includes command/reset words the test simulator sends, common short tokens,
 # and anything that cannot be a real person's name.
+# Regex patterns to strip filler prefixes before validating a customer name.
+# Order matters: longest/most-specific first so "sure, I am" is stripped before "I am".
+_NAME_FILLER_PREFIXES: tuple[str, ...] = (
+    # English
+    r"sure[,\s]+i\s+am\s+",
+    r"sure[,\s]+",
+    r"ok[,\s]+i\s+am\s+",
+    r"okay[,\s]+i\s+am\s+",
+    r"yes[,\s]+i\s+am\s+",
+    r"i\s+am\s+",
+    r"i'm\s+",
+    r"my\s+name\s+is\s+",
+    r"this\s+is\s+",
+    r"it's\s+",
+    r"its\s+",
+    r"call\s+me\s+",
+    # Hindi
+    r"mera\s+naam\s+(?:hai\s+)?",
+    r"mera\s+name\s+(?:hai\s+)?",
+    r"naam\s+(?:hai\s+)?",
+    # Gujarati
+    r"maru\s+naam\s+(?:chhe\s+)?",
+    r"mara\s+naam\s+(?:che\s+)?",
+    r"tamaru\s+naam\s+(?:chhe\s+)?",
+)
+_NAME_FILLER_RE = re.compile(
+    r"^(?:" + "|".join(_NAME_FILLER_PREFIXES) + r")",
+    re.IGNORECASE,
+)
+
+
+def _strip_name_prefixes(text: str) -> str:
+    """Strip common filler prefixes before extracting a name candidate."""
+    return _NAME_FILLER_RE.sub("", text.strip()).strip()
+
+
 COMMAND_WORDS: frozenset[str] = frozenset({
     "reset", "quit", "exit", "demo", "sales",
     "image", "help", "start", "stop", "test",
@@ -110,11 +147,16 @@ _VALID_STAGES = set(STAGES.keys())
 _CONFIRMATION_YES = frozenset({
     "yes", "haan", "han", "ha", "confirm", "ok", "okay", "sahi", "theek",
     "bilkul", "zaroor", "done", "proceed", "place", "book",
+    "1",  # numbered choice: 1 = Confirm & pay
 })
 _CONFIRMATION_NO = frozenset({
     "no", "nahi", "nope", "cancel", "change", "badal", "nhi",
     "different", "wrong", "incorrect",
+    "3",  # numbered choice: 3 = Cancel (when cross-sell shown)
+    "2",  # numbered choice: 2 = Cancel (when no cross-sell, 2 is Cancel)
 })
+# "2" when cross-sell is shown means "add cross-sell product" — webhook.py intercepts
+# this before detect_stage runs. If no cross-sell was shown, 2 maps to Cancel above.
 
 # Words that mean "I've paid" — when detected in payment stage, move to completed.
 PAYMENT_CONFIRMATION_WORDS = {
@@ -128,6 +170,71 @@ PAYMENT_CONFIRMATION_WORDS = {
     "payment kiya", "kar diya", "ho gaya", "bhej diya",
     "upi kiya", "payment ho gaya", "payment kar diya",
 }
+
+# Stages considered "browsing" (Mode A) — transition to order_collection only on
+# explicit purchase affirmation after a product was shown.
+_BROWSING_STAGES: frozenset[str] = frozenset({
+    "greeting", "product_inquiry", "qualification",
+    "objection_handling", "offer_making",
+})
+
+# Keywords in the AI's LAST message meaning it just offered to take an order
+# for a specific product (Mode A offer hook).
+_ORDER_OFFER_CUES: tuple[str, ...] = (
+    "order karein", "order karna chahenge", "would you like to order",
+    "order karo", "order karna hai", "place an order", "order chahiye",
+    "order dena chahenge", "book karna", "khareedna chahte", "lena chahenge",
+    "abhi order", "order karoge", "order dein", "lenge?", "order lena?",
+    "order karein?", "khareedenge?",
+)
+
+# Customer words that explicitly affirm purchase intent
+_PURCHASE_AFFIRMATION: frozenset[str] = frozenset({
+    "yes", "haan", "han", "ha", "ok", "okay", "sahi", "theek",
+    "bilkul", "zaroor", "done", "proceed", "place", "book",
+    "order", "chahiye", "le lo", "le lena", "lena hai", "kar do",
+    "kardo", "confirm", "bhejo", "lena", "dedo", "de do",
+})
+
+# Customer words that decline the order offer (stay browsing, don't escalate to objection_handling)
+_DECLINE_ORDER: frozenset[str] = frozenset({
+    "no", "nahi", "nope", "nhi", "not", "mat",
+})
+
+# Keywords in a customer message that request the catalogue / shop link
+CATALOGUE_KEYWORDS: tuple[str, ...] = (
+    "catalogue", "catalog", "catelog", "cateloge", "catlouge", "cataloge",
+    "full list", "sab dikhao", "shop link",
+    "all products", "poora list", "dekhna hai sab", "sab products",
+    "collection dekha", "website link", "shop website", "store link",
+    "puri list", "all items", "sab kuch dikhao",
+)
+
+
+def is_catalogue_request(text: str) -> bool:
+    """Return True if the customer is asking for the full catalogue / shop link."""
+    lower = text.lower()
+    return any(kw in lower for kw in CATALOGUE_KEYWORDS)
+
+
+def _last_ai_offered_order(conversation_history: list[dict]) -> bool:
+    """
+    True if the agent's most recent message offered to place an order for a
+    specific product (Mode A offer hook — "order karein?" etc.).
+
+    Args:
+        conversation_history: List of {'role': str, 'content': str} dicts,
+                              most recent last.
+
+    Returns:
+        True when the last assistant turn contains an order-offer cue.
+    """
+    for m in reversed(conversation_history):
+        if m.get("role") in ("model", "assistant"):
+            text = (m.get("content") or "").lower()
+            return any(cue in text for cue in _ORDER_OFFER_CUES)
+    return False
+
 
 _STAGE_DETECT_PROMPT = """You are a sales conversation stage classifier.
 
@@ -221,6 +328,71 @@ def _last_agent_asked_name_and_address(conversation_history: list[dict]) -> bool
     return False
 
 
+_SAVED_ADDRESS_AFFIRMATIONS: frozenset[str] = frozenset({
+    "yes", "ye", "ya", "yep", "yup",
+    "haan", "han", "ha",
+    "ok", "okay", "sure", "fine",
+    "correct", "sahi", "bilkul", "theek",
+})
+
+# Affirmative set shared across all confirm-style slot prompts.
+_SLOT_AFFIRMATIVES: frozenset[str] = frozenset({
+    "yes", "ye", "yeah", "y",
+    "haan", "ha", "han", "ha",
+    "ok", "okay", "sahi", "theek",
+    "bilkul", "zaroor", "sure", "fine", "correct",
+})
+
+# Words meaning "I want to change / use a different address".
+# When detected in response to a saved-address confirm, the slot is NOT filled
+# so the next question asks for a fresh address.
+_SAVED_ADDRESS_NEGATIONS: frozenset[str] = frozenset({
+    "change", "no", "nahi", "nope", "edit", "badal", "nhi",
+    "different", "new", "alag", "nayi",
+})
+
+
+def _last_agent_offered_saved_address(conversation_history: list[dict]) -> bool:
+    """True if the most recent agent message offered a saved address for confirmation (Deliver to X? yes/change)."""
+    for m in reversed(conversation_history):
+        if m.get("role") in ("model", "assistant"):
+            text = (m.get("content") or "").lower()
+            return "deliver to" in text or ("(yes/change)" in text) or ("yes/change" in text)
+    return False
+
+
+def _last_agent_offered_payment(conversation_history: list[dict]) -> bool:
+    """True if the most recent agent message was a payment-method prompt."""
+    _PAYMENT_CUES = (
+        "how would you like to pay", "upi se denge", "kem bharvu",
+        "payment:", "pay via", "upi or", "upi ya",
+        "confirm? (yes)", "(yes)",
+    )
+    for m in reversed(conversation_history):
+        if m.get("role") in ("model", "assistant"):
+            text = (m.get("content") or "").lower()
+            return any(cue in text for cue in _PAYMENT_CUES)
+    return False
+
+
+def _last_agent_offered_upi_only(conversation_history: list[dict]) -> bool:
+    """True if the most recent agent message was a UPI-only payment prompt (no COD option)."""
+    _PAYMENT_CUES = (
+        "how would you like to pay", "upi se denge", "kem bharvu",
+        "payment:", "pay via", "upi?",
+        "confirm? (yes)",
+    )
+    _COD_CUES = ("cod", "cash on delivery", "cash", "delivery pe payment")
+    for m in reversed(conversation_history):
+        if m.get("role") in ("model", "assistant"):
+            text = (m.get("content") or "").lower()
+            has_payment_cue = any(cue in text for cue in _PAYMENT_CUES)
+            has_upi = "upi" in text
+            has_cod = any(cue in text for cue in _COD_CUES)
+            return (has_payment_cue or has_upi) and not has_cod
+    return False
+
+
 def _is_order_followup(conversation_history: list[dict]) -> bool:
     """
     True if the agent's most recent message asked for an order-collection
@@ -241,6 +413,25 @@ def _is_order_followup(conversation_history: list[dict]) -> bool:
     return False
 
 
+# Keywords that indicate a price objection / discount request mid-order.
+# Checked before the Groq call so common cases cost zero tokens.
+_PRICE_OBJECTION_KW: tuple[str, ...] = (
+    "price vadhare", "bahut mehenga", "too expensive", "very expensive",
+    "discount", "kam karo", "sasta", "sasta karo", "mehenga", "mahnga",
+    "costly", "cheap karo", "price kam", "rate kam", "concession",
+    "offer karo", "offer hai", "koi offer", "thoda kam", "reduce",
+    "lower price", "price ghata", "ghata do", "less price", "price less",
+    "itna mehnga", "aata matha",  # Gujarati: "too expensive"
+    "vhatu che", "ghanu mahghu",
+)
+
+
+def _is_price_objection(text: str) -> bool:
+    """Return True if the message is a price complaint / discount request."""
+    lower = text.lower()
+    return any(kw in lower for kw in _PRICE_OBJECTION_KW)
+
+
 async def classify_user_intent(
     user_text: str,
     next_slot: str,
@@ -251,7 +442,11 @@ async def classify_user_intent(
     conversation is in order_collection/awaiting_final_confirmation.
 
     Makes a single Groq call (llama-3.1-8b-instant, max_tokens=50) and returns
-    one of: ANSWER | NEW_PRODUCT | CANCEL | OTHER.
+    one of: ANSWER | NEW_PRODUCT | CANCEL | DISCOUNT_QUERY | OTHER.
+
+    DISCOUNT_QUERY is returned (without a Groq call) when the message contains
+    obvious price-objection / discount keywords so the webhook can acknowledge
+    and re-ask the current slot without touching the slot state.
 
     Args:
         user_text:           The customer's latest message.
@@ -259,9 +454,20 @@ async def classify_user_intent(
         pinned_product_name: Display name of the product currently being ordered.
 
     Returns:
-        One of "ANSWER", "NEW_PRODUCT", "CANCEL", "OTHER".
+        One of "ANSWER", "NEW_PRODUCT", "CANCEL", "DISCOUNT_QUERY", "OTHER".
         Falls back to "ANSWER" on any error so slot-filling is never blocked.
     """
+    # Fast keyword path — no LLM call needed for obvious price complaints.
+    if _is_price_objection(user_text):
+        return "DISCOUNT_QUERY"
+
+    # Fast SKU path — a SKU token is never a valid answer to any order slot.
+    # This fires reliably regardless of which slot is active, bypassing the LLM.
+    from app.services.catalogue_service import extract_skus_from_text as _extract_skus
+    _sku_hits = _extract_skus(user_text)
+    if _sku_hits:
+        return "NEW_PRODUCT"
+
     from openai import AsyncOpenAI
     from app.config import get_settings
 
@@ -270,11 +476,13 @@ async def classify_user_intent(
         f"We just asked the customer for: {next_slot}. "
         f"Customer replied: '{user_text}'.\n\n"
         "Classify into exactly one of:\n"
-        "- ANSWER: a direct answer to the question\n"
+        "- ANSWER: a direct answer to the question asked\n"
         "- NEW_PRODUCT: contains a different product code/SKU or asks about a different product\n"
         "- CANCEL: wants to cancel/stop the current order\n"
-        "- OTHER: anything else (general question, off-topic)\n\n"
-        "Respond with ONLY one word: ANSWER, NEW_PRODUCT, CANCEL, or OTHER."
+        "- DISCOUNT_QUERY: asks for a discount, lower price, or complains about price\n"
+        "- OFF_TOPIC: completely unrelated to the store, products, or order (e.g. 'What is Flutter?', trivia, news, tech questions) — NOT off-topic: product questions, greetings, names, addresses, sizes, colours, payment words\n"
+        "- OTHER: anything else that doesn't fit above\n\n"
+        "Respond with ONLY one word: ANSWER, NEW_PRODUCT, CANCEL, DISCOUNT_QUERY, OFF_TOPIC, or OTHER."
     )
 
     try:
@@ -291,10 +499,10 @@ async def classify_user_intent(
             temperature=0,
         )
         raw = (resp.choices[0].message.content or "").strip().upper()
-        if raw in ("ANSWER", "NEW_PRODUCT", "CANCEL", "OTHER"):
+        if raw in ("ANSWER", "NEW_PRODUCT", "CANCEL", "DISCOUNT_QUERY", "OFF_TOPIC", "OTHER"):
             return raw
         # If response contains the keyword, extract it
-        for label in ("NEW_PRODUCT", "CANCEL", "OTHER", "ANSWER"):
+        for label in ("NEW_PRODUCT", "CANCEL", "DISCOUNT_QUERY", "OFF_TOPIC", "OTHER", "ANSWER"):
             if label in raw:
                 return label
     except Exception as exc:
@@ -303,10 +511,72 @@ async def classify_user_intent(
     return "ANSWER"
 
 
+async def is_off_topic_message(
+    user_text: str,
+    stage: str,
+    pinned_product_name: str | None = None,
+) -> bool:
+    """
+    Return True when the customer's message is completely unrelated to the store.
+
+    Called for idle and completed stages where classify_user_intent is not used.
+    Uses llama-3.1-8b-instant (fast, cheap). Falls back to False on any error
+    so genuine product messages are never blocked.
+
+    NOT off-topic: product/shopping questions, greetings, affirmations, names,
+    addresses, sizes, colours, quantities, payment words, SKUs.
+    OFF_TOPIC: general knowledge, tech, news, politics, trivia, personal advice.
+
+    Args:
+        user_text:           The customer's message.
+        stage:               Current conversation stage.
+        pinned_product_name: Optional product context.
+
+    Returns:
+        True if the message is off-topic (should be deflected).
+    """
+    # Very short messages are almost never off-topic (greetings, affirmations)
+    if len(user_text.strip()) <= 3:
+        return False
+
+    store_context = f" in a store selling {pinned_product_name}" if pinned_product_name else " in an online store"
+
+    prompt = (
+        f"A customer{store_context} sent: '{user_text}'\n\n"
+        "Is this message completely unrelated to shopping, products, orders, delivery, or payment?\n"
+        "Answer YES only for: general knowledge questions, tech questions, news, politics, trivia, jokes, weather, recipes, medical advice.\n"
+        "Answer NO for: product questions, shopping queries, greetings, names, addresses, sizes, colours, payment words, SKUs, anything store-related.\n"
+        "Respond with only YES or NO."
+    )
+
+    try:
+        from openai import AsyncOpenAI
+        from app.config import get_settings
+
+        settings = get_settings()
+        _client = AsyncOpenAI(
+            api_key=settings.groq_api_key,
+            base_url="https://api.groq.com/openai/v1",
+            max_retries=0,
+        )
+        resp = await _client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=5,
+            temperature=0,
+        )
+        raw = (resp.choices[0].message.content or "").strip().upper()
+        return raw.startswith("YES")
+    except Exception as exc:
+        logger.warning("is_off_topic_message failed (defaulting False): %s", exc)
+        return False
+
+
 def detect_stage(
     conversation_history: list[dict],
     latest_message: str,
     stored_stage: str | None = None,
+    pending_product_sku: str | None = None,
 ) -> str:
     """
     Classify the current conversation stage using keyword heuristics.
@@ -315,6 +585,14 @@ def detect_stage(
     first (if the agent's last message asked for name/address/quantity the
     stage is forced to 'order_collection'), then falls back to keyword matching
     on the latest customer message.
+
+    Mode A / Mode B split:
+      - Mode A (browsing): greeting, product_inquiry, qualification, etc.
+        Product identification → show details + "order karein?" WITHOUT
+        entering order_collection.
+      - Mode B (order_collection): ONLY when the customer explicitly affirms
+        purchase intent after a product was shown (pending_product_sku set),
+        OR when the AI's last message already asked for an order-detail slot.
 
     Stage locking: once in 'payment' or 'completed', the stage never moves
     backward. Payment confirmation words ("paid", "ho gaya" etc.) in payment
@@ -325,6 +603,8 @@ def detect_stage(
         latest_message:       The customer's most recent message text.
         stored_stage:         The stage persisted on the Conversation row from
                               the previous turn — used for forward-only locking.
+        pending_product_sku:  SKU pinned from the previous turn (if any).
+                              Used to gate Mode A → Mode B transition.
 
     Returns:
         One of the STAGES keys.
@@ -353,6 +633,32 @@ def detect_stage(
             return "order_collection"
         # Customer said something else (off-topic, question) — stay put.
         return "awaiting_final_confirmation"
+
+    # ── Mode A → Mode B transition ────────────────────────────────────────────
+    # Only cross into order_collection when a product was already shown
+    # (pending_product_sku set) AND the customer explicitly affirms purchase.
+    if pending_product_sku and stored_stage in _BROWSING_STAGES:
+        msg_lower_stripped = latest_message.lower().strip()
+        words_set = set(msg_lower_stripped.split())
+
+        _offered = _last_ai_offered_order(conversation_history)
+
+        # Affirmation after order offer → enter order_collection
+        if _offered and (words_set & _PURCHASE_AFFIRMATION):
+            return "order_collection"
+
+        # Decline after order offer → stay in browsing (not objection_handling)
+        if _offered and (words_set & _DECLINE_ORDER):
+            return "product_inquiry"
+
+        # Explicit quantity + product intent (e.g. "2 chahiye", "3 pieces lena")
+        _has_qty = bool(re.search(r'\b([1-9]\d?)\b', msg_lower_stripped))
+        _has_qty_kw = any(kw in msg_lower_stripped for kw in (
+            "piece", "chahiye", "want", "lena", "order", "chahte",
+            "dedo", "bhejo", "lenge", "joiye",
+        ))
+        if _has_qty and _has_qty_kw:
+            return "order_collection"
 
     if _is_order_followup(conversation_history):
         return "order_collection"
@@ -407,6 +713,7 @@ def extract_order_field(
     variant_info: dict | None = None,
     conversation_history: list[dict] | None = None,
     available_stock: int | None = None,
+    saved_address: str | None = None,
 ) -> tuple[str, object] | None:
     """
     Strict slot-filling extractor: determines which slot we're currently
@@ -426,6 +733,9 @@ def extract_order_field(
         conversation_history: List of {'role', 'content'} dicts, most recent last.
         available_stock:      Units available for the pinned product/variant.
                               Used for quantity validation only.
+        saved_address:        Previously saved delivery address from customer profile.
+                              When set and the agent just offered this address for
+                              confirmation, affirmative replies fill it directly.
 
     Returns:
         Tuple or None as described above.
@@ -447,8 +757,10 @@ def extract_order_field(
     # ── QUANTITY ──────────────────────────────────────────────────────────────
     if next_slot == "quantity":
         digit_match = re.search(r"\b(\d{1,4})\b", text)
-        qty = int(digit_match.group(1)) if digit_match else 1
-        qty = max(1, qty)
+        if not digit_match:
+            # No numeric digit found — don't assume 1; re-ask the slot.
+            return None
+        qty = max(1, int(digit_match.group(1)))
         if available_stock is not None and qty > available_stock:
             return ("quantity_invalid", available_stock)
         return ("pending_order_quantity", qty)
@@ -488,18 +800,33 @@ def extract_order_field(
                 name_part = text[:comma_idx].strip()
                 if is_valid_name(name_part):
                     return ("customer_name", name_part.title())
+
+        # Strip filler prefixes ("sure, I am", "my name is", "mera naam hai" etc.)
+        # before validating — "sure, I am Amit" → candidate "Amit".
+        candidate = _strip_name_prefixes(text)
+        candidate_words = candidate.split()
         looks_like_name = (
-            1 <= len(words) <= 4
-            and all(w.replace(".", "").isalpha() for w in words)
-            and is_valid_name(text)
+            1 <= len(candidate_words) <= 4
+            and all(w.replace(".", "").isalpha() for w in candidate_words)
+            and is_valid_name(candidate)
         )
         if looks_like_name:
-            return ("customer_name", text.title())
+            return ("customer_name", candidate.title())
         return None
 
     # ── DELIVERY ADDRESS ─────────────────────────────────────────────────────
     if next_slot == "delivery_address":
         history = conversation_history or []
+        # If agent offered a saved address ("Deliver to X? yes/change"):
+        #   • affirmation  → write saved address (write-on-confirm fix)
+        #   • negation     → return None; next prompt will ask for new address
+        #   • anything else (free-text address) → fall through to length check
+        if saved_address and _last_agent_offered_saved_address(history):
+            _reply = text.lower().strip()
+            if _reply in _SAVED_ADDRESS_AFFIRMATIONS:
+                return ("delivery_address", saved_address)
+            if _reply in _SAVED_ADDRESS_NEGATIONS:
+                return None  # customer wants to enter a different address
         # If last agent message asked for name+address and name wasn't extracted
         # yet (customer skipped the name turn), split the reply.
         if _last_agent_asked_name_and_address(history) and not conversation.customer_name:
@@ -523,6 +850,15 @@ def extract_order_field(
             return ("payment_method", "COD")
         if any(kw in upper for kw in ("UPI", "GPAY", "PAYTM", "PHONEPE", "PHONEPAY")):
             return ("payment_method", "UPI")
+        # Confirm-style slot: when the agent offered a single implied payment method
+        # (UPI-only prompt), an affirmative reply fills UPI — same pattern as
+        # saved-address confirmation.
+        history = conversation_history or []
+        if text_lower.strip() in _SLOT_AFFIRMATIVES:
+            if _last_agent_offered_upi_only(history):
+                return ("payment_method", "UPI")
+            # Both UPI + COD were offered and customer said "yes" — ambiguous.
+            # Return None so the agent re-asks with explicit options.
         return None
 
     return None
@@ -571,10 +907,10 @@ def get_next_slot_prompt_instruction(
 
     if next_slot == "quantity":
         return (
-            "CURRENT SLOT: QUANTITY\n"
-            "Ask ONLY: 'How many pieces would you like?' (or Hindi/Gujarati equivalent).\n"
+            "CRITICAL — IGNORE CONVERSATION FLOW: The quantity has NOT been recorded yet.\n"
+            "You MUST ask ONLY: 'How many pieces would you like?' (or Hindi/Gujarati equivalent).\n"
             "Do NOT mention color, size, name, address, or payment.\n"
-            "Do NOT confirm the order or show a summary.\n"
+            "Do NOT confirm the order or show a summary. Do NOT assume quantity = 1.\n"
             "ONE question only."
         )
 
@@ -614,9 +950,10 @@ def get_next_slot_prompt_instruction(
 
     if next_slot == "customer_name":
         return (
-            "CURRENT SLOT: CUSTOMER NAME\n"
-            "Ask ONLY for the customer's name.\n"
-            "Do NOT ask for address or payment yet.\n"
+            "CRITICAL — IGNORE CONVERSATION FLOW: The customer's name has NOT been recorded yet.\n"
+            "You MUST ask for their name. Do NOT mention payment, UPI, order summary, confirmation, "
+            "or order status. Do NOT invent or assume a name from the conversation.\n"
+            "Ask ONLY: 'May I have your name please?' (or Hindi/Gujarati equivalent).\n"
             "Example (English): 'May I have your name please?'\n"
             "Example (Hindi): 'Aapka naam kya hai?'\n"
             "Example (Gujarati): 'Tamaru naam shu chhe?'"
@@ -624,9 +961,10 @@ def get_next_slot_prompt_instruction(
 
     if next_slot == "delivery_address":
         return (
-            "CURRENT SLOT: DELIVERY ADDRESS\n"
-            "Ask ONLY for the delivery address.\n"
-            "Do NOT ask for payment yet.\n"
+            "CRITICAL — IGNORE CONVERSATION FLOW: The delivery address has NOT been recorded yet.\n"
+            "You MUST ask for the delivery address. Do NOT mention payment, UPI, confirmation, "
+            "or order status.\n"
+            "Ask ONLY: 'What is your delivery address?' (or Hindi/Gujarati equivalent).\n"
             "Example (English): 'What is your delivery address?'\n"
             "Example (Hindi): 'Delivery address kya hai?'\n"
             "Example (Gujarati): 'Delivery address shu chhe?'"
@@ -693,9 +1031,13 @@ def get_order_slots(variant_info: dict) -> list[str]:
     """
     Return the ordered list of slots that must be filled for this product.
 
-    Base order: quantity → (color?) → (size?) → (material?) → customer_name
-    → delivery_address → payment_method.  Variant slots are only included when
-    the matching needs_* flag is True in variant_info.
+    For variant products (needs_color / needs_size / needs_material): variant
+    attributes come FIRST so quantity is validated against the correct variant
+    stock, not meaningless product-level stock.
+
+    Order: (color?) → (size?) → (material?) → quantity → customer_name
+    → delivery_address → payment_method.  Non-variant products keep the
+    simpler: quantity → customer_name → delivery_address → payment_method.
 
     Args:
         variant_info: Dict returned by catalogue_service.get_product_variant_info.
@@ -703,13 +1045,20 @@ def get_order_slots(variant_info: dict) -> list[str]:
     Returns:
         Ordered list of slot name strings.
     """
-    slots = ["quantity"]
-    if variant_info.get("needs_color"):
-        slots.append("color")
-    if variant_info.get("needs_size"):
-        slots.append("size")
-    if variant_info.get("needs_material"):
-        slots.append("material")
+    has_variants = (
+        variant_info.get("needs_color")
+        or variant_info.get("needs_size")
+        or variant_info.get("needs_material")
+    )
+    slots: list[str] = []
+    if has_variants:
+        if variant_info.get("needs_color"):
+            slots.append("color")
+        if variant_info.get("needs_size"):
+            slots.append("size")
+        if variant_info.get("needs_material"):
+            slots.append("material")
+    slots.append("quantity")
     slots += ["customer_name", "delivery_address", "payment_method"]
     return slots
 
@@ -783,6 +1132,14 @@ def get_stage_instructions(
     collected: dict | None = None,
     accepts_cod: bool = False,
     upi_id: str | None = None,
+    upi_display_name: str | None = None,
+    cod_limit: int | None = None,
+    accepts_upi: bool = True,
+    accepts_bank_transfer: bool = False,
+    bank_account_name: str | None = None,
+    bank_account_number: str | None = None,
+    bank_ifsc: str | None = None,
+    payment_instructions: str | None = None,
     order_total: float = 0,
     order_product_name: str = "",
     order_qty: int = 0,
@@ -792,13 +1149,20 @@ def get_stage_instructions(
     Return focused, stage-specific instructions to embed in the system prompt.
 
     Args:
-        stage:         Current conversation stage key.
-        business_type: Client's business type (e.g. 'textile').
-        products:      List of product dicts for context.
-        collected:     Optional dict with 'quantity', 'name', 'address' keys
-                       already saved on the conversation (order_collection only).
-        accepts_cod:   Whether this client accepts Cash on Delivery.
-        upi_id:        Client's UPI handle to show in payment instructions.
+        stage:              Current conversation stage key.
+        business_type:      Client's business type (e.g. 'textile').
+        products:           List of product dicts for context.
+        collected:          Optional dict with 'quantity', 'name', 'address' keys.
+        accepts_cod:        Whether this client accepts Cash on Delivery.
+        upi_id:             Client's UPI handle.
+        upi_display_name:   Name shown on UPI apps next to UPI ID.
+        cod_limit:          Max order value eligible for COD (None = no limit).
+        accepts_upi:        Whether UPI is enabled.
+        accepts_bank_transfer: Whether bank transfer is enabled.
+        bank_account_name:  Bank account holder name.
+        bank_account_number: Bank account number.
+        bank_ifsc:          Bank IFSC code.
+        payment_instructions: Free-text shown after payment details.
 
     Returns:
         Multi-line instruction string.
@@ -806,10 +1170,14 @@ def get_stage_instructions(
     if stage == "greeting":
         return """GREETING STAGE INSTRUCTIONS:
 - Give warm welcome with business name
-- Ask ONE open question to understand need
-- Example: "Namaste! Aaj aap kya dekhna chahenge? 🙏"
+- Ask ONE open question: "What are you looking for today?" (or Hindi/Gujarati equivalent)
+- DO NOT ask for the customer's name — name is only collected during order placement
 - DO NOT list all products immediately
-- Build rapport first"""
+- DO NOT mention stock counts or quantities
+- Build rapport first
+- Example (Hindi): "Namaste! 🙏 Aaj kya dekhna chahenge?"
+- Example (English): "Welcome! What are you looking for today?"
+- If customer has no specific product in mind, offer to share the catalogue link"""
 
     if stage == "product_inquiry":
         return """PRODUCT INQUIRY STAGE INSTRUCTIONS:
@@ -817,17 +1185,20 @@ def get_stage_instructions(
 - For each product mention:
   → Name + key feature
   → Price (clearly with ₹)
-  → EXACT stock count from the catalogue above (never invent or round it)
-- Create mild urgency only if the catalogue actually shows low stock (≤5 pcs):
-  English: "Only X pieces left — order now to secure yours!"
-  Hindi/Hinglish: "Sirf X pieces bacha hai — jaldi order karein!"
-  Gujarati: "Fakt X pieces bachi chhe — haji order karo!"
-  ⚠️ Use ONLY the phrase matching the customer's language. NEVER use the Hindi phrase in an English reply.
+  → Available colors and sizes (from the catalogue above) — list them as options
+- ⚠️ STOCK PRIVACY RULE: When first showing a product, do NOT mention stock/piece counts.
+  NEVER say "Only X pieces left", "X pieces available", "stock mein X hai", or any number + pieces.
+  Only mention available colors/sizes/materials as options.
+  If stock is genuinely limited, say "limited stock" or "limited availability" — never a number.
+  EXCEPTION: If the customer explicitly asks "how many available", "stock hai kya", "kitne piece
+  available hain" — answer TRUTHFULLY with the exact number from catalogue data.
 - End with ONE closing question: "Would you like to place an order?" (or language equivalent)
 - NEVER ask about color, size, or quantity here.
   Color/size/quantity are collected in order_collection ONLY.
   Mentioning them here confuses the sequence.
-- NEVER dump entire catalogue"""
+- NEVER dump entire catalogue
+- If customer just said NO to an order offer: acknowledge warmly ("No problem!"), then ask
+  if they'd like to see other items or browse the full catalogue. Do NOT push the same product."""
 
     if stage == "qualification":
         return """QUALIFICATION STAGE INSTRUCTIONS:
@@ -906,12 +1277,12 @@ CRITICAL: Reply in the SAME LANGUAGE as the customer (see LANGUAGE RULE at top o
         if has_variants and needs_color:
             color_list = ", ".join(avail_colors) if avail_colors else "see catalogue"
             variant_step_color = f"""
-STEP V1 — COLOR (ask this AFTER quantity, if color is not yet collected):
+STEP V1 — COLOR (ask this FIRST — before quantity):
   English:  "Which color would you like? Available: {color_list}"
   Hindi:    "Kaunsa color chahiye? Available: {color_list}"
   Gujarati: "Kayo color joiye? Available: {color_list}"
   NEVER suggest colors not in this list: {color_list}
-  If customer picks an out-of-stock color, tell them and repeat the available list.
+  If customer picks an unavailable color, tell them and repeat the available list.
 """
         else:
             variant_step_color = "  (This product has no color variants — NEVER ask about color)\n"
@@ -919,23 +1290,23 @@ STEP V1 — COLOR (ask this AFTER quantity, if color is not yet collected):
         if has_variants and needs_size:
             size_list = ", ".join(avail_sizes) if avail_sizes else "see catalogue"
             variant_step_size = f"""
-STEP V2 — SIZE (ask this AFTER color, if size is not yet collected):
+STEP V2 — SIZE (ask this after color, before quantity):
   English:  "Which size? Available: {size_list}"
   Hindi:    "Kaunsa size chahiye? Available: {size_list}"
   Gujarati: "Kayu size joiye? Available: {size_list}"
   NEVER suggest sizes not in this list: {size_list}
-  If customer picks an out-of-stock size, tell them and repeat the available list.
+  If customer picks an unavailable size, tell them and repeat the available list.
 """
         else:
             variant_step_size = "  (This product has no size variants — NEVER ask about size)\n"
 
-        # Build the sequence description
+        # Build the sequence description — variants come BEFORE quantity
         if has_variants and needs_color and needs_size:
-            sequence_line = "STEP 1 → QUANTITY → STEP V1 → COLOR → STEP V2 → SIZE → STEP 2 → NAME → STEP 3 → ADDRESS → SUMMARY → CONFIRM"
+            sequence_line = "STEP V1 → COLOR → STEP V2 → SIZE → STEP 1 → QUANTITY → STEP 2 → NAME → STEP 3 → ADDRESS → SUMMARY → CONFIRM"
         elif has_variants and needs_color:
-            sequence_line = "STEP 1 → QUANTITY → STEP V1 → COLOR → STEP 2 → NAME → STEP 3 → ADDRESS → SUMMARY → CONFIRM"
+            sequence_line = "STEP V1 → COLOR → STEP 1 → QUANTITY → STEP 2 → NAME → STEP 3 → ADDRESS → SUMMARY → CONFIRM"
         elif has_variants and needs_size:
-            sequence_line = "STEP 1 → QUANTITY → STEP V2 → SIZE → STEP 2 → NAME → STEP 3 → ADDRESS → SUMMARY → CONFIRM"
+            sequence_line = "STEP V2 → SIZE → STEP 1 → QUANTITY → STEP 2 → NAME → STEP 3 → ADDRESS → SUMMARY → CONFIRM"
         else:
             sequence_line = "STEP 1 → QUANTITY → STEP 2 → NAME → STEP 3 → ADDRESS → SUMMARY → CONFIRM"
 
@@ -977,18 +1348,14 @@ VARIANT RULE — READ FIRST:
 Check the ALREADY COLLECTED note below before asking anything.
 Only ask the FIRST item in the sequence that is still missing.
 
-╔══════════════════════════════════════════════════════════╗
-║  STEP 1 IS ALWAYS QUANTITY — ASK THIS FIRST, NO MATTER  ║
-║  WHAT. NEVER ASK COLOR OR SIZE BEFORE QUANTITY.          ║
-╚══════════════════════════════════════════════════════════╝
-
-STEP 1 — QUANTITY (ask this if quantity is NOT yet collected):
+{variant_step_color}{variant_step_size}
+STEP 1 — QUANTITY (ask this AFTER variant attributes if any, before name/address):
   English:  "How many pieces would you like?"
   Hindi:    "Kitne pieces chahiye?"
-  Gujarati: "Ketla pieces joiye?"
+  Gujarati: "Etla pieces joiye?"
   NEVER assume quantity = 1. NEVER say "I can offer you 1 piece".
-  ⚠️ DO NOT ask color or size until quantity is collected.
-{variant_step_color}{variant_step_size}
+  Quantity is validated against the SELECTED variant's stock, not total stock.
+
 STEP 2 — NAME (ask this after quantity+variants, if name is NOT yet collected):
   English:  "May I have your name please?"
   Hindi:    "Aapka naam kya hai?"
@@ -1035,56 +1402,115 @@ QUANTITY VALIDATION:
   → NEVER confirm an impossible quantity."""
 
     if stage == "payment":
-        if upi_id:
-            upi_line = upi_id
-            upi_pending = f"UPI ID: {upi_id}"
-        else:
-            upi_line = "(UPI ID not configured — tell customer to contact us)"
-            upi_pending = "(UPI ID not configured — tell customer to contact us)"
-
         amount_display = f"₹{int(order_total):,}" if order_total > 0 else "₹[CHECK ORDER SUMMARY ABOVE FOR AMOUNT]"
-        cod_accept_note = (
-            "This business accepts COD — confirm COD order immediately when chosen."
-            if accepts_cod
-            else "This business does NOT accept COD. If customer asks for COD, say: 'We only accept UPI payments. Please pay via GPay, PhonePe, or Paytm.'"
+
+        # Determine which payment methods are available for this order
+        cod_eligible = (
+            accepts_cod
+            and (cod_limit is None or order_total <= cod_limit)
         )
+        upi_eligible = accepts_upi and bool(upi_id)
+        bank_eligible = (
+            accepts_bank_transfer
+            and bool(bank_account_name and bank_account_number and bank_ifsc)
+        )
+
+        # Build the list of available methods
+        method_lines = []
+        if upi_eligible:
+            method_lines.append("💳 UPI (GPay / PhonePe / Paytm)")
+        if cod_eligible:
+            method_lines.append("🚚 Cash on Delivery")
+        if bank_eligible:
+            method_lines.append("🏦 Bank Transfer")
+
+        methods_available = "\n".join(f"  - {m}" for m in method_lines) if method_lines else "  (none configured — tell customer to contact us)"
+
+        # UPI details
+        upi_name_part = f" ({upi_display_name})" if upi_display_name else ""
+        upi_line = f"{upi_id}{upi_name_part}" if upi_id else "(UPI ID not configured)"
+
+        # Bank transfer details
+        bank_details = (
+            f"Account Name: {bank_account_name}\nAccount Number: {bank_account_number}\nIFSC: {bank_ifsc}"
+            if bank_eligible else ""
+        )
+
+        # COD limit note
+        if accepts_cod and cod_limit and order_total > cod_limit:
+            cod_note = f"COD is NOT available for this order (limit is ₹{cod_limit:,}, order is {amount_display}). Customer must pay via UPI or bank transfer."
+        elif accepts_cod:
+            cod_note = "COD is available — confirm COD order immediately when chosen. No PAID step needed for COD."
+        else:
+            cod_note = "COD is NOT accepted by this business."
+
+        instructions_note = f"\n{payment_instructions}" if payment_instructions else ""
+
+        # Determine default action: if only one method, skip the choice
+        if len(method_lines) == 1:
+            if upi_eligible:
+                default_action = f"""→ Share UPI details immediately:
+  "Please pay {amount_display} via UPI:
+  UPI ID: {upi_line}
+  Send via GPay, PhonePe, or Paytm.{instructions_note}
+  Reply PAID when done. ✅\""""
+            elif cod_eligible:
+                default_action = f"""→ Confirm COD immediately:
+  "Your order will be delivered with Cash on Delivery.
+  Please keep {amount_display} ready at the time of delivery.{instructions_note}"
+  (No PAID step — move to completed.)"""
+            else:
+                default_action = f"""→ Share bank transfer details immediately:
+  "Please transfer {amount_display}:
+  {bank_details}{instructions_note}
+  Reply PAID when done. ✅\""""
+        else:
+            default_action = f"""→ Show payment options and ask customer to choose:
+  "Please select your payment method:
+  {chr(10).join(method_lines)}
+  Reply with your choice."
+
+When customer picks UPI:
+  "Please pay {amount_display}:
+  UPI ID: {upi_line}
+  Send via GPay, PhonePe, or Paytm.{instructions_note}
+  Reply PAID when done. ✅"
+
+When customer picks Cash on Delivery:
+  "Your order will be delivered with Cash on Delivery.
+  Please keep {amount_display} ready at the time of delivery.{instructions_note}"
+  (No PAID step — order is confirmed immediately for COD.)
+
+When customer picks Bank Transfer:
+  "Please transfer {amount_display}:
+  {bank_details}{instructions_note}
+  Reply PAID when done. ✅\""""
 
         return f"""PAYMENT STAGE INSTRUCTIONS:
 
 ╔══════════════════════════════════════════════════════════╗
 ║  AMOUNT TO COLLECT: {amount_display:<40}║
-║  UPI ID: {upi_line:<51}║
 ╚══════════════════════════════════════════════════════════╝
 
-CRITICAL: NEVER write ₹[amount] or ₹[Amount] — that is WRONG.
-Always use the real amount: {amount_display}
+CRITICAL: NEVER write ₹[amount] or ₹[Amount] — always use: {amount_display}
 
-CRITICAL: Do NOT ask "Would you like to proceed?" more than once.
-Once in payment stage → share UPI ID immediately, do NOT ask again.
+AVAILABLE PAYMENT METHODS FOR THIS ORDER:
+{methods_available}
 
-DEFAULT ACTION (UPI — most common):
-→ Send payment instructions RIGHT NOW without waiting for customer to choose:
-  Show order summary first, then:
-  "Please pay {amount_display} via UPI:
-  UPI ID: {upi_line}
-  Send via GPay, PhonePe, or Paytm.
-  Reply PAID when done. ✅"
+{cod_note}
 
-{cod_accept_note}
+{default_action}
 
 When customer says PAID / done / sent / transferred / ho gaya:
 → Confirm immediately: "Payment received! ✅ Order confirmed. Delivery in 3-5 days. Thank you!"
-→ Stage moves to completed.
 
 PENDING PAYMENT RULE:
-If customer asks ANYTHING off-topic while UPI payment is pending:
-→ Answer in ONE sentence, then IMMEDIATELY redirect:
-  "[Answer]. Please complete payment first — UPI ID: {upi_line} ({amount_display})"
+If customer asks ANYTHING off-topic while payment is pending:
+→ Answer in ONE sentence, then redirect to payment.
 → Do NOT show new products until payment is confirmed.
 
 NEVER loop on payment question.
-NEVER say "Our team will share UPI ID shortly" — share it NOW.
-NEVER say ₹[amount] — use {amount_display}."""
+NEVER say "Our team will share payment details shortly" — share them NOW."""
 
     if stage == "completed":
         return """COMPLETED STAGE INSTRUCTIONS:

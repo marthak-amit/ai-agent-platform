@@ -123,6 +123,18 @@ class ClientOut(BaseModel):
     catalogue_theme_color: str = "#6366F1"
     accepts_cod: bool = False
     upi_id: Optional[str] = None
+    upi_display_name: Optional[str] = None
+    cod_limit: Optional[int] = None
+    accepts_upi: bool = True
+    accepts_bank_transfer: bool = False
+    bank_account_name: Optional[str] = None
+    bank_account_number: Optional[str] = None  # masked: last 4 digits only
+    bank_ifsc: Optional[str] = None
+    razorpay_key_id: Optional[str] = None
+    razorpay_key_secret: Optional[str] = None  # always "****" in GET responses
+    payment_instructions: Optional[str] = None
+    delivery_days_min: Optional[int] = 3
+    delivery_days_max: Optional[int] = 7
     onboarding_step: int = 0
     onboarding_completed: bool = False
     plan_slug: str = "starter"
@@ -131,6 +143,18 @@ class ClientOut(BaseModel):
     whatsapp_number: Optional[str] = None
 
     model_config = {"from_attributes": True}
+
+    @classmethod
+    def from_client(cls, client: "Client") -> "ClientOut":
+        """Build ClientOut, masking sensitive payment fields before exposure."""
+        obj = cls.model_validate(client)
+        # Mask bank account number — show only last 4 digits
+        if obj.bank_account_number:
+            obj.bank_account_number = "****" + obj.bank_account_number[-4:]
+        # Never expose Razorpay secret key
+        if obj.razorpay_key_secret:
+            obj.razorpay_key_secret = "****"
+        return obj
 
 
 class UpdateMeRequest(BaseModel):
@@ -156,6 +180,18 @@ class UpdateMeRequest(BaseModel):
     catalogue_theme_color: Optional[str] = None
     accepts_cod: Optional[bool] = None
     upi_id: Optional[str] = None
+    upi_display_name: Optional[str] = None
+    cod_limit: Optional[int] = None
+    accepts_upi: Optional[bool] = None
+    accepts_bank_transfer: Optional[bool] = None
+    bank_account_name: Optional[str] = None
+    bank_account_number: Optional[str] = None
+    bank_ifsc: Optional[str] = None
+    razorpay_key_id: Optional[str] = None
+    razorpay_key_secret: Optional[str] = None
+    payment_instructions: Optional[str] = None
+    delivery_days_min: Optional[int] = None
+    delivery_days_max: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -263,14 +299,14 @@ async def logout(
 @router.get("/me", response_model=ClientOut)
 async def get_me(
     current_client: Annotated[Client, Depends(get_current_client)],
-) -> Client:
+) -> ClientOut:
     """
     Return the currently authenticated client's profile.
 
     Returns:
-        ClientOut for the decoded JWT subject.
+        ClientOut for the decoded JWT subject (sensitive fields masked).
     """
-    return current_client
+    return ClientOut.from_client(current_client)
 
 
 @router.patch("/me", response_model=ClientOut)
@@ -339,7 +375,33 @@ async def update_me(
         current_client.accepts_cod = body.accepts_cod
     if body.upi_id is not None:
         current_client.upi_id = body.upi_id
+    if body.upi_display_name is not None:
+        current_client.upi_display_name = body.upi_display_name
+    if body.cod_limit is not None:
+        current_client.cod_limit = body.cod_limit
+    if body.accepts_upi is not None:
+        current_client.accepts_upi = body.accepts_upi
+    if body.accepts_bank_transfer is not None:
+        current_client.accepts_bank_transfer = body.accepts_bank_transfer
+    if body.bank_account_name is not None:
+        current_client.bank_account_name = body.bank_account_name
+    # Only save if not the masked placeholder
+    if body.bank_account_number is not None and not body.bank_account_number.startswith("****"):
+        current_client.bank_account_number = body.bank_account_number
+    if body.bank_ifsc is not None:
+        current_client.bank_ifsc = body.bank_ifsc
+    if body.razorpay_key_id is not None:
+        current_client.razorpay_key_id = body.razorpay_key_id
+    # Only save if not the masked placeholder
+    if body.razorpay_key_secret is not None and body.razorpay_key_secret != "****":
+        current_client.razorpay_key_secret = body.razorpay_key_secret
+    if body.payment_instructions is not None:
+        current_client.payment_instructions = body.payment_instructions
+    if body.delivery_days_min is not None:
+        current_client.delivery_days_min = body.delivery_days_min
+    if body.delivery_days_max is not None:
+        current_client.delivery_days_max = body.delivery_days_max
 
     await db.commit()
     await db.refresh(current_client)
-    return current_client
+    return ClientOut.from_client(current_client)

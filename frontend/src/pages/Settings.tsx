@@ -4,7 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { api, updateProfile } from "../api/client";
 import Layout from "../components/Layout";
 import { useAuth } from "../context/AuthContext";
-import { User, Bot, Globe, CheckCircle2, Store, Copy, ExternalLink, FileDown, Palette, Award, FlaskConical, X, ChevronRight } from "lucide-react";
+import { User, Bot, Globe, CheckCircle2, Store, Copy, ExternalLink, FileDown, Palette, Award, FlaskConical, X, ChevronRight, CreditCard, AlertTriangle } from "lucide-react";
 import QRCode from "qrcode";
 import { SandboxUI } from "./Sandbox";
 
@@ -14,12 +14,13 @@ const LANG_OPTIONS = [
   { code: "gu", label: "Gujarati", native: "ગુજરાતી" },
 ];
 
-type Tab = "profile" | "agent" | "language" | "catalogue" | "compare";
+type Tab = "profile" | "agent" | "language" | "catalogue" | "payment" | "compare";
 
 const TABS: { key: Tab; label: string; icon: typeof User }[] = [
   { key: "profile", label: "Profile", icon: User },
   { key: "agent", label: "Agent Config", icon: Bot },
   { key: "catalogue", label: "Catalogue", icon: Store },
+  { key: "payment", label: "Payment", icon: CreditCard },
   { key: "language", label: "Language", icon: Globe },
   { key: "compare", label: "Why Us", icon: Award },
 ];
@@ -51,8 +52,24 @@ export default function Settings() {
   // Payment settings state
   const [acceptsCod, setAcceptsCod] = useState(false);
   const [upiId, setUpiId] = useState("");
+  const [upiDisplayName, setUpiDisplayName] = useState("");
+  const [codLimit, setCodLimit] = useState<number | "">("");
+  const [acceptsUpi, setAcceptsUpi] = useState(true);
+  const [acceptsBankTransfer, setAcceptsBankTransfer] = useState(false);
+  const [bankAccountName, setBankAccountName] = useState("");
+  const [bankAccountNumber, setBankAccountNumber] = useState("");
+  const [bankIfsc, setBankIfsc] = useState("");
+  const [razorpayKeyId, setRazorpayKeyId] = useState("");
+  const [razorpayKeySecret, setRazorpayKeySecret] = useState("");
+  const [paymentInstructions, setPaymentInstructions] = useState("");
   const [paymentSaving, setPaymentSaving] = useState(false);
   const [paymentSaved, setPaymentSaved] = useState(false);
+
+  // Delivery time state
+  const [deliveryMin, setDeliveryMin] = useState<number>(3);
+  const [deliveryMax, setDeliveryMax] = useState<number>(7);
+  const [deliverySaving, setDeliverySaving] = useState(false);
+  const [deliverySaved, setDeliverySaved] = useState(false);
 
   // Catalogue tab state
   const [catSlug, setCatSlug] = useState("");
@@ -71,8 +88,27 @@ export default function Settings() {
       setCatSlug(client.catalogue_slug ?? "");
       setCatTagline(client.catalogue_tagline ?? "");
       setCatTheme(client.catalogue_theme_color ?? "#6366F1");
-      setAcceptsCod((client as { accepts_cod?: boolean }).accepts_cod ?? false);
-      setUpiId((client as { upi_id?: string }).upi_id ?? "");
+      const c = client as {
+        accepts_cod?: boolean; upi_id?: string; upi_display_name?: string;
+        cod_limit?: number | null; accepts_upi?: boolean; accepts_bank_transfer?: boolean;
+        bank_account_name?: string; bank_account_number?: string; bank_ifsc?: string;
+        razorpay_key_id?: string; razorpay_key_secret?: string; payment_instructions?: string;
+        delivery_days_min?: number; delivery_days_max?: number;
+      };
+      setAcceptsCod(c.accepts_cod ?? false);
+      setUpiId(c.upi_id ?? "");
+      setUpiDisplayName(c.upi_display_name ?? "");
+      setCodLimit(c.cod_limit ?? "");
+      setAcceptsUpi(c.accepts_upi ?? true);
+      setAcceptsBankTransfer(c.accepts_bank_transfer ?? false);
+      setBankAccountName(c.bank_account_name ?? "");
+      setBankAccountNumber(c.bank_account_number ?? "");
+      setBankIfsc(c.bank_ifsc ?? "");
+      setRazorpayKeyId(c.razorpay_key_id ?? "");
+      setRazorpayKeySecret(c.razorpay_key_secret ?? "");
+      setPaymentInstructions(c.payment_instructions ?? "");
+      setDeliveryMin(c.delivery_days_min ?? 3);
+      setDeliveryMax(c.delivery_days_max ?? 7);
     }
   }, [client]);
 
@@ -149,11 +185,36 @@ export default function Settings() {
   async function handlePaymentSave(e: React.FormEvent) {
     e.preventDefault();
     setPaymentSaving(true);
-    await updateProfile({ accepts_cod: acceptsCod, upi_id: upiId });
+    await updateProfile({
+      accepts_upi: acceptsUpi,
+      upi_id: upiId,
+      upi_display_name: upiDisplayName,
+      accepts_cod: acceptsCod,
+      cod_limit: codLimit === "" ? undefined : Number(codLimit),
+      accepts_bank_transfer: acceptsBankTransfer,
+      bank_account_name: bankAccountName,
+      // Only send if changed from the masked placeholder
+      ...(bankAccountNumber && !bankAccountNumber.startsWith("****") ? { bank_account_number: bankAccountNumber } : {}),
+      bank_ifsc: bankIfsc,
+      razorpay_key_id: razorpayKeyId,
+      // Only send if changed from the masked placeholder
+      ...(razorpayKeySecret && razorpayKeySecret !== "****" ? { razorpay_key_secret: razorpayKeySecret } : {}),
+      payment_instructions: paymentInstructions,
+    } as Parameters<typeof updateProfile>[0]);
     await refreshProfile();
     setPaymentSaving(false);
     setPaymentSaved(true);
     setTimeout(() => setPaymentSaved(false), 3000);
+  }
+
+  async function handleDeliverySave(e: React.FormEvent) {
+    e.preventDefault();
+    setDeliverySaving(true);
+    await updateProfile({ delivery_days_min: deliveryMin, delivery_days_max: deliveryMax } as Parameters<typeof updateProfile>[0]);
+    await refreshProfile();
+    setDeliverySaving(false);
+    setDeliverySaved(true);
+    setTimeout(() => setDeliverySaved(false), 3000);
   }
 
   async function handleSendBriefingNow() {
@@ -365,50 +426,53 @@ export default function Settings() {
             </form>
           )}
 
+
+          {/* Delivery time section */}
           {activeTab === "agent" && (
-            <form onSubmit={handlePaymentSave} className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 max-w-xl flex flex-col gap-5 mt-4">
+            <form onSubmit={handleDeliverySave} className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 max-w-xl flex flex-col gap-5 mt-4">
               <div>
-                <h3 className="text-sm font-semibold text-gray-800 mb-1">Payment Settings</h3>
-                <p className="text-xs text-gray-400">Most Surat textile traders prefer UPI-only. Enable COD only if you want to offer cash on delivery.</p>
+                <h3 className="text-sm font-semibold text-gray-800 mb-1">Delivery Time</h3>
+                <p className="text-xs text-gray-400">Default delivery time shown to customers in WhatsApp messages and the public catalogue.</p>
               </div>
-
-              <div className="flex items-center justify-between bg-amber-50 border border-amber-100 rounded-xl p-4">
-                <div>
-                  <p className="text-sm font-medium text-gray-800">Accept Cash on Delivery (COD)</p>
-                  <p className="text-xs text-gray-500 mt-0.5">OFF = UPI only (recommended for textile traders)</p>
+              <div className="flex gap-4 items-end">
+                <div className="flex-1">
+                  <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">
+                    Min Days
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={deliveryMin}
+                    onChange={(e) => setDeliveryMin(Number(e.target.value))}
+                    className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                  />
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setAcceptsCod((v) => !v)}
-                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${acceptsCod ? "bg-indigo-600" : "bg-gray-300"}`}
-                >
-                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${acceptsCod ? "translate-x-6" : "translate-x-1"}`} />
-                </button>
+                <div className="flex-1">
+                  <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">
+                    Max Days
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={deliveryMax}
+                    onChange={(e) => setDeliveryMax(Number(e.target.value))}
+                    className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                  />
+                </div>
+                <div className="shrink-0 pb-0.5 text-sm text-gray-500">business days</div>
               </div>
-
-              <div>
-                <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">
-                  UPI ID (fallback when Razorpay is not configured)
-                </label>
-                <input
-                  type="text"
-                  value={upiId}
-                  onChange={(e) => setUpiId(e.target.value)}
-                  placeholder="yourshop@paytm"
-                  className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                />
-                <p className="text-xs text-gray-400 mt-1">Sent as plain text when Razorpay QR is unavailable.</p>
-              </div>
-
+              <p className="text-xs text-gray-400 -mt-3">
+                Preview: <span className="font-medium text-gray-700">🚚 {deliveryMin}–{deliveryMax} business days</span>
+              </p>
               <div className="flex items-center gap-3">
                 <button
                   type="submit"
-                  disabled={paymentSaving}
+                  disabled={deliverySaving}
                   className="bg-indigo-600 text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
                 >
-                  {paymentSaving ? "Saving…" : "Save Payment Settings"}
+                  {deliverySaving ? "Saving…" : "Save Delivery Settings"}
                 </button>
-                {paymentSaved && (
+                {deliverySaved && (
                   <span className="flex items-center gap-1.5 text-sm text-green-600 font-medium">
                     <CheckCircle2 size={15} /> Saved
                   </span>
@@ -587,6 +651,221 @@ export default function Settings() {
                   </button>
                 </div>
               )}
+            </form>
+          )}
+
+          {/* Payment tab */}
+          {activeTab === "payment" && (
+            <form onSubmit={handlePaymentSave} className="flex flex-col gap-4 max-w-xl">
+
+              {/* Section A — UPI */}
+              <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 flex flex-col gap-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-800">UPI Payments</h3>
+                    <p className="text-xs text-gray-400 mt-0.5">Most common for Indian SMBs. GPay, PhonePe, Paytm.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setAcceptsUpi((v) => !v)}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${acceptsUpi ? "bg-indigo-600" : "bg-gray-300"}`}
+                  >
+                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${acceptsUpi ? "translate-x-6" : "translate-x-1"}`} />
+                  </button>
+                </div>
+
+                {acceptsUpi && (
+                  <div className="flex flex-col gap-3">
+                    <div>
+                      <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">UPI ID</label>
+                      <input
+                        type="text"
+                        value={upiId}
+                        onChange={(e) => setUpiId(e.target.value)}
+                        placeholder="riyasarees@paytm"
+                        className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">Display Name</label>
+                      <input
+                        type="text"
+                        value={upiDisplayName}
+                        onChange={(e) => setUpiDisplayName(e.target.value)}
+                        placeholder="Riya Sarees"
+                        className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                      />
+                      <p className="text-xs text-gray-400 mt-1">Name shown on UPI apps next to your UPI ID.</p>
+                    </div>
+                    {upiId && (
+                      <div className="bg-indigo-50 border border-indigo-100 rounded-lg px-4 py-2.5 text-sm text-indigo-800">
+                        <span className="font-medium">Preview: </span>
+                        Pay via UPI: <span className="font-mono">{upiId}</span>
+                        {upiDisplayName && <span> ({upiDisplayName})</span>}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Section B — COD */}
+              <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 flex flex-col gap-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-800">Cash on Delivery</h3>
+                    <p className="text-xs text-gray-400 mt-0.5">Customer pays at delivery. Not recommended for high-value orders.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setAcceptsCod((v) => !v)}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${acceptsCod ? "bg-indigo-600" : "bg-gray-300"}`}
+                  >
+                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${acceptsCod ? "translate-x-6" : "translate-x-1"}`} />
+                  </button>
+                </div>
+
+                {acceptsCod && (
+                  <div className="flex flex-col gap-3">
+                    <div>
+                      <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">COD Limit (₹)</label>
+                      <input
+                        type="number"
+                        min={0}
+                        value={codLimit}
+                        onChange={(e) => setCodLimit(e.target.value === "" ? "" : Number(e.target.value))}
+                        placeholder="0 = no limit"
+                        className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                      />
+                      <p className="text-xs text-gray-400 mt-1">Orders above this amount must prepay. Leave empty for no limit.</p>
+                    </div>
+                    <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5">
+                      <AlertTriangle size={14} className="text-amber-500 mt-0.5 shrink-0" />
+                      <p className="text-xs text-amber-700">COD orders are not prepaid — confirm only after verifying customer intent.</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Section C — Bank Transfer */}
+              <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 flex flex-col gap-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-800">Bank Transfer</h3>
+                    <p className="text-xs text-gray-400 mt-0.5">For B2B / wholesale customers. Optional.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setAcceptsBankTransfer((v) => !v)}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${acceptsBankTransfer ? "bg-indigo-600" : "bg-gray-300"}`}
+                  >
+                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${acceptsBankTransfer ? "translate-x-6" : "translate-x-1"}`} />
+                  </button>
+                </div>
+
+                {acceptsBankTransfer && (
+                  <div className="flex flex-col gap-3">
+                    <div>
+                      <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">Account Name</label>
+                      <input
+                        type="text"
+                        value={bankAccountName}
+                        onChange={(e) => setBankAccountName(e.target.value)}
+                        placeholder="Riya Sarees Pvt Ltd"
+                        className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">Account Number</label>
+                      <input
+                        type="text"
+                        value={bankAccountNumber}
+                        onChange={(e) => setBankAccountNumber(e.target.value)}
+                        placeholder="1234567890"
+                        className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">IFSC Code</label>
+                      <input
+                        type="text"
+                        value={bankIfsc}
+                        onChange={(e) => setBankIfsc(e.target.value.toUpperCase())}
+                        placeholder="SBIN0001234"
+                        className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm font-mono text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Section D — Razorpay */}
+              <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 flex flex-col gap-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-800">Razorpay QR Codes</h3>
+                  <p className="text-xs text-gray-400 mt-0.5">Generates a scannable QR for exact order amounts. Requires a Razorpay account.</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">Key ID</label>
+                  <input
+                    type="text"
+                    value={razorpayKeyId}
+                    onChange={(e) => setRazorpayKeyId(e.target.value)}
+                    placeholder="rzp_live_..."
+                    className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm font-mono text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">Key Secret</label>
+                  <input
+                    type="password"
+                    value={razorpayKeySecret}
+                    onChange={(e) => setRazorpayKeySecret(e.target.value)}
+                    placeholder="Enter new secret to update"
+                    className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm font-mono text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                  />
+                  <p className="text-xs text-gray-400 mt-1">Stored securely. Leave blank to keep existing secret.</p>
+                </div>
+                <a
+                  href="https://dashboard.razorpay.com/app/keys"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-1 text-xs text-indigo-600 hover:underline"
+                >
+                  Get Razorpay API keys <ExternalLink size={11} />
+                </a>
+              </div>
+
+              {/* Section E — Payment Instructions */}
+              <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 flex flex-col gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-800">Additional Payment Instructions</h3>
+                  <p className="text-xs text-gray-400 mt-0.5">Shown after payment details in WhatsApp messages.</p>
+                </div>
+                <textarea
+                  value={paymentInstructions}
+                  onChange={(e) => setPaymentInstructions(e.target.value.slice(0, 200))}
+                  rows={3}
+                  placeholder="e.g. Please mention your order number in the payment note"
+                  className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none"
+                />
+                <p className="text-xs text-gray-400">{paymentInstructions.length}/200 characters</p>
+              </div>
+
+              {/* Save */}
+              <div className="flex items-center gap-3 px-1">
+                <button
+                  type="submit"
+                  disabled={paymentSaving}
+                  className="bg-indigo-600 text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                >
+                  {paymentSaving ? "Saving…" : "Save Payment Settings"}
+                </button>
+                {paymentSaved && (
+                  <span className="flex items-center gap-1.5 text-sm text-green-600 font-medium">
+                    <CheckCircle2 size={15} /> Saved
+                  </span>
+                )}
+              </div>
             </form>
           )}
 

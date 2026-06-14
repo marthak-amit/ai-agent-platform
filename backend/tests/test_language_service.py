@@ -69,12 +69,13 @@ def test_detect_gujarati_script():
 
 
 def test_detect_hinglish_default():
-    """Non-ASCII message with no matching keywords → hinglish default.
+    """Non-ASCII message with no matching keywords → hindi_roman (Hinglish is merged into hindi_roman).
 
     "₹500 main chahun" uses ₹ (non-ASCII) so the English path is skipped,
     and neither the Gujarati nor Hindi keyword lists match.
+    "hinglish" is no longer a distinct return value — mixed Hindi-English maps to "hindi_roman".
     """
-    assert detect_language("₹500 main chahun") == "hinglish"
+    assert detect_language("₹500 main chahun") == "hindi_roman"
 
 
 def test_detect_empty_string():

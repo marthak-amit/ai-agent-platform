@@ -45,7 +45,9 @@ async def create_order(
     product_sku: Optional[str] = None,
     variant_color: Optional[str] = None,
     variant_size: Optional[str] = None,
+    variant_material: Optional[str] = None,
     product_id: Optional[int] = None,
+    initial_status: str = "confirmed",
 ) -> Order:
     """
     Create and persist a new order, then notify the business owner via WhatsApp.
@@ -64,6 +66,7 @@ async def create_order(
         product_sku: Optional product SKU.
         variant_color: Optional colour variant.
         variant_size: Optional size variant.
+        variant_material: Optional material variant.
         product_id: Optional FK to products table.
 
     Returns:
@@ -85,12 +88,13 @@ async def create_order(
         product_sku=product_sku,
         variant_color=variant_color,
         variant_size=variant_size,
+        variant_material=variant_material,
         quantity=quantity,
         unit_price=unit_price,
         total_amount=unit_price * quantity,
         payment_method=payment_method,
-        status="confirmed",
-        confirmed_at=datetime.now(timezone.utc),
+        status=initial_status,
+        confirmed_at=datetime.now(timezone.utc) if initial_status == "confirmed" else None,
     )
 
     db.add(order)
@@ -98,8 +102,9 @@ async def create_order(
     await db.refresh(order)
 
     # Safety backup: deduct stock here in case the webhook path skipped it.
+    # For pending_payment orders stock is deducted only after payment is confirmed.
     # The stock_deducted flag ensures we never deduct twice.
-    if product_id and not order.stock_deducted:
+    if product_id and not order.stock_deducted and initial_status != "pending_payment":
         try:
             await _deduct_product_stock(db, order)
         except Exception as exc:
@@ -125,11 +130,16 @@ async def _notify_owner_new_order(order: Order, client) -> None:
     if not client.phone:
         return
 
+    _variant_parts = [
+        p for p in [order.variant_color, order.variant_size, order.variant_material] if p
+    ]
+    _variant_line = f"Variant: {' / '.join(_variant_parts)}\n" if _variant_parts else ""
     message = (
         f"🛍️ New Order Received!\n"
         f"━━━━━━━━━━━━━━━\n"
         f"Order: #{order.order_number}\n"
         f"Product: {order.product_name} × {order.quantity}\n"
+        f"{_variant_line}"
         f"Amount: ₹{order.total_amount:.0f}\n"
         f"Customer: {order.customer_name}\n"
         f"Phone: {order.customer_phone}\n"
@@ -348,12 +358,15 @@ async def _deduct_product_stock(db: AsyncSession, order: Order) -> None:
 
     qty = order.quantity
 
-    if product.has_variants and (order.variant_color or order.variant_size):
+    _variant_material = getattr(order, "variant_material", None)
+    if product.has_variants and (order.variant_color or order.variant_size or _variant_material):
         stmt = select(ProductVariant).where(ProductVariant.product_id == product.id)
         if order.variant_color:
             stmt = stmt.where(ProductVariant.color == order.variant_color)
         if order.variant_size:
             stmt = stmt.where(ProductVariant.size == order.variant_size)
+        if _variant_material:
+            stmt = stmt.where(ProductVariant.material == _variant_material)
         vresult = await db.execute(stmt)
         variant = vresult.scalar_one_or_none()
         if variant:
@@ -382,7 +395,7 @@ def orders_to_csv(orders: list[Order]) -> str:
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([
-        "Order #", "Customer", "Phone", "Product", "SKU", "Color", "Size",
+        "Order #", "Customer", "Phone", "Product", "SKU", "Color", "Size", "Material",
         "Qty", "Unit Price", "Total", "Payment", "Payment Status",
         "Status", "Courier", "Tracking", "Created At", "Notes",
     ])
@@ -390,7 +403,8 @@ def orders_to_csv(orders: list[Order]) -> str:
         writer.writerow([
             o.order_number, o.customer_name, o.customer_phone,
             o.product_name, o.product_sku or "", o.variant_color or "",
-            o.variant_size or "", o.quantity, o.unit_price, o.total_amount,
+            o.variant_size or "", getattr(o, "variant_material", None) or "",
+            o.quantity, o.unit_price, o.total_amount,
             o.payment_method, o.payment_status, o.status,
             o.courier_name or "", o.tracking_number or "",
             o.created_at.isoformat() if o.created_at else "",

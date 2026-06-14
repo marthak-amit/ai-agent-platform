@@ -2,16 +2,18 @@
 Language detection and instruction generation for multilingual AI replies.
 
 Supports English, Hindi (Devanagari), Hindi (Romanised), Gujarati (script),
-Gujarati (Romanised), and Hinglish (default). Detection is script-first then
-keyword-based — no external dependencies.
+and Gujarati (Romanised). Detection is script-first then keyword-based —
+no external dependencies.
 
 Language codes returned by detect_language():
     "english"           — purely ASCII, English vocabulary
     "hindi_devanagari"  — Devanagari script (Unicode U+0900–U+097F)
-    "hindi_roman"       — Hindi words typed in Latin script (Hinglish)
+    "hindi_roman"       — Hindi words typed in Latin script (Hinglish/mixed)
     "gujarati_script"   — Gujarati script (Unicode U+0A80–U+0AFF)
     "gujarati_roman"    — Gujarati words typed in Latin script
-    "hinglish"          — mixed Hindi-English (default fallback)
+
+NOTE: "hinglish" is intentionally NOT a return value. Mixed Hindi-English
+in Roman script maps to "hindi_roman" — Hinglish IS Hindi for our purposes.
 """
 
 from __future__ import annotations
@@ -142,8 +144,10 @@ def detect_language(message: str, previous_language: str | None = None) -> str:
         if indicator_hit or english_score >= 1 or len(words) <= 3:
             return "english"
 
-    # 6. Default: Hinglish
-    return "hinglish"
+    # 6. Default: treat as Hindi in Roman script (Hinglish IS Hindi for our purposes).
+    # NEVER return "hinglish" as a distinct code — it causes undefined behaviour
+    # downstream (system prompt inconsistency → model self-refusal loops).
+    return "hindi_roman"
 
 
 def get_language_instruction(lang: str) -> str:
@@ -202,7 +206,9 @@ def get_language_instruction(lang: str) -> str:
             '"'
         )
 
-    if lang == "hindi_roman":
+    if lang in ("hindi_roman", "hinglish"):
+        # "hinglish" is a legacy value that may exist in older DB rows — treat
+        # identically to "hindi_roman" so no refusal loop can form.
         return (
             "LANGUAGE: Customer is writing in Hinglish "
             "(Hindi words in Roman/English script).\n"
@@ -250,7 +256,7 @@ def get_language_instruction(lang: str) -> str:
             'Order karva maango cho?"'
         )
 
-    # hinglish (default)
+    # Unknown lang code — fall back to Hinglish so we never produce a bare refusal.
     return (
         "LANGUAGE: Reply in Hinglish (friendly Hindi-English mix).\n"
         "Use 'ji' naturally as a respectful suffix.\n"
@@ -274,21 +280,22 @@ def build_language_rule(lang: str) -> str:
     Returns:
         Formatted rule string ready to prepend to a system prompt.
     """
+    # Normalise legacy "hinglish" DB rows to "hindi_roman" before display.
+    _lang = "hindi_roman" if lang == "hinglish" else lang
     lang_display = {
         "english": "ENGLISH",
         "hindi_devanagari": "HINDI (Devanagari)",
         "hindi_roman": "HINGLISH (Hindi in Roman script)",
         "gujarati_script": "GUJARATI (Gujarati script)",
         "gujarati_roman": "GUJARATI (Roman mix)",
-        "hinglish": "HINGLISH",
-    }.get(lang, lang.upper())
+    }.get(_lang, _lang.upper())
 
-    instruction = get_language_instruction(lang)
+    instruction = get_language_instruction(_lang)
 
     ji_rule = (
         "NEVER use 'ji' in this reply — 'ji' is only for Hindi/Gujarati.\n"
         "NEVER use ANY Hindi/Gujarati word — see FORBIDDEN list above.\n"
-        if lang == "english"
+        if _lang == "english"
         else "Use 'ji' naturally as a respectful honorific.\n"
     )
 
@@ -298,7 +305,7 @@ def build_language_rule(lang: str) -> str:
 
     return (
         "⚠️ CRITICAL LANGUAGE RULE — NEVER BREAK THIS:\n\n"
-        f"Detected customer language: {lang}\n\n"
+        f"Detected customer language: {_lang}\n\n"
         f"YOU MUST REPLY IN {lang_display} ONLY.\n"
         "DO NOT mix languages.\n"
         "DO NOT reply in Hindi if customer wrote English.\n"

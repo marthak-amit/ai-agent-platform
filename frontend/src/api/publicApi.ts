@@ -9,6 +9,8 @@ export interface BusinessInfo {
   instagram_id: string | null;
   theme_color: string;
   slug: string;
+  delivery_days_min: number | null;
+  delivery_days_max: number | null;
 }
 
 export interface ProductVariant {
@@ -36,6 +38,8 @@ export interface PublicProduct {
   is_available: boolean;
   low_stock_alert: number;
   has_variants: boolean;
+  delivery_days: number | null;
+  delivery_time: string;
   variants: ProductVariant[];
   available_colors: string[];
   available_sizes: string[];

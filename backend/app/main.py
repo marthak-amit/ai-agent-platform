@@ -7,13 +7,14 @@ Run with: uvicorn app.main:app --reload --port 8000
 
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
@@ -33,9 +34,61 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Start background jobs on startup; shut them down cleanly on exit."""
     _startup_checks()
+    await _schema_drift_check()
     start_scheduler()
     yield
     stop_scheduler()
+
+
+async def _schema_drift_check() -> None:
+    """
+    Compare ORM-declared columns for critical tables against the live DB.
+
+    If any column present in the ORM model is absent from the live table,
+    log CRITICAL for each missing column and exit(1) so the process never
+    starts serving 500s caused by an un-applied migration.
+
+    Tables checked: orders, conversations.
+    """
+    from app.config import get_settings as _gs
+
+    db_url = _gs().database_url
+    # sqlalchemy inspect requires a sync engine; create a minimal one
+    sync_url = db_url.replace("+asyncpg", "").replace("+aiosqlite", "")
+
+    try:
+        engine = create_engine(sync_url)
+        insp = inspect(engine)
+        existing: dict[str, set[str]] = {}
+        for table_name in ("orders", "conversations"):
+            cols = insp.get_columns(table_name)
+            existing[table_name] = {c["name"] for c in cols}
+        engine.dispose()
+    except Exception as exc:
+        logger.warning("Schema drift check skipped (DB not reachable): %s", exc)
+        return
+
+    # import models so metadata is populated
+    from app.db import Base  # noqa: F401
+    import app.models  # noqa: F401
+
+    missing_all: list[str] = []
+    for table_name in ("orders", "conversations"):
+        orm_table = Base.metadata.tables.get(table_name)
+        if orm_table is None:
+            continue
+        for col in orm_table.columns:
+            if col.name not in existing.get(table_name, set()):
+                msg = f"Schema drift: column '{col.name}' missing from table '{table_name}'"
+                logger.critical(msg)
+                missing_all.append(msg)
+
+    if missing_all:
+        logger.critical(
+            "Aborting startup — %d column(s) missing from live DB. Run `alembic upgrade head`.",
+            len(missing_all),
+        )
+        sys.exit(1)
 
 
 def _startup_checks() -> None:

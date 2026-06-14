@@ -84,8 +84,22 @@ class Client(Base):
     accepts_cod: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # upi_id: fallback UPI handle sent as text when Razorpay is not configured
     upi_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    upi_display_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    cod_limit: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    accepts_upi: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, server_default="true")
+    accepts_bank_transfer: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
+    bank_account_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    bank_account_number: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    bank_ifsc: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    razorpay_key_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    razorpay_key_secret: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    payment_instructions: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
 
     # Onboarding wizard progress (migration 0029)
     # 0=registered, 1=profile, 2=products, 3=agent, 4=whatsapp, 5=tested, 6=complete
     onboarding_step: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default="0")
     onboarding_completed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
+
+    # Delivery time defaults shown to customers (migration 0036)
+    delivery_days_min: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=3)
+    delivery_days_max: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=7)

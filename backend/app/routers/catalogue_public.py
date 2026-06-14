@@ -14,7 +14,7 @@ from __future__ import annotations
 import io
 import logging
 import re
-from typing import Optional
+from typing import Optional  # noqa: F401 — used in _product_dict signature
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
@@ -26,6 +26,7 @@ from app.db import get_db
 from app.models.client import Client
 from app.models.product import Product
 from app.models.restock_notification import RestockNotification
+from app.services.delivery_service import get_delivery_time_str
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Public Catalogue"])
@@ -59,7 +60,7 @@ def _variant_dict(v) -> dict:
     }
 
 
-def _product_dict(p: Product) -> dict:
+def _product_dict(p: Product, client: Optional[Client] = None) -> dict:
     """Serialise a Product ORM row to a plain dict for API responses."""
     variants = [v for v in (p.variants or []) if v.is_active] if p.has_variants else []
     available_colors = list(dict.fromkeys(v.color for v in variants if v.color))
@@ -77,6 +78,8 @@ def _product_dict(p: Product) -> dict:
         "is_available": (p.stock or 0) > 0,
         "low_stock_alert": p.low_stock_alert,
         "has_variants": p.has_variants,
+        "delivery_days": getattr(p, "delivery_days", None),
+        "delivery_time": get_delivery_time_str(p, client),
         "variants": [_variant_dict(v) for v in variants],
         "available_colors": available_colors,
         "available_sizes": available_sizes,
@@ -94,6 +97,8 @@ def _business_dict(c: Client) -> dict:
         "instagram_id": c.instagram_account_id,
         "theme_color": c.catalogue_theme_color or "#6366F1",
         "slug": c.catalogue_slug,
+        "delivery_days_min": getattr(c, "delivery_days_min", None),
+        "delivery_days_max": getattr(c, "delivery_days_max", None),
     }
 
 
@@ -125,7 +130,7 @@ async def get_catalogue(slug: str, db: AsyncSession = Depends(get_db)) -> dict:
 
     return {
         "business": _business_dict(client),
-        "products": [_product_dict(p) for p in products],
+        "products": [_product_dict(p, client) for p in products],
         "categories": categories,
     }
 
@@ -168,7 +173,7 @@ async def get_product(slug: str, sku: str, db: AsyncSession = Depends(get_db)) -
     )
 
     return {
-        "product": _product_dict(product),
+        "product": _product_dict(product, client),
         "business": {
             "name": client.business_name,
             "whatsapp_number": client.whatsapp_number,

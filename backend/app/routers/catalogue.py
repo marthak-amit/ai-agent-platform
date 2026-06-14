@@ -61,6 +61,7 @@ class ProductCreate(BaseModel):
     is_active: bool = True
     low_stock_alert: int = 5
     has_variants: bool = False
+    delivery_days: Optional[int] = None
     variants: list[VariantIn] = []
 
 
@@ -77,6 +78,7 @@ class ProductUpdate(BaseModel):
     is_active: Optional[bool] = None
     low_stock_alert: Optional[int] = None
     has_variants: Optional[bool] = None
+    delivery_days: Optional[int] = None
     variants: Optional[list[VariantIn]] = None
 
 
@@ -126,6 +128,7 @@ class ProductOut(BaseModel):
     is_active: bool = True
     low_stock_alert: int = 5
     has_variants: bool = False
+    delivery_days: Optional[int] = None
     variants: list[ProductVariantOut] = []
     available_colors: list[str] = []
     available_sizes: list[str] = []
@@ -149,6 +152,7 @@ class ProductOut(BaseModel):
             is_active=p.is_active,
             low_stock_alert=p.low_stock_alert,
             has_variants=p.has_variants,
+            delivery_days=getattr(p, "delivery_days", None),
             variants=[ProductVariantOut.model_validate(v) for v in variants],
             available_colors=list(dict.fromkeys(v.color for v in variants if v.color)),
             available_sizes=list(dict.fromkeys(v.size for v in variants if v.size)),
@@ -263,6 +267,7 @@ async def add_product(
         is_active=body.is_active,
         low_stock_alert=body.low_stock_alert,
         has_variants=body.has_variants,
+        delivery_days=body.delivery_days,
     )
 
     if body.has_variants and body.variants:
@@ -382,6 +387,10 @@ async def update_product(
     if body.has_variants is not None:
         has_variants_val = body.has_variants
 
+    delivery_days_val: Any = catalogue_service._UNSET
+    if body.delivery_days is not None or "delivery_days" in body.model_fields_set:
+        delivery_days_val = body.delivery_days
+
     updated = await catalogue_service.update_product(
         db,
         product,
@@ -395,6 +404,7 @@ async def update_product(
         is_active=is_active_val,
         low_stock_alert=body.low_stock_alert,
         has_variants=has_variants_val,
+        delivery_days=delivery_days_val,
     )
 
     if body.variants is not None:

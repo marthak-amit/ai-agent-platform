@@ -40,6 +40,7 @@ class Order(Base):
     product_sku: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     variant_color: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     variant_size: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    variant_material: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     unit_price: Mapped[float] = mapped_column(Float, nullable=False)
     total_amount: Mapped[float] = mapped_column(Float, nullable=False)

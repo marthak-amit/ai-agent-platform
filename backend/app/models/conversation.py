@@ -68,6 +68,10 @@ class Conversation(Base):
     # SKU mentioned mid-order when customer may want to switch products (migration 0034)
     interrupted_sku: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
+    # Browsed SKUs — JSON list of SKUs the customer showed buying intent for this conversation.
+    # Appended on every product switch/pin; used for end-of-order cross-sell.
+    browsed_skus: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # Sandbox flag — sandbox conversations are excluded from analytics/leads (migration 0028)
     is_sandbox: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
 
@@ -82,6 +86,15 @@ class Conversation(Base):
         Integer, default=0, nullable=False, server_default="0"
     )
     last_escalation_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Abandoned-intent follow-up tracking (migration 0035)
+    # last_followup_sku:  SKU for which the most recent follow-up was sent;
+    #                     prevents duplicate follow-ups for the same product.
+    # followup_sent_at:   Timestamp of that send; enforces 7-day global cooldown.
+    last_followup_sku: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    followup_sent_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 

@@ -84,6 +84,7 @@ interface ProductForm {
   low_stock_alert: string;
   is_active: boolean;
   image_url: string;
+  delivery_days: string;
 }
 
 interface VariantState {
@@ -111,6 +112,7 @@ const EMPTY_FORM: ProductForm = {
   low_stock_alert: "5",
   is_active: true,
   image_url: "",
+  delivery_days: "",
 };
 
 const EMPTY_VARIANT_STATE: VariantState = {
@@ -800,6 +802,7 @@ export default function Catalogue() {
       low_stock_alert: String(p.low_stock_alert),
       is_active: p.is_active,
       image_url: p.image_url ?? "",
+      delivery_days: (p as { delivery_days?: number | null }).delivery_days != null ? String((p as { delivery_days?: number | null }).delivery_days) : "",
     });
 
     // Pre-fill variant state from existing variants
@@ -923,6 +926,7 @@ export default function Catalogue() {
         is_active: form.is_active,
         low_stock_alert: parseInt(form.low_stock_alert, 10) || 5,
         has_variants: hasVariants,
+        delivery_days: form.delivery_days !== "" ? parseInt(form.delivery_days, 10) || null : null,
         variants,
       };
 
@@ -1183,6 +1187,21 @@ export default function Catalogue() {
                     </div>
                   </div>
                 )}
+
+                <div>
+                  <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">
+                    Delivery Time Override (days)
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={form.delivery_days}
+                    onChange={(e) => setForm((f) => ({ ...f, delivery_days: e.target.value }))}
+                    placeholder="Leave empty to use business default"
+                    className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                  <p className="text-xs text-gray-400 mt-1">e.g. 2 for ready stock, 15 for custom orders. Overrides business default for this product only.</p>
+                </div>
 
                 {/* Variant builder */}
                 <VariantBuilder vs={variantState} setVs={setVariantState} />

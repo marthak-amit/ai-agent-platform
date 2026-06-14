@@ -121,7 +121,8 @@ function ProductCard({
           >
             {name}
           </Link>
-          <p className="text-base font-bold mb-1" style={{ color: themeColor }}>{formatPrice(product.price)}</p>
+          <p className="text-base font-bold mb-0.5" style={{ color: themeColor }}>{formatPrice(product.price)}</p>
+          <p className="text-[11px] text-gray-400 mb-1">🚚 {product.delivery_time}</p>
           <div className="flex items-center gap-1 mb-1.5">
             <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${outOfStock ? "bg-red-500" : lowStock ? "bg-amber-500" : "bg-green-500"}`} />
             <span className="text-[11px] text-gray-500">
@@ -231,7 +232,9 @@ function ProductCard({
         >
           {name}
         </Link>
-        <p className="text-lg font-bold mb-1.5" style={{ color: themeColor }}>{formatPrice(product.price)}</p>
+        <p className="text-lg font-bold mb-1" style={{ color: themeColor }}>{formatPrice(product.price)}</p>
+
+        <p className="text-[11px] text-gray-400 mb-1.5">🚚 {product.delivery_time}</p>
 
         <div className="flex items-center gap-1 mb-2">
           <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${outOfStock ? "bg-red-500" : lowStock ? "bg-amber-500" : "bg-green-500"}`} />

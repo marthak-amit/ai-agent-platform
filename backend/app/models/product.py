@@ -43,6 +43,9 @@ class Product(Base):
     low_stock_alert: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
     has_variants: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+    # Per-product delivery override (migration 0036); None → use client default
+    delivery_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=None)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

@@ -149,17 +149,26 @@ async def generate_reply(
     prompt_hash = hashlib.md5(full_system.encode()).hexdigest()[:8]
     logger.info("AI call | prompt_v:%s | model:%s | history_len:%d", prompt_hash, _GROQ_MODELS[0], len(history or []))
 
+    # 8b has a tight per-request context limit — pre-build a slimmed system prompt
+    # that drops kb/learning examples (appended last) by truncating to 8000 chars.
+    # current_instruction and customer_context (near the top) are always preserved.
+    _slim_system = full_system[:8000] if len(full_system) > 8000 else None
+
     for model in _GROQ_MODELS:
+        _messages = messages
+        if model == "llama-3.1-8b-instant" and _slim_system is not None:
+            _messages = [{"role": "system", "content": _slim_system}] + messages[1:]
         try:
             response = await client.chat.completions.create(
                 model=model,
-                messages=messages,
+                messages=_messages,
                 max_tokens=150,
                 temperature=0.3,
             )
         except Exception as exc:
-            if "429" in str(exc):
-                logger.warning(f"Model {model} rate limited, trying next...")
+            exc_str = str(exc)
+            if "429" in exc_str or "413" in exc_str:
+                logger.warning("Model %s rejected (429/413), trying next: %s", model, exc_str[:120])
                 continue
             raise
 
@@ -215,7 +224,7 @@ def format_product_for_whatsapp(product) -> str:
 # ── Sales-focused master prompt ───────────────────────────────────────────────
 
 
-def format_products_for_prompt(products: list) -> str:
+def format_products_for_prompt(products: list, for_display: bool = False) -> str:
     """
     Format a list of product dicts/ORM objects into a readable catalogue block.
 
@@ -223,7 +232,11 @@ def format_products_for_prompt(products: list) -> str:
     so the AI can accurately answer availability questions.
 
     Args:
-        products: List of Product ORM objects or dicts with product attributes.
+        products:    List of Product ORM objects or dicts with product attributes.
+        for_display: When True (browsing stages), omit raw stock counts — the AI
+                     must never reveal piece quantities during product discovery.
+                     Stock counts are still available via the slot-machine's
+                     available_stock path for quantity validation.
 
     Returns:
         Multi-line string ready to embed in a system prompt.
@@ -257,37 +270,37 @@ def format_products_for_prompt(products: list) -> str:
 
         if has_variants and variants:
             active_v = [v for v in variants if getattr(v, "is_active", True)]
-            colors: dict = {}
-            sizes: set = set()
+            colors_in_stock: list[str] = []
+            sizes_in_stock: set[str] = set()
             for v in active_v:
                 stk = v.stock or 0
                 if stk > 0:
                     col = v.color or "default"
-                    if col not in colors:
-                        colors[col] = {}
+                    if col not in colors_in_stock:
+                        colors_in_stock.append(col)
                     if v.size:
-                        colors[col][v.size] = stk
-                        sizes.add(v.size)
-                    else:
-                        colors[col]["stock"] = colors[col].get("stock", 0) + stk
-            if colors:
-                parts = []
-                for col, data in colors.items():
-                    total = sum(v for k, v in data.items() if isinstance(v, int))
-                    parts.append(f"{col}({total})")
-                lines.append(f"  Colors available: {', '.join(parts)}")
-            if sizes:
-                lines.append(f"  Sizes available: {', '.join(sorted(sizes))}")
-            oos = [f"{v.color}-{v.size}" for v in active_v if (v.stock or 0) == 0 and v.color and v.size]
-            if oos:
-                lines.append(f"  Out of stock: {', '.join(oos[:5])}")
+                        sizes_in_stock.add(v.size)
+            if colors_in_stock:
+                # for_display: show color names only, no per-color stock counts
+                lines.append(f"  Colors available: {', '.join(colors_in_stock)}")
+            if sizes_in_stock:
+                lines.append(f"  Sizes available: {', '.join(sorted(sizes_in_stock))}")
+            if not for_display:
+                oos = [f"{v.color}-{v.size}" for v in active_v if (v.stock or 0) == 0 and v.color and v.size]
+                if oos:
+                    lines.append(f"  Out of stock: {', '.join(oos[:5])}")
         else:
-            if stock is None:
-                lines.append("  Stock: untracked")
-            elif stock <= 0:
-                lines.append("  Stock: ❌ Out of Stock")
+            if for_display:
+                # Browsing context: hide exact count; only flag out-of-stock
+                if stock is not None and stock <= 0:
+                    lines.append("  ❌ Out of Stock")
             else:
-                lines.append(f"  Stock: ✅ {stock} pcs")
+                if stock is None:
+                    lines.append("  Stock: untracked")
+                elif stock <= 0:
+                    lines.append("  Stock: ❌ Out of Stock")
+                else:
+                    lines.append(f"  Stock: ✅ {stock} pcs")
 
     return "\n".join(lines)
 
@@ -343,6 +356,7 @@ def build_master_system_prompt(
     kb_context: str = "",
     customer_context: str = "",
     current_instruction: str = "",
+    delivery_time: str = "3–7 business days",
 ) -> str:
     """
     Build a laser-focused sales system prompt for the given client and stage.
@@ -421,6 +435,14 @@ def build_master_system_prompt(
             collected=collected,
             accepts_cod=client_accepts_cod,
             upi_id=upi_id,
+            upi_display_name=getattr(client, "upi_display_name", None),
+            cod_limit=getattr(client, "cod_limit", None),
+            accepts_upi=getattr(client, "accepts_upi", True),
+            accepts_bank_transfer=getattr(client, "accepts_bank_transfer", False),
+            bank_account_name=getattr(client, "bank_account_name", None),
+            bank_account_number=getattr(client, "bank_account_number", None),
+            bank_ifsc=getattr(client, "bank_ifsc", None),
+            payment_instructions=getattr(client, "payment_instructions", None),
             order_total=order_total,
             order_product_name=order_product_name,
             order_qty=order_qty,
@@ -556,6 +578,13 @@ COD Accepted: {client_accepts_cod}
         else ""
     )
 
+    # In browsing stages (product discovery), hide raw stock counts from the AI
+    # so it cannot accidentally leak them to the customer.  Stock counts are
+    # still enforced at order time via the slot-machine's available_stock path.
+    _BROWSING_STAGES = {"greeting", "product_inquiry", "qualification", "objection_handling", "offer_making"}
+    _prompt_for_display = conversation_stage in _BROWSING_STAGES
+    _products_block = format_products_for_prompt(products, for_display=_prompt_for_display)
+
     return f"""{lang_rule}
 You are a professional sales agent for {business_name} — a {business_type} business based in India.
 
@@ -569,11 +598,12 @@ BUSINESS DETAILS:
 Business: {business_name}
 Type: {business_type}
 Description: {business_description}
+Delivery time: {delivery_time}
 {order_context_block}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 AVAILABLE PRODUCTS:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{format_products_for_prompt(products)}
+{_products_block}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CURRENT CONVERSATION STAGE: {conversation_stage.upper()}
@@ -632,15 +662,19 @@ STRICT RULES — NEVER BREAK THESE:
     - The customer explicitly asks to see it ("photo dikhao", "show me", "picture bhejo")
     - The customer shares a SKU and is asking for product details
     NEVER send brand/logo images or any unsolicited images after a reply.
-18. STOCK ACCURACY — NEVER GUESS:
+18. STOCK PRIVACY & ACCURACY:
     Stock information comes from live catalogue data shown above (queried fresh
-    from the database for this exact reply — never cached, never hardcoded).
-    NEVER say stock is "1 piece" or "sirf 1 piece available" unless the catalogue
-    above literally shows that product has exactly 1 in stock.
-    Always read and quote the EXACT stock number from the catalogue above —
-    do not estimate, round, or invent a number.
-    CRITICAL: Always check stock for the product the customer ACTUALLY mentioned (by SKU or name).
-    NEVER mix up products — if customer asked for SR27754, check SR27754's stock only.
+    from the database — never cached, never hardcoded).
+    STOCK PRIVACY RULE: During product browsing / discovery, NEVER mention stock
+    counts or piece numbers unprompted. NEVER say "we have 18 pieces", "X pieces
+    in stock", "sirf X piece available", or any number + pieces/pcs/units — even
+    if the catalogue shows a number. Only say "limited stock" or "available" in
+    general terms.
+    EXCEPTION: If the customer explicitly asks "how many available", "stock hai
+    kya", "kitne piece hain", "quantity available" — then answer with the EXACT
+    number from the catalogue. Do not estimate, round, or invent.
+    CRITICAL: Always check stock for the product the customer ACTUALLY mentioned.
+    NEVER mix up products — if customer asked for SR27754, check SR27754 only.
 19. LANGUAGE LOCK — ONCE SWITCHED, STAY SWITCHED:
     Track {language.upper()} as the customer's current conversation language
     (conversation.last_customer_language). Once the customer switches to a

@@ -709,10 +709,13 @@ export default function ProductPage() {
         </button>
       )}
 
-      {/* Row 4: Price */}
-      <p className="text-[28px] font-bold mb-4" style={{ color: theme }}>
+      {/* Row 4: Price + delivery */}
+      <p className="text-[28px] font-bold mb-1" style={{ color: theme }}>
         {formatPrice(product.price)}
       </p>
+      {(product as { delivery_time?: string }).delivery_time && (
+        <p className="text-sm text-gray-500 mb-4">🚚 {(product as { delivery_time?: string }).delivery_time}</p>
+      )}
 
       {/* Variant selector */}
       {product.has_variants && (

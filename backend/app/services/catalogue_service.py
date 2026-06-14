@@ -126,13 +126,19 @@ def extract_skus_from_text(text: str) -> list[str]:
     Returns tokens uppercased so they can be compared against DB SKUs directly.
     e.g. "sr27754" → "SR27754", "LH00123" → "LH00123".
 
+    Space-tolerant: normalises "SR 27754" (common in voice transcriptions) to
+    "SR27754" before matching, so the regex still fires.
+
     Args:
         text: Raw customer message text.
 
     Returns:
         List of candidate SKU strings (uppercased), possibly empty.
     """
-    return ["".join(m).upper() for m in SKU_PATTERN.findall(text)]
+    # Collapse single spaces between a letter-group and digit-group so that
+    # voice-transcribed codes like "SR 27754" are treated as "SR27754".
+    normalized = re.sub(r'([A-Za-z]{2,4})\s+(\d{4,6})', r'\1\2', text)
+    return ["".join(m).upper() for m in SKU_PATTERN.findall(normalized)]
 
 
 # ── CRUD ─────────────────────────────────────────────────────────────────────
@@ -280,6 +286,7 @@ async def create_product(
     is_active: bool = True,
     low_stock_alert: int = 5,
     has_variants: bool = False,
+    delivery_days: Optional[int] = None,
 ) -> Product:
     """
     Persist a new product for the given client.
@@ -296,6 +303,7 @@ async def create_product(
         category:         Optional category label.
         is_active:        Whether the product is visible to customers.
         low_stock_alert:  Stock count at which a low-stock warning is shown.
+        delivery_days:    Per-product delivery override (None = use client default).
 
     Returns:
         The newly created Product ORM instance.
@@ -312,6 +320,7 @@ async def create_product(
         is_active=is_active,
         low_stock_alert=low_stock_alert,
         has_variants=has_variants,
+        delivery_days=delivery_days,
     )
     db.add(product)
     await db.commit()
@@ -405,6 +414,7 @@ async def update_product(
     is_active: Any = _UNSET,
     low_stock_alert: Optional[int] = None,
     has_variants: Any = _UNSET,
+    delivery_days: Any = _UNSET,
 ) -> Product:
     """
     Apply partial updates to an existing product.
@@ -427,6 +437,7 @@ async def update_product(
         category:         New category, or None to keep current.
         is_active:        New active state, or _UNSET to keep current.
         low_stock_alert:  New alert threshold, or None to keep current.
+        delivery_days:    Per-product delivery override; _UNSET = leave unchanged, None = clear.
 
     Returns:
         The updated Product instance.
@@ -451,6 +462,8 @@ async def update_product(
         product.low_stock_alert = low_stock_alert
     if has_variants is not _UNSET:
         product.has_variants = has_variants
+    if delivery_days is not _UNSET:
+        product.delivery_days = delivery_days
 
     await db.commit()
     await db.refresh(product)
@@ -595,16 +608,19 @@ def search_products(
 
 # ── Prompt context formatter ──────────────────────────────────────────────────
 
-def format_catalogue_context(products: list[Product]) -> str:
+def format_catalogue_context(products: list[Product], for_display: bool = False) -> str:
     """
     Format a list of products as a detailed context block for the AI.
 
-    For products with has_variants=True the variant breakdown (colors, sizes,
-    per-color stock) is included so the AI can answer availability questions
-    accurately without hallucinating colors or sizes.
+    For products with has_variants=True the variant breakdown (colors, sizes)
+    is included. When for_display=True (browsing/T1/T2/T10 flows) raw stock
+    counts are stripped — the AI must never reveal piece quantities to
+    customers during browsing. Stock counts remain available internally for
+    quantity validation via get_product_variant_info / available_stock.
 
     Args:
-        products: Relevant products returned by search_products.
+        products:    Relevant products returned by search_products.
+        for_display: When True, omit raw stock numbers from the output.
 
     Returns:
         Multi-line string ready for injection into the system prompt,
@@ -628,50 +644,79 @@ def format_catalogue_context(products: list[Product]) -> str:
 
         if p.has_variants and p.variants:
             active_variants = [v for v in p.variants if getattr(v, "is_active", True)]
-            # Group in-stock variants by color
-            colors: dict[str, dict] = {}
+            colors_in_stock: list[str] = []
             sizes_available: set[str] = set()
 
             for v in active_variants:
                 if (v.stock or 0) > 0:
-                    color = v.color or "default"
-                    if color not in colors:
-                        colors[color] = {}
+                    if v.color and v.color not in colors_in_stock:
+                        colors_in_stock.append(v.color)
                     if v.size:
-                        colors[color][v.size] = (v.stock or 0)
                         sizes_available.add(v.size)
-                    else:
-                        colors[color]["stock"] = colors[color].get("stock", 0) + (v.stock or 0)
 
-            if colors:
-                color_parts = []
-                for color, data in colors.items():
-                    if "stock" in data and len(data) == 1:
-                        color_parts.append(f"{color}({data['stock']})")
-                    else:
-                        total = sum(v for k, v in data.items() if isinstance(v, int))
-                        color_parts.append(f"{color}({total})")
-                lines.append(f"  Colors available: {', '.join(color_parts)}")
+            if colors_in_stock:
+                lines.append(f"  Colors available: {', '.join(colors_in_stock)}")
             else:
                 lines.append("  Colors available: none in stock")
 
             if sizes_available:
                 lines.append(f"  Sizes available: {', '.join(sorted(sizes_available))}")
 
-            # Out-of-stock combinations (up to 5)
-            oos = [
-                f"{v.color}-{v.size}"
-                for v in active_variants
-                if (v.stock or 0) == 0 and v.color and v.size
-            ]
-            if oos:
-                lines.append(f"  Out of stock: {', '.join(oos[:5])}")
+            if not for_display:
+                # Out-of-stock combinations — only shown in internal/stock-check contexts
+                oos = [
+                    f"{v.color}-{v.size}"
+                    for v in active_variants
+                    if (v.stock or 0) == 0 and v.color and v.size
+                ]
+                if oos:
+                    lines.append(f"  Out of stock: {', '.join(oos[:5])}")
         else:
-            stock_val = p.stock
-            if stock_val is not None:
-                lines.append(f"  Stock: {stock_val} pieces")
+            if not for_display:
+                stock_val = p.stock
+                if stock_val is not None:
+                    lines.append(f"  Stock: {stock_val} pieces")
 
     return "\n".join(lines)
+
+
+def search_products_with_scores(
+    products: list[Product], query: str, top_k: int = 5
+) -> list[tuple[int, "Product"]]:
+    """
+    Return up to top_k (score, product) pairs most relevant to query.
+
+    Exposes the raw scores so callers can distinguish a single strong match
+    (score >> second-best) from several close matches.
+
+    Args:
+        products: Full product list for the client (pre-fetched from DB).
+        query:    Raw customer message text.
+        top_k:    Maximum number of results.
+
+    Returns:
+        List of (score, Product) tuples sorted best-first; may be empty.
+    """
+    active = [p for p in products if p.is_active is not False]
+    keywords = _tokenize(query)
+    if not keywords:
+        return []
+
+    scored: list[tuple[int, Product]] = []
+    for p in active:
+        score = 0
+        name_tokens = _tokenize(p.name)
+        desc_tokens = _tokenize(p.description or "")
+        for kw in keywords:
+            if kw in name_tokens or kw in p.name.lower():
+                score += 2
+            if kw in desc_tokens or kw in (p.description or "").lower():
+                score += 1
+        if score > 0:
+            scored.append((score, p))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return scored[:top_k]
 
 
 async def get_product_variant_info(db: AsyncSession, product: Product) -> dict:
