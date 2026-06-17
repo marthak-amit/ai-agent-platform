@@ -67,6 +67,10 @@ class Order(Base):
     # Stock guard — prevents double-deduction if the order is processed twice
     stock_deducted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+    # Idempotency key — set to the triggering WhatsApp message ID (wamid).
+    # Prevents double-insert when Meta retries the webhook for the same message.
+    idempotency_key: Mapped[Optional[str]] = mapped_column(String(250), nullable=True, unique=True)
+
     # Notes / invoice
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     invoice_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)

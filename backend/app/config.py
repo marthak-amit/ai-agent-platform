@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     min_reply_delay: float = 2.0
     max_reply_delay: float = 4.0
     environment: str = "development"  # set to "production" in Railway env vars
+    use_tool_router: bool = False  # Phase 0: shadow; Phase 1+: live routing
+    shadow_router_enabled: bool = False  # set True to re-enable background shadow Groq call
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

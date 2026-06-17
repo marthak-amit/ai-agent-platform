@@ -126,7 +126,13 @@ async def generate_reply(
     base = system_prompt or _FALLBACK_SYSTEM
     full_system = lang_rule + "\n" + base
     if catalogue_context:
-        full_system += f"\n\nAvailable products:\n{catalogue_context}"
+        full_system += (
+            "\n\n⚠️ PRODUCT DATA GUARD — MANDATORY:\n"
+            "The product list below comes directly from our database.\n"
+            "You MUST NOT invent, add, or modify ANY product SKU, name, or price.\n"
+            "Only reference the products shown here. If no matching product is listed, say so.\n\n"
+            f"Available products:\n{catalogue_context}"
+        )
 
     messages: list[dict] = [{"role": "system", "content": full_system}]
 
@@ -473,21 +479,42 @@ def build_master_system_prompt(
     if customer_history:
         _last_product = customer_history.get("last_product")
 
+    # Browsing stages: never expose the saved address to the AI — it must not
+    # appear in product offers.  Address is only relevant once order_collection
+    # starts (name/address confirmation steps).
+    _BROWSING_STAGES_LOCAL = {"greeting", "product_inquiry", "qualification", "objection_handling", "offer_making"}
+    _is_browsing_stage = conversation_stage in _BROWSING_STAGES_LOCAL
+
     if _orders > 0:
         vip_flag = "⭐ VIP CUSTOMER — Give them extra warmth and priority treatment.\n" if _is_vip else ""
         name_line = f"- Name: {_name}\n" if _name else ""
         spent_line = f"- Total spent: ₹{_total_spent:.0f}\n" if _total_spent else ""
         payment_line = f"- Preferred payment: {_preferred_payment}\n" if _preferred_payment else ""
         product_line = f"- Last product ordered: {_last_product}\n" if _last_product else ""
-        address_line = f"- Address on file: {_address}\n" if _address else ""
+        # Address MUST NOT appear in browsing-stage prompts — the LLM must not
+        # volunteer a "deliver to X?" line inside a product pitch.
+        address_line = (
+            "" if _is_browsing_stage
+            else (f"- Address on file: {_address}\n" if _address else "")
+        )
 
         _confirm_name_rule = (
             f"- For name step: say 'Order for {_name}? (yes / change)' — do NOT ask name from scratch.\n"
             if _name else ""
         )
+        # Address confirm rule only makes sense in order_collection, not browsing.
         _confirm_address_rule = (
-            f"- For address step: say 'Deliver to {_address}? (yes / change)' — do NOT ask address from scratch.\n"
-            if _address else ""
+            "" if _is_browsing_stage
+            else (
+                f"- For address step: say 'Deliver to {_address}? (yes / change)' — do NOT ask address from scratch.\n"
+                if _address else ""
+            )
+        )
+        _browsing_address_ban = (
+            "🚫 BROWSING STAGE — ADDRESS RULE: DO NOT mention the customer's saved address.\n"
+            "   DO NOT say 'deliver to …', 'ship to …', or any delivery-address phrasing.\n"
+            "   Address is collected ONLY in order_collection. Offer product + price only.\n"
+            if _is_browsing_stage and _address else ""
         )
         repeat_customer_note = f"""
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -496,7 +523,7 @@ REPEAT CUSTOMER DETECTED:
 {vip_flag}{name_line}- Total orders: {_orders}
 {spent_line}{payment_line}{product_line}{address_line}
 RULES FOR THIS RETURNING CUSTOMER:
-⚠️  QUANTITY IS ALWAYS REQUIRED FIRST — even for repeat customers.
+{_browsing_address_ban}⚠️  QUANTITY IS ALWAYS REQUIRED FIRST — even for repeat customers.
     ALWAYS ask 'How many pieces would you like?' BEFORE confirming name or address.
     NEVER skip quantity. NEVER assume quantity from context.
 {_confirm_name_rule}{_confirm_address_rule}- Greet them personally by name{' (' + _name + ')' if _name else ''}. Reference their last order.

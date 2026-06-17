@@ -98,6 +98,11 @@ class Conversation(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # Per-conversation button nonce — rotated every time interactive buttons are sent.
+    # Button IDs are encoded as "{action}~{conv_id}~{nonce}"; a tap with a mismatched
+    # nonce is stale (old button) and is rejected without side effects. (migration 0041)
+    current_button_nonce: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+
     messages: Mapped[list[Message]] = relationship(
         "Message", back_populates="conversation", order_by="Message.created_at"
     )

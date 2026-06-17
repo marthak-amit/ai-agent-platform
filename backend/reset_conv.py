@@ -9,6 +9,7 @@ Usage:
     python reset_conv.py --id 52
     python reset_conv.py --phone 917575092467
     python reset_conv.py --id 52 --no-purge-orders   # skip order purge
+    python reset_conv.py --fresh-customer        # also wipes customer profile (name/address asked again)
 
 If you just added a model column, run `alembic upgrade head` first.
 """
@@ -19,6 +20,8 @@ from sqlalchemy import delete, select
 
 from app.db import _get_session_factory
 from app.models.conversation import Conversation
+from app.models.customer import Customer
+from app.models.message import Message
 from app.models.order import Order
 from app.models.product import Product
 
@@ -82,8 +85,36 @@ async def purge_orders(db, conv_id: int) -> None:
         print("  No stock restoration needed (no stock_deducted orders).")
 
 
-async def reset(conv_id, phone, do_purge: bool):
-    """Reset conversation slots and optionally purge test orders."""
+async def wipe_customer_profile(db, phone_number: str) -> None:
+    """NULL out the customer profile name and address for the given phone number."""
+    result = await db.execute(
+        select(Customer).where(Customer.phone == phone_number)
+    )
+    customer = result.scalar_one_or_none()
+    if customer is None:
+        print("  No customer profile found — nothing wiped.")
+        return
+    customer.name = None
+    customer.address = None
+    print(f"  Wiped customer profile for phone={phone_number} (name=None, address=None).")
+
+
+async def delete_messages(db, conv_id: int) -> int:
+    """Delete all Message rows for conv_id. Returns count deleted."""
+    result = await db.execute(
+        select(Message).where(Message.conversation_id == conv_id)
+    )
+    messages = result.scalars().all()
+    count = len(messages)
+    if count:
+        await db.execute(
+            delete(Message).where(Message.conversation_id == conv_id)
+        )
+    return count
+
+
+async def reset(conv_id, phone, do_purge: bool, hard: bool):
+    """Reset conversation slots and optionally purge test orders or wipe customer profile."""
     factory = _get_session_factory()
     async with factory() as db:
         if conv_id is not None:
@@ -96,6 +127,9 @@ async def reset(conv_id, phone, do_purge: bool):
             print(f"No conversation found (id={conv_id}, phone={phone}).")
             return
 
+        msg_count = await delete_messages(db, conv.id)
+        print(f"  Deleted {msg_count} message(s) for conv_id={conv.id}.")
+
         if do_purge:
             await purge_orders(db, conv.id)
 
@@ -105,11 +139,17 @@ async def reset(conv_id, phone, do_purge: bool):
             else:
                 print(f"  (skipped unknown column: {field})")
 
+        if hard:
+            await wipe_customer_profile(db, conv.phone_number)
+
         await db.commit()
+
+        mode = "hard (name + address will be asked)" if hard else "returning-customer (name/address auto-filled if profile exists)"
         print(
             f"\nReset conv id={conv.id} phone={conv.phone_number} -> "
             f"stage='{conv.current_stage}', ai_enabled={conv.ai_enabled}, "
-            f"escalation_count={conv.escalation_count}, all order slots cleared."
+            f"escalation_count={conv.escalation_count}, all order slots cleared.\n"
+            f"Mode: {mode}"
         )
 
 
@@ -125,12 +165,25 @@ def main():
         default=True,
         help="skip deleting test orders and restoring stock",
     )
+    p.add_argument(
+        "--hard",
+        dest="hard",
+        action="store_true",
+        default=False,
+        help="also wipe customer profile name/address so next flow asks for them (brand-new-customer path)",
+    )
+    p.add_argument(
+        "--fresh-customer",
+        dest="hard",
+        action="store_true",
+        help="alias for --hard (deprecated)",
+    )
     args = p.parse_args()
 
     if args.phone:
-        asyncio.run(reset(None, args.phone, args.purge_orders))
+        asyncio.run(reset(None, args.phone, args.purge_orders, args.hard))
     else:
-        asyncio.run(reset(args.id, None, args.purge_orders))
+        asyncio.run(reset(args.id, None, args.purge_orders, args.hard))
 
 
 if __name__ == "__main__":

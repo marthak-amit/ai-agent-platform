@@ -765,3 +765,208 @@ async def get_product_variant_info(db: AsyncSession, product: Product) -> dict:
         "available_sizes": sizes,
         "available_materials": materials,
     }
+
+
+async def variant_available(
+    db: AsyncSession,
+    product_id: int,
+    color: str | None = None,
+    size: str | None = None,
+    material: str | None = None,
+) -> tuple[bool, int]:
+    """
+    Return (exists, stock) for the exact variant combo.
+
+    A combo is "available" only when a matching active variant row exists AND
+    its stock is > 0.  None-valued attributes are not filtered on, so a product
+    with only color+size variants can be queried without passing material.
+
+    Args:
+        db:         Active async DB session.
+        product_id: Product.id to search within.
+        color:      Selected color (None = skip filter).
+        size:       Selected size (None = skip filter).
+        material:   Selected material (None = skip filter).
+
+    Returns:
+        (True, stock) when in-stock; (False, 0) when OOS or not found.
+    """
+    stmt = select(ProductVariant).where(
+        ProductVariant.product_id == product_id,
+        ProductVariant.is_active == True,  # noqa: E712
+    )
+    if color:
+        stmt = stmt.where(ProductVariant.color == color)
+    if size:
+        stmt = stmt.where(ProductVariant.size == size)
+    if material:
+        stmt = stmt.where(ProductVariant.material == material)
+    result = await db.execute(stmt)
+    variant = result.scalars().first()
+    if variant is None:
+        return (False, 0)
+    stock = (variant.stock or 0)
+    return (stock > 0, stock)
+
+
+def render_product_listing(products: list[Product]) -> str:
+    """
+    Render a deterministic product listing from DB rows — no AI generation.
+
+    Used as the fallback text when the guard detects phantom SKUs/prices in
+    an AI-generated browsing reply.
+
+    Args:
+        products: Product ORM instances to render.
+
+    Returns:
+        Multi-line product listing string, or "" if products is empty.
+    """
+    if not products:
+        return ""
+    lines = []
+    for p in products:
+        line = f"• {p.name}"
+        if p.sku:
+            line += f" [{p.sku}]"
+        if p.price is not None:
+            line += f" — ₹{int(p.price):,}"
+        if p.has_variants and p.variants:
+            active_v = [v for v in p.variants if getattr(v, "is_active", True) and (v.stock or 0) > 0]
+            colors = sorted({v.color for v in active_v if v.color})
+            if colors:
+                line += f"\n  Colors: {', '.join(colors)}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+_SKU_IN_REPLY_RE = re.compile(r"\b([A-Za-z]{2,4}\d{4,6})\b")
+_PRICE_IN_REPLY_RE = re.compile(r"₹\s*(\d[\d,]*)")
+
+
+def guard_product_reply(
+    reply: str,
+    canonical_products: list[Product],
+    query: str | None = None,
+) -> str:
+    """
+    Verify that an AI-generated browsing reply contains only real product facts.
+
+    Extracts every SKU-like token and ₹ price from *reply* and checks each
+    against the DB rows that were actually queried this turn.  If any phantom
+    SKU or price is found, replaces the entire reply with a deterministic
+    listing rendered from *canonical_products*.
+
+    When *query* is provided and the canonical products have zero relevance
+    to that query (score=0), the fallback is an honest "not found" message
+    rather than listing an irrelevant product.
+
+    This guard runs on ALL models including 429 fallbacks (8b / llama-4-scout)
+    which hallucinate more frequently.
+
+    Args:
+        reply:              AI-generated reply text.
+        canonical_products: Products whose data is allowed in the reply
+                            (the rows that were passed to the AI as context).
+        query:              Original customer query — used for relevance check
+                            so we don't show an unrelated pinned product when
+                            the customer asked about something we don't carry.
+
+    Returns:
+        Original reply when clean; deterministic listing when phantom found
+        (or "not found" message when query has no match in canonical set).
+    """
+    if not canonical_products:
+        return reply
+
+    import logging as _log
+    _logger = _log.getLogger(__name__)
+
+    allowed_skus = {(p.sku or "").upper() for p in canonical_products if p.sku}
+    allowed_prices = {str(int(p.price)) for p in canonical_products if p.price is not None}
+
+    reply_skus = {m.group(1).upper() for m in _SKU_IN_REPLY_RE.finditer(reply)}
+    phantom_skus = reply_skus - allowed_skus
+
+    reply_raw_prices: set[str] = set()
+    for m in _PRICE_IN_REPLY_RE.finditer(reply):
+        reply_raw_prices.add(m.group(1).replace(",", ""))
+    phantom_prices = reply_raw_prices - allowed_prices
+
+    if phantom_skus or phantom_prices:
+        _logger.warning(
+            "guard_product_reply: phantom SKUs=%s prices=%s — replacing with deterministic listing.",
+            phantom_skus, phantom_prices,
+        )
+
+        # FIX 3: If a query is provided, check whether canonical_products actually
+        # match it. Score=0 means the canonical set was there only due to a pinned
+        # SKU from a prior turn — not because it matched the current query.
+        # In that case return an honest "not found" reply rather than listing an
+        # irrelevant product.
+        if query:
+            _scored = search_products_with_scores(canonical_products, query, top_k=1)
+            _top_score = _scored[0][0] if _scored else 0
+            if _top_score == 0:
+                _query_label = query.strip()[:40]
+                _real_names = ", ".join(p.name for p in canonical_products[:4])
+                _logger.info(
+                    "guard_product_reply: query %r has 0 relevance to canonical products — "
+                    "returning not-found instead of irrelevant listing.",
+                    _query_label,
+                )
+                return (
+                    f"Sorry, we don't carry {_query_label}. "
+                    f"We currently have: {_real_names}. "
+                    "Let me know if any of these interest you!"
+                )
+
+        listing = render_product_listing(canonical_products)
+        return f"Here are some options:\n{listing}"
+
+    return reply
+
+
+async def get_in_stock_options(
+    db: AsyncSession,
+    product_id: int,
+    color: str | None = None,
+    size: str | None = None,
+    material: str | None = None,
+) -> dict[str, list[str]]:
+    """
+    Return the in-stock attribute options for a partial variant combo.
+
+    Given a (possibly partial) combo, returns which values of each attribute
+    still have stock > 0.  Used to generate "X isn't available in Y — available
+    options: ..." messages.
+
+    Args:
+        db:         Active async DB session.
+        product_id: Product.id to search within.
+        color:      Fixed color to filter on (None = free).
+        size:       Fixed size to filter on (None = free).
+        material:   Fixed material to filter on (None = free).
+
+    Returns:
+        Dict with keys 'colors', 'sizes', 'materials' — each a sorted list of
+        in-stock values given the fixed attributes.
+    """
+    stmt = select(ProductVariant).where(
+        ProductVariant.product_id == product_id,
+        ProductVariant.is_active == True,  # noqa: E712
+        ProductVariant.stock > 0,
+    )
+    if color:
+        stmt = stmt.where(ProductVariant.color == color)
+    if size:
+        stmt = stmt.where(ProductVariant.size == size)
+    if material:
+        stmt = stmt.where(ProductVariant.material == material)
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+    return {
+        "colors": sorted({r.color for r in rows if r.color}),
+        "sizes": sorted({r.size for r in rows if r.size}),
+        "materials": sorted({r.material for r in rows if r.material}),
+    }

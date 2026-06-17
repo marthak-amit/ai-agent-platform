@@ -16,19 +16,84 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.order import Order
+from app.services.language_templates import format_price
 
 logger = logging.getLogger(__name__)
 
 
-async def _get_order_count_for_year(client_id: int, year: int, db: AsyncSession) -> int:
-    """Return how many orders exist for this client in the given year."""
+async def _get_order_count_for_year(_client_id: int, year: int, db: AsyncSession) -> int:
+    """Return the total number of orders across ALL clients for the given year.
+
+    Used to generate a globally unique order number (order_number has a unique
+    constraint across all clients, so the sequence must be global too).
+    """
     result = await db.execute(
         select(func.count()).where(
-            Order.client_id == client_id,
             func.extract("year", Order.created_at) == year,
         )
     )
     return result.scalar_one() or 0
+
+
+async def mark_order_paid(
+    db: AsyncSession,
+    order: Order,
+    client,
+) -> bool:
+    """
+    Atomically transition an order to 'paid' and deduct stock — Phase 4 money lifecycle.
+
+    Idempotent: returns False immediately if order.stock_deducted is already True,
+    so duplicate 'paid' messages and webhook retries are harmless.
+
+    Stock decrement happens HERE and ONLY here — never at order-creation time.
+    The order's paid_at and payment_status are also set in this call.
+
+    Args:
+        db:    Async DB session.
+        order: Order ORM instance to mark as paid.
+        client: Client ORM instance (for owner notification).
+
+    Returns:
+        True if this call performed the transition; False if already done (idempotent skip).
+    """
+    if order.stock_deducted:
+        logger.info(
+            "mark_order_paid: order %s already paid — idempotent skip.",
+            order.order_number,
+        )
+        return False
+
+    try:
+        order.status = "paid"
+        order.payment_status = "paid"
+        order.paid_at = datetime.now(timezone.utc)
+        order.confirmed_at = order.confirmed_at or datetime.now(timezone.utc)
+        order.stock_deducted = True
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        logger.error("mark_order_paid commit failed for %s: %s", order.order_number, exc)
+        raise
+
+    # Stock deduction — best-effort after status commit so the order row is safe
+    # even if the stock update fails (it will be retried via admin or background job).
+    try:
+        await _deduct_product_stock(db, order)
+    except Exception as exc:
+        logger.error(
+            "mark_order_paid: stock deduction failed for %s: %s — order is paid but stock not decremented.",
+            order.order_number, exc,
+        )
+
+    # Owner notification — best-effort
+    try:
+        await _notify_owner_new_order(order, client)
+    except Exception as exc:
+        logger.warning("mark_order_paid: owner notification failed for %s: %s", order.order_number, exc)
+
+    logger.info("mark_order_paid: order %s → paid, stock deducted.", order.order_number)
+    return True
 
 
 async def create_order(
@@ -47,7 +112,8 @@ async def create_order(
     variant_size: Optional[str] = None,
     variant_material: Optional[str] = None,
     product_id: Optional[int] = None,
-    initial_status: str = "confirmed",
+    initial_status: str = "pending_payment",
+    idempotency_key: Optional[str] = None,
 ) -> Order:
     """
     Create and persist a new order, then notify the business owner via WhatsApp.
@@ -94,31 +160,17 @@ async def create_order(
         total_amount=unit_price * quantity,
         payment_method=payment_method,
         status=initial_status,
-        confirmed_at=datetime.now(timezone.utc) if initial_status == "confirmed" else None,
+        idempotency_key=idempotency_key,
+        # confirmed_at is set only when transitioning to paid (in mark_order_paid).
+        # Orders start as pending_payment regardless of payment method.
     )
 
     db.add(order)
     await db.commit()
     await db.refresh(order)
 
-    # Safety backup: deduct stock here in case the webhook path skipped it.
-    # For pending_payment orders stock is deducted only after payment is confirmed.
-    # The stock_deducted flag ensures we never deduct twice.
-    if product_id and not order.stock_deducted and initial_status != "pending_payment":
-        try:
-            await _deduct_product_stock(db, order)
-        except Exception as exc:
-            logger.warning("Backup stock deduction failed for order %s: %s", order.order_number, exc)
-
-    # Notify owner — best-effort; failure must not break the order flow
-    try:
-        from app.models.client import Client
-        result = await db.execute(select(Client).where(Client.id == client_id))
-        client = result.scalar_one_or_none()
-        if client:
-            await _notify_owner_new_order(order, client)
-    except Exception as exc:
-        logger.warning("Owner notification failed for order %s: %s", order.order_number, exc)
+    # Phase 4: stock is NEVER decremented at creation — only in mark_order_paid().
+    # No backup deduction here.
 
     return order
 
@@ -140,7 +192,7 @@ async def _notify_owner_new_order(order: Order, client) -> None:
         f"Order: #{order.order_number}\n"
         f"Product: {order.product_name} × {order.quantity}\n"
         f"{_variant_line}"
-        f"Amount: ₹{order.total_amount:.0f}\n"
+        f"Amount: {format_price(order.total_amount)}\n"
         f"Customer: {order.customer_name}\n"
         f"Phone: {order.customer_phone}\n"
         f"Address: {order.delivery_address}\n"
@@ -348,7 +400,7 @@ async def _deduct_product_stock(db: AsyncSession, order: Order) -> None:
     from app.models.product import Product
     from app.models.product_variant import ProductVariant
 
-    if order.stock_deducted or not order.product_id:
+    if not order.product_id:
         return
 
     result = await db.execute(select(Product).where(Product.id == order.product_id))

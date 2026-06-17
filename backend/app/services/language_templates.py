@@ -9,6 +9,12 @@ point of this file.
 
 from __future__ import annotations
 
+
+def format_price(p: float | int) -> str:
+    """Format a price as integer rupees with thousands separator: ₹2,450."""
+    return f"₹{int(round(p)):,}"
+
+
 ENGLISH_TEMPLATES: dict[str, str] = {
     "greeting": "Welcome to {business}! What are you looking for today?",
     "greeting_new": "Welcome to {business}! 👋 Here's our catalogue: {catalogue_url}\nWhat are you looking for today?",
@@ -40,68 +46,71 @@ ENGLISH_TEMPLATES: dict[str, str] = {
     ),
     "stock_exceeded": "We only have {stock} pieces available. Would you like {stock} pieces?",
     "order_summary": (
+        "We currently accept payments via UPI only.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
-        "📦 {product} × {qty} = ₹{total}\n"
+        "📦 {product} × {qty} = {total}\n"
         "👤 {name}\n"
         "📍 {address}\n"
         "💳 {payment}\n"
-        "━━━━━━━━━━━━━━━\n"
-        "Reply:\n"
-        "1️⃣ Confirm & pay   2️⃣ Cancel"
+        "🚚 Delivery in {delivery_time}\n"
+        "━━━━━━━━━━━━━━━"
     ),
     "order_summary_variant": (
+        "We currently accept payments via UPI only.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
-        "📦 {product} {variant} × {qty} = ₹{total}\n"
+        "📦 {product} {variant} × {qty} = {total}\n"
         "👤 {name}\n"
         "📍 {address}\n"
         "💳 {payment}\n"
-        "━━━━━━━━━━━━━━━\n"
-        "Reply:\n"
-        "1️⃣ Confirm & pay   2️⃣ Cancel"
+        "🚚 Delivery in {delivery_time}\n"
+        "━━━━━━━━━━━━━━━"
     ),
     "order_summary_crosssell": (
+        "We currently accept payments via UPI only.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
-        "📦 {product} × {qty} = ₹{total}\n"
+        "📦 {product} × {qty} = {total}\n"
         "👤 {name}\n"
         "📍 {address}\n"
         "💳 {payment}\n"
+        "🚚 Delivery in {delivery_time}\n"
         "━━━━━━━━━━━━━━━\n"
         "Reply:\n"
         "1️⃣ Confirm & pay\n"
-        "2️⃣ Add {cs_name} (₹{cs_price}) too\n"
+        "2️⃣ Add {cs_name} ({cs_price}) too\n"
         "3️⃣ Cancel"
     ),
     "order_summary_variant_crosssell": (
+        "We currently accept payments via UPI only.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
-        "📦 {product} {variant} × {qty} = ₹{total}\n"
+        "📦 {product} {variant} × {qty} = {total}\n"
         "👤 {name}\n"
         "📍 {address}\n"
         "💳 {payment}\n"
+        "🚚 Delivery in {delivery_time}\n"
         "━━━━━━━━━━━━━━━\n"
         "Reply:\n"
         "1️⃣ Confirm & pay\n"
-        "2️⃣ Add {cs_name} (₹{cs_price}) too\n"
+        "2️⃣ Add {cs_name} ({cs_price}) too\n"
         "3️⃣ Cancel"
     ),
-    "order_confirmed": "Order confirmed! ✅ {qty} × {product} = ₹{total}. Delivery in {delivery_time}.",
+    "order_confirmed": "Order confirmed! ✅ {qty} × {product} = {total}. Delivery in {delivery_time}.",
     "order_confirmed_cod": (
-        "Order confirmed! ✅\n"
-        "📦 {product} {variant_part}× {qty} = ₹{total}\n"
-        "👤 {name}\n"
-        "📍 {address}\n"
-        "💳 Cash on Delivery — pay ₹{total} on delivery.\n"
-        "{delivery_time}"
+        "🎉 Your order has been placed successfully! ✅\n"
+        "📦 {product} {variant_part}× {qty} = {total}\n"
+        "🚚 Delivery in {delivery_time}\n\n"
+        "Thank you for shopping with us! 😊\n"
+        "{catalogue_line}"
     ),
     "order_confirmed_paid": (
-        "Order confirmed! ✅\n"
-        "📦 {product} {variant_part}× {qty} = ₹{total}\n"
-        "👤 {name}\n"
-        "📍 {address}\n"
-        "{delivery_time}"
+        "🎉 Your order has been placed successfully! ✅\n"
+        "📦 {product} {variant_part}× {qty} = {total}\n"
+        "🚚 Delivery in {delivery_time}\n\n"
+        "Thank you for shopping with us! 😊\n"
+        "{catalogue_line}"
     ),
     "already_confirmed": "Your order is already confirmed ✅ Anything else I can help with?",
     "interrupt_switch": (
@@ -132,7 +141,7 @@ ENGLISH_TEMPLATES: dict[str, str] = {
     ),
     "off_topic_midorder": "Let's finish your order first 🙂\n\n{slot_question}",
     "order_status": (
-        "Order #{order_id}: {product} {variant_part}× {qty} = ₹{total}.\n"
+        "Order #{order_id}: {product} {variant_part}× {qty} = {total}.\n"
         "Status: {status}.\n"
         "Delivery to {address}.\n"
         "{delivery_time}"
@@ -178,68 +187,71 @@ HINDI_TEMPLATES: dict[str, str] = {
     ),
     "stock_exceeded": "Sirf {stock} pieces available hain. {stock} pieces ka order karein?",
     "order_summary": (
+        "Hum sirf UPI se payment accept karte hain.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
-        "📦 {product} × {qty} = ₹{total}\n"
+        "📦 {product} × {qty} = {total}\n"
         "👤 {name}\n"
         "📍 {address}\n"
         "💳 {payment}\n"
-        "━━━━━━━━━━━━━━━\n"
-        "Reply karein:\n"
-        "1️⃣ Confirm & pay   2️⃣ Cancel"
+        "🚚 Delivery in {delivery_time}\n"
+        "━━━━━━━━━━━━━━━"
     ),
     "order_summary_variant": (
+        "Hum sirf UPI se payment accept karte hain.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
-        "📦 {product} {variant} × {qty} = ₹{total}\n"
+        "📦 {product} {variant} × {qty} = {total}\n"
         "👤 {name}\n"
         "📍 {address}\n"
         "💳 {payment}\n"
-        "━━━━━━━━━━━━━━━\n"
-        "Reply karein:\n"
-        "1️⃣ Confirm & pay   2️⃣ Cancel"
+        "🚚 Delivery in {delivery_time}\n"
+        "━━━━━━━━━━━━━━━"
     ),
     "order_summary_crosssell": (
+        "Hum sirf UPI se payment accept karte hain.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
-        "📦 {product} × {qty} = ₹{total}\n"
+        "📦 {product} × {qty} = {total}\n"
         "👤 {name}\n"
         "📍 {address}\n"
         "💳 {payment}\n"
+        "🚚 Delivery in {delivery_time}\n"
         "━━━━━━━━━━━━━━━\n"
         "Reply karein:\n"
         "1️⃣ Confirm & pay\n"
-        "2️⃣ {cs_name} (₹{cs_price}) bhi add karein\n"
+        "2️⃣ {cs_name} ({cs_price}) bhi add karein\n"
         "3️⃣ Cancel"
     ),
     "order_summary_variant_crosssell": (
+        "Hum sirf UPI se payment accept karte hain.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
-        "📦 {product} {variant} × {qty} = ₹{total}\n"
+        "📦 {product} {variant} × {qty} = {total}\n"
         "👤 {name}\n"
         "📍 {address}\n"
         "💳 {payment}\n"
+        "🚚 Delivery in {delivery_time}\n"
         "━━━━━━━━━━━━━━━\n"
         "Reply karein:\n"
         "1️⃣ Confirm & pay\n"
-        "2️⃣ {cs_name} (₹{cs_price}) bhi add karein\n"
+        "2️⃣ {cs_name} ({cs_price}) bhi add karein\n"
         "3️⃣ Cancel"
     ),
-    "order_confirmed": "Order confirm ho gaya! ✅ {qty} × {product} = ₹{total}. {delivery_time} mein delivery.",
+    "order_confirmed": "Order confirm ho gaya! ✅ {qty} × {product} = {total}. {delivery_time} mein delivery.",
     "order_confirmed_cod": (
-        "Order confirm ho gaya! ✅\n"
-        "📦 {product} {variant_part}× {qty} = ₹{total}\n"
-        "👤 {name}\n"
-        "📍 {address}\n"
-        "💳 Cash on Delivery — delivery pe ₹{total} dein.\n"
-        "{delivery_time}"
+        "🎉 Aapka order place ho gaya! ✅\n"
+        "📦 {product} {variant_part}× {qty} = {total}\n"
+        "🚚 Delivery in {delivery_time}\n\n"
+        "Shopping karne ke liye shukriya! 😊\n"
+        "{catalogue_line}"
     ),
     "order_confirmed_paid": (
-        "Order confirm ho gaya! ✅\n"
-        "📦 {product} {variant_part}× {qty} = ₹{total}\n"
-        "👤 {name}\n"
-        "📍 {address}\n"
-        "{delivery_time}"
+        "🎉 Aapka order place ho gaya! ✅\n"
+        "📦 {product} {variant_part}× {qty} = {total}\n"
+        "🚚 Delivery in {delivery_time}\n\n"
+        "Shopping karne ke liye shukriya! 😊\n"
+        "{catalogue_line}"
     ),
     "already_confirmed": "Aapka order confirm ho chuka hai ✅ Koi aur help chahiye?",
     "interrupt_switch": (
@@ -271,7 +283,7 @@ HINDI_TEMPLATES: dict[str, str] = {
     ),
     "off_topic_midorder": "Pehle apna order complete karte hain 🙂\n\n{slot_question}",
     "order_status": (
-        "Order #{order_id}: {product} {variant_part}× {qty} = ₹{total}.\n"
+        "Order #{order_id}: {product} {variant_part}× {qty} = {total}.\n"
         "Status: {status}.\n"
         "Delivery: {address}.\n"
         "{delivery_time}"
@@ -317,68 +329,71 @@ GUJARATI_TEMPLATES: dict[str, str] = {
     ),
     "stock_exceeded": "Sirf {stock} pieces available chhe. {stock} pieces levo chhe?",
     "order_summary": (
+        "Hum sirf UPI thi payment accept karie chhe.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
-        "📦 {product} × {qty} = ₹{total}\n"
+        "📦 {product} × {qty} = {total}\n"
         "👤 {name}\n"
         "📍 {address}\n"
         "💳 {payment}\n"
-        "━━━━━━━━━━━━━━━\n"
-        "Reply karo:\n"
-        "1️⃣ Confirm & pay   2️⃣ Cancel"
+        "🚚 Delivery in {delivery_time}\n"
+        "━━━━━━━━━━━━━━━"
     ),
     "order_summary_variant": (
+        "Hum sirf UPI thi payment accept karie chhe.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
-        "📦 {product} {variant} × {qty} = ₹{total}\n"
+        "📦 {product} {variant} × {qty} = {total}\n"
         "👤 {name}\n"
         "📍 {address}\n"
         "💳 {payment}\n"
-        "━━━━━━━━━━━━━━━\n"
-        "Reply karo:\n"
-        "1️⃣ Confirm & pay   2️⃣ Cancel"
+        "🚚 Delivery in {delivery_time}\n"
+        "━━━━━━━━━━━━━━━"
     ),
     "order_summary_crosssell": (
+        "Hum sirf UPI thi payment accept karie chhe.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
-        "📦 {product} × {qty} = ₹{total}\n"
+        "📦 {product} × {qty} = {total}\n"
         "👤 {name}\n"
         "📍 {address}\n"
         "💳 {payment}\n"
+        "🚚 Delivery in {delivery_time}\n"
         "━━━━━━━━━━━━━━━\n"
         "Reply karo:\n"
         "1️⃣ Confirm & pay\n"
-        "2️⃣ {cs_name} (₹{cs_price}) pan add karo\n"
+        "2️⃣ {cs_name} ({cs_price}) pan add karo\n"
         "3️⃣ Cancel"
     ),
     "order_summary_variant_crosssell": (
+        "Hum sirf UPI thi payment accept karie chhe.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
-        "📦 {product} {variant} × {qty} = ₹{total}\n"
+        "📦 {product} {variant} × {qty} = {total}\n"
         "👤 {name}\n"
         "📍 {address}\n"
         "💳 {payment}\n"
+        "🚚 Delivery in {delivery_time}\n"
         "━━━━━━━━━━━━━━━\n"
         "Reply karo:\n"
         "1️⃣ Confirm & pay\n"
-        "2️⃣ {cs_name} (₹{cs_price}) pan add karo\n"
+        "2️⃣ {cs_name} ({cs_price}) pan add karo\n"
         "3️⃣ Cancel"
     ),
-    "order_confirmed": "Order confirm thai gayu! ✅ {qty} × {product} = ₹{total}. {delivery_time} maa delivery.",
+    "order_confirmed": "Order confirm thai gayu! ✅ {qty} × {product} = {total}. {delivery_time} maa delivery.",
     "order_confirmed_cod": (
-        "Order confirm thai gayu! ✅\n"
-        "📦 {product} {variant_part}× {qty} = ₹{total}\n"
-        "👤 {name}\n"
-        "📍 {address}\n"
-        "💳 Cash on Delivery — delivery vakhate ₹{total} aapvo.\n"
-        "{delivery_time}"
+        "🎉 Tamaro order place thai gayu! ✅\n"
+        "📦 {product} {variant_part}× {qty} = {total}\n"
+        "🚚 Delivery in {delivery_time}\n\n"
+        "Shopping karva mate aabhar! 😊\n"
+        "{catalogue_line}"
     ),
     "order_confirmed_paid": (
-        "Order confirm thai gayu! ✅\n"
-        "📦 {product} {variant_part}× {qty} = ₹{total}\n"
-        "👤 {name}\n"
-        "📍 {address}\n"
-        "{delivery_time}"
+        "🎉 Tamaro order place thai gayu! ✅\n"
+        "📦 {product} {variant_part}× {qty} = {total}\n"
+        "🚚 Delivery in {delivery_time}\n\n"
+        "Shopping karva mate aabhar! 😊\n"
+        "{catalogue_line}"
     ),
     "already_confirmed": "Tamaro order confirm thai gayo chhe ✅ Koi madad joiye?",
     "interrupt_switch": (
@@ -410,7 +425,7 @@ GUJARATI_TEMPLATES: dict[str, str] = {
     ),
     "off_topic_midorder": "Pehla tamaro order pura kariye 🙂\n\n{slot_question}",
     "order_status": (
-        "Order #{order_id}: {product} {variant_part}× {qty} = ₹{total}.\n"
+        "Order #{order_id}: {product} {variant_part}× {qty} = {total}.\n"
         "Status: {status}.\n"
         "Delivery: {address}.\n"
         "{delivery_time}"

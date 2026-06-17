@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata as _ud
 
 logger = logging.getLogger(__name__)
 
@@ -148,12 +149,20 @@ _CONFIRMATION_YES = frozenset({
     "yes", "haan", "han", "ha", "confirm", "ok", "okay", "sahi", "theek",
     "bilkul", "zaroor", "done", "proceed", "place", "book",
     "1",  # numbered choice: 1 = Confirm & pay
+    # Devanagari (Hindi) affirmatives — detect_stage splits on whitespace then intersects
+    "हाँ", "हां", "ठीक",
+    # Gujarati script affirmatives
+    "હા", "બરાબર", "કરો",
 })
 _CONFIRMATION_NO = frozenset({
     "no", "nahi", "nope", "cancel", "change", "badal", "nhi",
     "different", "wrong", "incorrect",
     "3",  # numbered choice: 3 = Cancel (when cross-sell shown)
     "2",  # numbered choice: 2 = Cancel (when no cross-sell, 2 is Cancel)
+    # Devanagari (Hindi) negatives
+    "नहीं", "ना", "मत",
+    # Gujarati script negatives
+    "ના", "નહીં", "નહિ", "રદ",
 })
 # "2" when cross-sell is shown means "add cross-sell product" — webhook.py intercepts
 # this before detect_stage runs. If no cross-sell was shown, 2 maps to Cancel above.
@@ -436,17 +445,19 @@ async def classify_user_intent(
     user_text: str,
     next_slot: str,
     pinned_product_name: str,
-) -> str:
+) -> dict:
     """
     Lightweight intent classifier — called before slot extraction when the
     conversation is in order_collection/awaiting_final_confirmation.
 
-    Makes a single Groq call (llama-3.1-8b-instant, max_tokens=50) and returns
-    one of: ANSWER | NEW_PRODUCT | CANCEL | DISCOUNT_QUERY | OTHER.
+    Returns the DOC A {intent, entities} struct. The LLM is the ONLY source of
+    customer-facing classification in order stages; it never generates a reply.
+
+    intent is one of: ANSWER | NEW_PRODUCT | CANCEL | DISCOUNT_QUERY | OFF_TOPIC | OTHER.
+    entities is a sparse dict of any tokens visible in the message (e.g. {"sku": "SR123"}).
 
     DISCOUNT_QUERY is returned (without a Groq call) when the message contains
-    obvious price-objection / discount keywords so the webhook can acknowledge
-    and re-ask the current slot without touching the slot state.
+    obvious price-objection / discount keywords.
 
     Args:
         user_text:           The customer's latest message.
@@ -454,19 +465,27 @@ async def classify_user_intent(
         pinned_product_name: Display name of the product currently being ordered.
 
     Returns:
-        One of "ANSWER", "NEW_PRODUCT", "CANCEL", "DISCOUNT_QUERY", "OTHER".
-        Falls back to "ANSWER" on any error so slot-filling is never blocked.
+        {"intent": str, "entities": dict} — intent falls back to "ANSWER" on any error.
     """
     # Fast keyword path — no LLM call needed for obvious price complaints.
     if _is_price_objection(user_text):
-        return "DISCOUNT_QUERY"
+        return {"intent": "DISCOUNT_QUERY", "entities": {}}
+
+    # Fast keyword path for cancel — no LLM call needed.
+    _CANCEL_KW = (
+        "cancel", "ruk jao", "band karo", "rok do",
+        "રદ કરો", "रद्द", "cancel karo", "nahi chahiye", "nahi karna",
+    )
+    _text_lower = user_text.lower().strip()
+    if any(kw in _text_lower for kw in _CANCEL_KW):
+        return {"intent": "CANCEL", "entities": {}}
 
     # Fast SKU path — a SKU token is never a valid answer to any order slot.
     # This fires reliably regardless of which slot is active, bypassing the LLM.
     from app.services.catalogue_service import extract_skus_from_text as _extract_skus
     _sku_hits = _extract_skus(user_text)
     if _sku_hits:
-        return "NEW_PRODUCT"
+        return {"intent": "NEW_PRODUCT", "entities": {"sku": _sku_hits[0]}}
 
     from openai import AsyncOpenAI
     from app.config import get_settings
@@ -492,23 +511,112 @@ async def classify_user_intent(
             base_url="https://api.groq.com/openai/v1",
             max_retries=0,
         )
-        resp = await client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=10,
-            temperature=0,
-        )
+        import asyncio as _aio
+        _backoff = 1.0
+        for _attempt in range(3):
+            try:
+                resp = await client.chat.completions.create(
+                    model="llama-3.1-8b-instant",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=10,
+                    temperature=0,
+                )
+                break
+            except Exception as _e:
+                _is_429 = "429" in str(_e) or "rate" in str(_e).lower()
+                if _is_429 and _attempt < 2:
+                    logger.warning("classify_user_intent 429 — backoff %.1fs (attempt %d)", _backoff, _attempt + 1)
+                    await _aio.sleep(_backoff)
+                    _backoff *= 2
+                    continue
+                raise
         raw = (resp.choices[0].message.content or "").strip().upper()
         if raw in ("ANSWER", "NEW_PRODUCT", "CANCEL", "DISCOUNT_QUERY", "OFF_TOPIC", "OTHER"):
-            return raw
+            return {"intent": raw, "entities": {}}
         # If response contains the keyword, extract it
         for label in ("NEW_PRODUCT", "CANCEL", "DISCOUNT_QUERY", "OFF_TOPIC", "OTHER", "ANSWER"):
             if label in raw:
-                return label
+                return {"intent": label, "entities": {}}
     except Exception as exc:
         logger.warning("classify_user_intent failed (defaulting to ANSWER): %s", exc)
 
-    return "ANSWER"
+    return {"intent": "ANSWER", "entities": {}}
+
+
+async def classify_buy_intent(user_text: str, product_name: str) -> bool:
+    """
+    LLM-based buy-intent classifier for browsing stages.
+
+    Returns True when the customer is expressing intent to purchase the pinned
+    product.  No keyword lists — the model decides from the full message so
+    that any natural-language phrasing ("lena hai", "le lo", "order kar do",
+    "haan bhai", "2 chahiye", "yes please") is caught uniformly.
+
+    Called only when a product is already pinned (pending_product_sku set) and
+    the stage is still a browsing stage (greeting/product_inquiry/etc.).  It is
+    NOT called inside order_collection — that path uses classify_user_intent.
+
+    Args:
+        user_text:    The customer's latest message.
+        product_name: Display name of the pinned product.
+
+    Returns:
+        True if the customer wants to place an order for this product.
+        Falls back to False on any error so the flow degrades to browsing.
+    """
+    if not user_text or not user_text.strip():
+        return False
+    # Single-character or emoji-only messages are almost never buy intent.
+    if len(user_text.strip()) <= 2:
+        return False
+
+    prompt = (
+        f"A customer is chatting with an online store that sells {product_name}.\n"
+        f"Customer message: '{user_text}'\n\n"
+        "Is the customer clearly expressing intent to BUY, ORDER, or PURCHASE "
+        "this product right now?\n"
+        "Answer YES only if they want to order/buy/proceed with purchase.\n"
+        "Answer NO if they are asking a question, browsing, saying no/maybe/later, "
+        "or the message is ambiguous.\n"
+        "Respond with only YES or NO."
+    )
+
+    try:
+        from openai import AsyncOpenAI
+        from app.config import get_settings
+        import asyncio as _aio
+
+        settings = get_settings()
+        client = AsyncOpenAI(
+            api_key=settings.groq_api_key,
+            base_url="https://api.groq.com/openai/v1",
+            max_retries=0,
+        )
+        _backoff = 1.0
+        for _attempt in range(3):
+            try:
+                resp = await client.chat.completions.create(
+                    model="llama-3.1-8b-instant",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=5,
+                    temperature=0,
+                )
+                break
+            except Exception as _e:
+                _is_429 = "429" in str(_e) or "rate" in str(_e).lower()
+                if _is_429 and _attempt < 2:
+                    logger.warning("classify_buy_intent 429 — backoff %.1fs (attempt %d)", _backoff, _attempt + 1)
+                    await _aio.sleep(_backoff)
+                    _backoff *= 2
+                    continue
+                raise
+        raw = (resp.choices[0].message.content or "").strip().upper()
+        result = raw.startswith("YES")
+        logger.debug("classify_buy_intent product=%r text=%r → %s", product_name, user_text[:60], result)
+        return result
+    except Exception as exc:
+        logger.warning("classify_buy_intent failed (defaulting False): %s", exc)
+        return False
 
 
 async def is_off_topic_message(
@@ -774,6 +882,12 @@ def extract_order_field(
 
     # ── SIZE ──────────────────────────────────────────────────────────────────
     if next_slot == "size":
+        # Fix B: if the user types a valid color name while being asked for size,
+        # treat it as a color switch — overwrite selected_color so the next slot
+        # re-ask uses the new color's in-stock sizes (Fix A).
+        for color in vi.get("available_colors", []):
+            if re.search(r"\b" + re.escape(color.lower()) + r"\b", text_lower):
+                return ("selected_color", color)
         size_map = {s.lower(): s for s in vi.get("available_sizes", [])}
         for token in words:
             canonical = size_map.get(token.lower())
@@ -805,9 +919,13 @@ def extract_order_field(
         # before validating — "sure, I am Amit" → candidate "Amit".
         candidate = _strip_name_prefixes(text)
         candidate_words = candidate.split()
+        def _is_namelike_word(w: str) -> bool:
+            bare = w.replace(".", "")
+            return bool(bare) and all(_ud.category(c)[0] in ("L", "M") for c in bare)
+
         looks_like_name = (
             1 <= len(candidate_words) <= 4
-            and all(w.replace(".", "").isalpha() for w in candidate_words)
+            and all(_is_namelike_word(w) for w in candidate_words)
             and is_valid_name(candidate)
         )
         if looks_like_name:
@@ -1198,28 +1316,43 @@ def get_stage_instructions(
   Mentioning them here confuses the sequence.
 - NEVER dump entire catalogue
 - If customer just said NO to an order offer: acknowledge warmly ("No problem!"), then ask
-  if they'd like to see other items or browse the full catalogue. Do NOT push the same product."""
+  if they'd like to see other items or browse the full catalogue. Do NOT push the same product.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HARD STOP — FORBIDDEN IN THIS STAGE:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✗ NEVER ask for customer name or delivery address — those are collected in order_collection ONLY
+✗ NEVER say "order placed", "order confirmed", "order ho gaya", "your order has been placed"
+✗ NEVER show an order summary or calculate a total to confirm
+✗ NEVER share UPI ID, payment link, QR code, or say "please pay ₹X"
+✗ NEVER mention COD or cash on delivery as an instruction
+✗ NEVER ask for quantity — that is the FIRST question in order_collection
+Your ONLY allowed next step toward purchase: ask "Would you like to order?" (one question).
+The system will automatically enter order collection when the customer says yes."""
 
     if stage == "qualification":
         return """QUALIFICATION STAGE INSTRUCTIONS:
 - Ask ONE qualifying question at a time:
-  → Quantity: "Kitne pieces chahiye?"
   → Timeline: "Kab tak chahiye?"
   → Purpose: "Wedding ke liye hai ya daily wear?"
-- Use answers to recommend specific product
-- Confirm budget indirectly: "Aapka budget roughly kitne ka hai?"
-  Only if price hesitation detected
+- Use answers to recommend a specific product
+- Confirm budget indirectly only if price hesitation detected
 
 HANDLING "yes" / "haan" / "okay" RESPONSES:
 If customer replies with only "yes", "haan", "okay", or similar short agreement:
-  → Confirm EXACTLY what they agreed to before proceeding.
-  → Show a brief confirmation list, e.g.:
-    "Great! So you want:
-    1. Kurti Best — ₹1,030
-    2. Banarasi Silk Saree — ₹2,450
-    Total: ₹3,480
-    Shall I proceed with this order?"
-  → NEVER assume and jump straight to asking name/address."""
+  → Confirm EXACTLY what product they agreed to, then ask "Would you like to order?"
+  → NEVER assume and jump straight to asking name/address or quantity.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HARD STOP — FORBIDDEN IN THIS STAGE:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✗ NEVER ask for customer name or delivery address
+✗ NEVER say "order placed", "order confirmed", "order ho gaya"
+✗ NEVER show an order summary or calculate a total to confirm
+✗ NEVER share UPI ID, payment link, QR code, or say "please pay ₹X"
+✗ NEVER mention COD or cash on delivery as a payment instruction
+✗ NEVER ask for quantity — quantity is collected in order_collection ONLY
+Your ONLY allowed next step toward purchase: ask "Would you like to order?" (one question)."""
 
     if stage == "objection_handling":
         return """OBJECTION HANDLING INSTRUCTIONS:
@@ -1234,12 +1367,23 @@ If customer says they'll think about it:
 → Hindi: "Bilkul ji! Ye piece limited stock mein hai. Aaj confirm karein toh hold kar lete hain."
 
 If customer says they'll do it later:
-→ English: "No problem! May I ask your name so I can follow up?"
-→ Hindi: "Zaroor ji. Aapka naam kya hai toh kal remind kar sakta hoon?"
+→ English: "No problem! Feel free to browse and come back anytime."
+→ Hindi: "Zaroor ji. Jab bhi tayaar hon, hum yahan hain."
 
 If customer says cheaper elsewhere:
 → English: "We understand. Our quality is guaranteed and delivery is fast. Give us a try?"
-→ Hindi: "Hum samajhte hain ji. Quality guarantee hai aur delivery fast hai. Ek baar try karein?" """
+→ Hindi: "Hum samajhte hain ji. Quality guarantee hai aur delivery fast hai. Ek baar try karein?"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HARD STOP — FORBIDDEN IN THIS STAGE:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✗ NEVER ask for customer name or delivery address
+✗ NEVER say "order placed", "order confirmed", "order ho gaya"
+✗ NEVER show an order summary or calculate a total to confirm
+✗ NEVER share UPI ID, payment link, or say "please pay ₹X"
+✗ NEVER mention COD as a payment instruction
+✗ NEVER ask for quantity
+Your ONLY allowed next step toward purchase: ask "Would you like to order?" (one question)."""
 
     if stage == "offer_making":
         cod_line = (
@@ -1250,19 +1394,27 @@ If customer says cheaper elsewhere:
         return f"""OFFER MAKING INSTRUCTIONS:
 CRITICAL: Reply in the SAME LANGUAGE as the customer (see LANGUAGE RULE at top of prompt).
 
-- Make a CLEAR offer for the PRODUCT — price + delivery only.
-  English example: "[Product Name] — ₹[Price]. Delivery in 3-5 days. Shall I place an order?"
+- Make a CLEAR offer for the PRODUCT — name + price + delivery time only.
+  English example: "[Product Name] — ₹[Price]. Delivery in 3-5 days. Would you like to order?"
   Hindi example: "[Product Name] — ₹[Price]. 3-5 din mein delivery. Order karna chahenge?"
-- ⚠️ NEVER mention a quantity, color, or size in the offer.
+- ⚠️ NEVER mention a quantity, color, or size in the offer itself.
   These are all collected in order_collection, never here.
 - Create urgency only when true.
-  English: "Order today for quick dispatch."
-  Hindi: "Aaj order karein toh jaldi dispatch ho jayega."
-{cod_line}- NEVER be pushy — be helpful
-- If customer agrees / shows buying intent → move straight into order_collection
-  and ask "How many pieces would you like?" as your very next message.
-  Do NOT skip to color/size/name/address/payment.
-- If rejected: offer alternative product"""
+- NEVER be pushy — be helpful
+- If customer shows buying intent: ask ONLY "Would you like to order?" — one question.
+  The system will automatically enter order collection when they say yes.
+  Do NOT jump ahead to ask quantity, color, name, address, or payment here.
+- If rejected: offer an alternative product
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HARD STOP — FORBIDDEN IN THIS STAGE:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✗ NEVER ask for customer name, delivery address, or quantity
+✗ NEVER say "order placed", "order confirmed", "order ho gaya"
+✗ NEVER show an order summary or total
+✗ NEVER share UPI ID, payment link, QR code, or say "please pay ₹X"
+✗ NEVER mention COD as a payment instruction
+✗ Your ONLY allowed step: ask "Would you like to order?" then STOP."""
 
     if stage == "order_collection":
         collected_note = _build_collected_note(collected)
