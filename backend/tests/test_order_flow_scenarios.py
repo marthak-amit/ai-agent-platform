@@ -753,11 +753,17 @@ class TestStageDetection:
         result = extract_order_field(conv, "12", VI_COLOR_SIZE)
         assert result is None
 
-    def test_address_four_chars_accepted(self):
-        """Exactly 4-char address accepted."""
+    def test_address_four_chars_rejected(self):
+        """A bare city name (no digit, no comma, < 10 chars) is not a complete address."""
         conv = after_color_size_qty_name()
         result = extract_order_field(conv, "Pune", VI_COLOR_SIZE)
-        assert result == ("delivery_address", "Pune")
+        assert result is None  # is_valid_address requires digit or comma + min 10 chars
+
+    def test_address_full_with_pincode_accepted(self):
+        """A proper address with house number and pincode is accepted."""
+        conv = after_color_size_qty_name()
+        result = extract_order_field(conv, "12 MG Road, Pune 411001", VI_COLOR_SIZE)
+        assert result == ("delivery_address", "12 MG Road, Pune 411001")
 
     def test_color_case_insensitive(self):
         """Color matching is case-insensitive: 'red' matches 'Red'."""

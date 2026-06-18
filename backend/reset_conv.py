@@ -48,6 +48,11 @@ RESET_VALUES = {
     "followup_sent_at": None,
     "escalation_count": 0,
     "last_escalation_at": None,
+    "slot_attempt_count": 0,
+    "slot_attempt_slot": None,
+    "off_topic_count": 0,
+    "llm_calls_today": 0,
+    "llm_calls_date": None,
 }
 
 

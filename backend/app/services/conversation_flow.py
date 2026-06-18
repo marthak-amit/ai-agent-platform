@@ -89,6 +89,44 @@ def is_valid_name(text: str) -> bool:
     return True
 
 
+_ADDRESS_STOP_WORDS: frozenset[str] = frozenset({
+    "hello", "hi", "hey", "yes", "no", "ok", "okay", "ha", "haan",
+    "paid", "cancel", "change", "thanks", "thank you", "done",
+    "shukriya", "dhanyavaad", "theek", "sahi",
+})
+
+_ADDRESS_QUESTION_RE = re.compile(
+    r"^(how|what|why|when|where|which|who|kya|kem|ketla|kitna|kitne)\b",
+    re.IGNORECASE,
+)
+
+
+def is_valid_address(text: str) -> bool:
+    """
+    Return True only when *text* looks like a genuine delivery address.
+
+    Rejects:
+    - Shorter than 10 characters
+    - Contains no digit AND no comma (minimal address structure)
+    - Is a question (contains '?' or starts with a question word)
+    - Matches a stop-word (greeting, ack, command)
+    """
+    stripped = text.strip()
+    if len(stripped) < 10:
+        return False
+    lower = stripped.lower()
+    first_word = lower.split()[0] if lower.split() else ""
+    if lower in _ADDRESS_STOP_WORDS or first_word in _ADDRESS_STOP_WORDS:
+        return False
+    if "?" in stripped:
+        return False
+    if _ADDRESS_QUESTION_RE.match(stripped):
+        return False
+    if not any(c.isdigit() for c in stripped) and "," not in stripped:
+        return False
+    return True
+
+
 STAGES: dict[str, dict] = {
     "greeting": {
         "description": "Customer just started",
@@ -957,7 +995,7 @@ def extract_order_field(
         # Guard: a bare SKU token (e.g. "SR27754") is not an address.
         if _SKU_ONLY_PATTERN.match(text.strip()):
             return None
-        if len(text) >= 4:
+        if is_valid_address(text):
             return ("delivery_address", text)
         return None
 

@@ -103,6 +103,17 @@ class Conversation(Base):
     # nonce is stale (old button) and is rejected without side effects. (migration 0041)
     current_button_nonce: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
 
+    # Improvement 1: per-slot failed-attempt counter (migration 0042)
+    slot_attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default="0")
+    slot_attempt_slot: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # which slot is being counted
+
+    # Improvement 2: off-topic abuse counter (migration 0042)
+    off_topic_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default="0")
+
+    # Improvement 3: per-phone/day LLM budget (migration 0042)
+    llm_calls_today: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default="0")
+    llm_calls_date: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)  # UTC date "YYYY-MM-DD"
+
     messages: Mapped[list[Message]] = relationship(
         "Message", back_populates="conversation", order_by="Message.created_at"
     )

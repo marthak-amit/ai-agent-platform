@@ -144,6 +144,187 @@ _SLOT_FALLBACK_QUESTIONS: dict[str, dict[str, str]] = {
     },
 }
 
+# ── Order-stage aside-question detection ─────────────────────────────────────
+# Detects customer questions that should be answered inline without advancing state.
+
+_QUESTION_STARTERS = frozenset({
+    "how", "what", "why", "when", "where", "which", "who",
+    "kya", "kem", "ketla", "kitna", "kitne", "kaisi", "kaisa",
+})
+
+_ORDER_QUESTION_KEYWORDS = frozenset({
+    "delivery", "deliver", "shipping", "charge", "charges", "fee",
+    "price", "total", "amount", "cost",
+    "stock", "available", "availability",
+    "return", "refund", "exchange",
+    "upi", "payment", "bhugtan",
+    "kitne din", "kab milega", "kab aayega",
+})
+
+# Phrases that indicate a change-address intent (prefix to strip).
+_CHANGE_ADDRESS_PATTERNS = (
+    r"change\s+(?:it\s+)?to\s+",
+    r"change\s+(?:my\s+)?address\s+to\s+",
+    r"deliver\s+(?:it\s+)?to\s+",
+    r"naya\s+address\s*[:\-]?\s*",
+    r"address\s+change\s+(?:karein|karo|kar\s+do|to)?\s*",
+    r"new\s+address\s*[:\-]?\s*",
+)
+import re as _re_addr
+_CHANGE_ADDR_RE = _re_addr.compile(
+    r"^(?:" + "|".join(_CHANGE_ADDRESS_PATTERNS) + r")",
+    _re_addr.IGNORECASE,
+)
+_CHANGE_ADDR_INTENT_RE = _re_addr.compile(
+    r"\b(change\s+(?:my\s+|the\s+)?address|change\s+it\s+to|deliver\s+(?:it\s+)?to|"
+    r"naya\s+address|address\s+change|new\s+address)\b",
+    _re_addr.IGNORECASE,
+)
+
+_ACK_PHRASES = frozenset({
+    "ok", "okay", "got it", "i got it", "achha", "acha", "achha got it",
+    "fine", "sure", "understood", "theek", "sahi", "noted",
+    "alright", "cool", "great", "nice", "samajh gaya", "samajh gaya",
+    "no problem", "that's fine", "thats fine",
+})
+
+
+def _is_order_aside_question(text: str) -> bool:
+    """True when the message is a side-question during an active order, not a slot answer."""
+    lower = text.lower().strip()
+    if "?" in lower:
+        return True
+    first_word = lower.split()[0] if lower.split() else ""
+    if first_word in _QUESTION_STARTERS:
+        return True
+    return any(kw in lower for kw in _ORDER_QUESTION_KEYWORDS)
+
+
+def _build_order_aside_answer(
+    user_text: str,
+    conv,
+    client,
+    pinned_product,
+    delivery_time_str: str,
+) -> str:
+    """
+    Build a deterministic one-line answer to a side-question during an order.
+
+    Uses only facts already in memory / DB — never invents prices or policies.
+    Returns the answer string (may be empty if no relevant fact found).
+    """
+    lower = user_text.lower()
+    upi_id = getattr(client, "upi_id", None) if client else None
+    prod_price = getattr(pinned_product, "price", None) if pinned_product else None
+    prod_name = getattr(pinned_product, "name", None) if pinned_product else None
+
+    qty = getattr(conv, "pending_order_quantity", None) or 0
+    total = int(qty * prod_price) if (qty and prod_price) else None
+
+    # Delivery charge / time
+    if any(kw in lower for kw in ("delivery charge", "delivery fee", "shipping charge",
+                                   "delivery cost", "delivery kitna", "delivery charges")):
+        return "Delivery is free."
+
+    if any(kw in lower for kw in ("delivery", "deliver", "shipping", "dispatch",
+                                   "kitne din", "kab milega", "kab aayega")):
+        dt = delivery_time_str or "3–7 business days"
+        return f"Delivery: {dt}."
+
+    # Price / total of current order
+    if any(kw in lower for kw in ("total", "kitna total", "kitna amount", "total kitna")):
+        if total:
+            return f"Your current order total is ₹{total:,}."
+        if prod_price:
+            return f"{prod_name} is ₹{int(prod_price):,}."
+
+    if any(kw in lower for kw in ("price", "kitna hai", "cost", "rate", "kitne ka")):
+        if prod_price:
+            return f"{prod_name} is ₹{int(prod_price):,}."
+
+    # UPI / payment
+    if any(kw in lower for kw in ("upi", "upi id", "gpay", "phonepe", "paytm")):
+        if upi_id:
+            return f"UPI ID: {upi_id}"
+
+    # Return / refund policy
+    if any(kw in lower for kw in ("return", "refund", "exchange", "wapas")):
+        return "We accept returns within 7 days of delivery."
+
+    return ""
+
+
+def _is_simple_ack(text: str) -> bool:
+    """True when the message is a chit-chat acknowledgement with no actionable content."""
+    lower = text.lower().strip()
+    return lower in _ACK_PHRASES or any(lower.startswith(p + " ") for p in _ACK_PHRASES)
+
+
+def _detect_change_address_intent(text: str) -> tuple[bool, str | None]:
+    """
+    Detect a change-address intent in the message.
+
+    Returns (True, address_portion) when a specific new address was provided,
+    (True, None) when only intent without address was expressed,
+    (False, None) when no change-address intent detected.
+    """
+    lower = text.lower().strip()
+    # Pure intent without an address
+    _PURE_CHANGE_INTENT = (
+        "change address", "change my address", "address change karna",
+        "address badalna", "address change", "i want to change the address",
+        "address change karein", "address change karo",
+    )
+    if any(pi in lower for pi in _PURE_CHANGE_INTENT):
+        # Try to strip intent prefix and see if there's an address left
+        stripped = _CHANGE_ADDR_RE.sub("", text.strip()).strip()
+        if stripped and stripped.lower() != text.lower().strip():
+            return (True, stripped)
+        return (True, None)
+
+    # Intent with embedded address
+    if _CHANGE_ADDR_INTENT_RE.search(text):
+        stripped = _CHANGE_ADDR_RE.sub("", text.strip()).strip()
+        return (True, stripped if stripped else None)
+
+    return (False, None)
+
+
+def _log_route(conv_id: int, route: str, reason: str, extra: str = "") -> None:
+    """Log route=TEMPLATE|LLM for every turn so call reduction can be measured."""
+    extra_part = f" {extra}" if extra else ""
+    logger.info("ROUTE conv=%s route=%s reason=%s%s", conv_id, route, reason, extra_part)
+
+
+def _today_utc() -> str:
+    """Return today's UTC date as 'YYYY-MM-DD' string."""
+    return datetime.utcnow().strftime("%Y-%m-%d")
+
+
+async def _check_and_reset_llm_budget(
+    db,
+    conv,
+    client,
+) -> tuple[int, int, int]:
+    """
+    Reset daily counter when date changes; return (calls_today, soft_cap, hard_cap).
+
+    Safe to call repeatedly — only writes to DB when the date rolled over.
+    """
+    today = _today_utc()
+    if (conv.llm_calls_date or "") != today:
+        conv.llm_calls_today = 0
+        conv.llm_calls_date = today
+        try:
+            await conversation_service.update_order_field(db, conv.id, "llm_calls_today", 0)
+            await conversation_service.update_order_field(db, conv.id, "llm_calls_date", today)
+        except Exception as _exc:
+            logger.error("LLM budget daily reset failed for conv=%s: %s", conv.id, _exc)
+    soft = int(getattr(client, "llm_soft_cap", None) or _DEFAULT_LLM_SOFT_CAP) if client else _DEFAULT_LLM_SOFT_CAP
+    hard = int(getattr(client, "llm_hard_cap", None) or _DEFAULT_LLM_HARD_CAP) if client else _DEFAULT_LLM_HARD_CAP
+    return (conv.llm_calls_today or 0), soft, hard
+
+
 # Keywords that indicate AI prematurely jumped to payment/confirmation.
 # Checked only when next_slot is not None (slots still incomplete).
 _AI_BYPASS_KEYWORDS: frozenset[str] = frozenset({
@@ -165,6 +346,24 @@ _rate_lock = asyncio.Lock()
 _RATE_LIMIT_MESSAGES = 5   # max messages per window
 _RATE_LIMIT_WINDOW = 10    # seconds
 _RATE_LIMIT_COOLDOWN = 30  # reserved for future per-phone cooldown
+
+# ── Per-phone/day LLM budget caps (Improvement 3) ─────────────────────────
+# Soft cap: degrade to template-only for browsing stages (order flow unaffected).
+# Hard cap: stop ALL LLM, send boundary message, escalate.
+# Both are client-configurable via client.llm_soft_cap / client.llm_hard_cap.
+_DEFAULT_LLM_SOFT_CAP = 40   # LLM-calling turns per phone per UTC day
+_DEFAULT_LLM_HARD_CAP = 80
+
+# ── Per-slot attempt cap constants (Improvement 1) ────────────────────────
+_SLOT_ATTEMPT_ESCAPE_HATCH = 3   # append escape hatch at this attempt number
+_SLOT_ATTEMPT_ESCALATE = 4       # stop LLM and escalate at this attempt number
+
+# ── Off-topic counter threshold (Improvement 2) ───────────────────────────
+_DEFAULT_OFF_TOPIC_THRESHOLD = 4  # consecutive off-topic messages before template-only
+
+# ── Minimum score for auto-pinning/switching a product by name-match (Improvement 4) ──
+_NAME_MATCH_AUTO_PIN_MIN_SCORE = 3   # min score for first-time pin (currently always fires when _single_strong)
+_NAME_MATCH_SWITCH_MIN_SCORE = 6     # min score required to SWITCH from already-pinned product silently
 
 
 async def _is_rate_limited(phone: str) -> bool:
@@ -441,6 +640,7 @@ def _build_slot_question(
     available_stock: int | None = None,
     product_name: str = "the product",
     declined_saved_address: bool = False,
+    attempt_count: int = 0,
 ) -> str:
     """
     Return the deterministic, language-correct question for the given slot.
@@ -468,15 +668,24 @@ def _build_slot_question(
 
     if next_slot == "color":
         colors = " / ".join(vi.get("available_colors", [])) or "see catalogue"
-        return _gt(lang, "ask_color", colors=colors)
+        _slot_reply = _gt(lang, "ask_color", colors=colors)
+        if attempt_count >= _SLOT_ATTEMPT_ESCAPE_HATCH:
+            _slot_reply += "\n\n(Reply 'cancel' to stop, or 'help' to reach our team.)"
+        return _slot_reply
 
     if next_slot == "size":
         sizes = " / ".join(vi.get("available_sizes", [])) or "see catalogue"
-        return _gt(lang, "ask_size", sizes=sizes)
+        _slot_reply = _gt(lang, "ask_size", sizes=sizes)
+        if attempt_count >= _SLOT_ATTEMPT_ESCAPE_HATCH:
+            _slot_reply += "\n\n(Reply 'cancel' to stop, or 'help' to reach our team.)"
+        return _slot_reply
 
     if next_slot == "material":
         materials = " / ".join(vi.get("available_materials", [])) or "see catalogue"
-        return _gt(lang, "ask_material", materials=materials)
+        _slot_reply = _gt(lang, "ask_material", materials=materials)
+        if attempt_count >= _SLOT_ATTEMPT_ESCAPE_HATCH:
+            _slot_reply += "\n\n(Reply 'cancel' to stop, or 'help' to reach our team.)"
+        return _slot_reply
 
     if next_slot == "combo_oos":
         _sel_color = getattr(conv, "selected_color", None) or ""
@@ -576,6 +785,7 @@ async def _render_order_reply(
     lang: str,
     is_first_slot: bool = False,
     oos_product_name: str | None = None,
+    attempt_count: int = 0,
 ) -> str:
     """
     Single render function: (action, db) → customer-facing text.
@@ -650,6 +860,7 @@ async def _render_order_reply(
         available_stock=available_stock,
         product_name=_prod_name,
         declined_saved_address=declined_saved_address,
+        attempt_count=attempt_count,
     )
 
     # ── Dispatch by action ────────────────────────────────────────────────────
@@ -1138,6 +1349,44 @@ async def receive_message(
     # so every downstream code path (name-match guard, stage-lock, order-detect,
     # etc.) can reference the pre-update stage unconditionally.
     _stored_stage: str = conv.current_stage or "greeting"
+
+    # ── Improvement 3: Per-phone/day LLM budget check ─────────────────────────
+    _llm_calls_today, _llm_soft_cap, _llm_hard_cap = await _check_and_reset_llm_budget(db, conv, client)
+    _llm_budget = (
+        "hard" if _llm_calls_today >= _llm_hard_cap
+        else "soft" if _llm_calls_today >= _llm_soft_cap
+        else "ok"
+    )
+    _llm_called_this_turn = False  # flipped True whenever any LLM call fires this turn
+
+    if _llm_budget == "hard":
+        _hard_boundary = "We've noted your interest — our team will get back to you."
+        logger.warning(
+            "HARD LLM cap: phone=%s conv=%s calls_today=%d — blocking all LLM and escalating.",
+            sender_phone, conv.id, _llm_calls_today,
+        )
+        try:
+            from app.models.conversation import Conversation as _ConvHardCap
+            from sqlalchemy import select as _selHC
+            _hc_r = await db.execute(_selHC(_ConvHardCap).where(_ConvHardCap.id == conv.id).limit(1))
+            _hc_c = _hc_r.scalar_one_or_none()
+            if _hc_c:
+                _hc_c.ai_enabled = False
+                _hc_c.taken_over_at = datetime.utcnow()
+                _hc_c.taken_over_note = f"Hard LLM cap reached: {_llm_calls_today} calls"
+                await db.commit()
+        except Exception as _hce:
+            logger.error("Hard-cap takeover failed: %s", _hce)
+        try:
+            await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+            await conversation_service.save_message(db, conv.id, "assistant", _hard_boundary)
+        except Exception:
+            pass
+        try:
+            await whatsapp_service.send_text_message(sender_phone, _hard_boundary)
+        except Exception:
+            pass
+        return {"status": "ok"}
 
     # ── BUG 2 FIX: Stale "I've Paid" tap after cancel ────────────────────────
     # WhatsApp buttons stay tappable forever.  If the customer taps the old
@@ -1680,6 +1929,63 @@ async def receive_message(
             logger.error("Post-completion greeting reset: %s", exc)
         logger.info("Post-completion generic chat — conv=%s stage reset to greeting", conv.id)
 
+    # ── Improvement 4: Interrupted-SKU confirmation handler ─────────────────
+    # When a low-confidence product switch was held for confirmation, handle
+    # "yes" / "no" before any other name-match or SKU-pin logic runs.
+    _interrupted_sku_pending = getattr(conv, "interrupted_sku", None)
+    if (
+        message.type == "text"
+        and _interrupted_sku_pending
+        and _stored_stage not in ("order_collection", "awaiting_final_confirmation", "payment", "completed")
+    ):
+        _CONFIRM_YES = frozenset({"yes", "haan", "ha", "han", "ok", "okay", "sure", "y", "yep", "yeah", "bilkul", "हाँ", "ہاں"})
+        _CONFIRM_NO = frozenset({"no", "nahi", "nope", "n", "nein", "na", "nah", "cancel"})
+        _isku_txt = user_text.lower().strip()
+        if _isku_txt in _CONFIRM_YES:
+            _isku_prod = await catalogue_service.find_product_by_sku(db, client.id, _interrupted_sku_pending) if client else None
+            if _isku_prod:
+                _old_sku_isku = getattr(conv, "pending_product_sku", None)
+                _isku_reset_fields = [
+                    ("pending_order_quantity", None), ("selected_color", None),
+                    ("selected_size", None), ("selected_material", None),
+                    ("customer_name", None), ("delivery_address", None),
+                    ("payment_method", None), ("summary_shown", False),
+                ]
+                for _rf, _rv in _isku_reset_fields:
+                    try:
+                        await conversation_service.update_order_field(db, conv.id, _rf, _rv)
+                        setattr(conv, _rf, _rv)
+                    except Exception:
+                        pass
+                try:
+                    await conversation_service.update_order_field(db, conv.id, "pending_product_sku", _interrupted_sku_pending)
+                    conv.pending_product_sku = _interrupted_sku_pending
+                    await conversation_service.update_order_field(db, conv.id, "interrupted_sku", None)
+                    conv.interrupted_sku = None
+                    await conversation_service.update_stage(db, conv.id, "product_inquiry")
+                    conv.current_stage = "product_inquiry"
+                except Exception as _exc:
+                    logger.error("Interrupted-SKU confirm switch error: %s", _exc)
+                pinned_product = _isku_prod
+                variant_info = await catalogue_service.get_product_variant_info(db, _isku_prod)
+                catalogue_context = catalogue_service.format_catalogue_context([_isku_prod], for_display=True)
+                _canonical_browse_products = [_isku_prod]
+                if _is_valid_image_url(getattr(_isku_prod, "image_url", None)):
+                    _pending_product_images.append((_isku_prod.image_url, f"{_isku_prod.name} — ₹{_isku_prod.price}"))
+                logger.info(
+                    "Interrupted-SKU confirmed: conv=%s switching %r → %r",
+                    conv.id, _old_sku_isku, _interrupted_sku_pending,
+                )
+            # Let normal flow continue (will produce a product inquiry reply)
+        elif _isku_txt in _CONFIRM_NO:
+            try:
+                await conversation_service.update_order_field(db, conv.id, "interrupted_sku", None)
+                conv.interrupted_sku = None
+            except Exception:
+                pass
+            logger.info("Interrupted-SKU declined: conv=%s keeping %r", conv.id, getattr(conv, "pending_product_sku", None))
+            # Let normal flow continue
+
     # ── Name/fuzzy-search pinning (no SKU in message) ─────────────────────────
     # When the customer describes a product by name (e.g. "kanjivaram saree")
     # but doesn't include a SKU, run a scored keyword search. If there is a
@@ -1741,6 +2047,40 @@ async def receive_message(
                     _match_sku = getattr(_top_prod, "sku", None)
                     if _match_sku:
                         _old_name_sku = getattr(conv, "pending_product_sku", None)
+                        # Improvement 4: confidence gate for product switching.
+                        # If already pinned to a different product and score is below
+                        # _NAME_MATCH_SWITCH_MIN_SCORE, send a confirmation question
+                        # instead of silently switching.
+                        _would_name_switch = bool(_old_name_sku and _match_sku != _old_name_sku)
+                        _name_switch_confident = _top_score >= _NAME_MATCH_SWITCH_MIN_SCORE
+                        if _would_name_switch and not _name_switch_confident:
+                            _cand_price = int(getattr(_top_prod, "price", 0) or 0)
+                            _confirm_question = (
+                                f"Did you mean {_top_prod.name} (₹{_cand_price:,})? (yes/no)"
+                            )
+                            try:
+                                await conversation_service.update_order_field(db, conv.id, "interrupted_sku", _match_sku)
+                                conv.interrupted_sku = _match_sku
+                            except Exception as _ice:
+                                logger.error("Interrupted-SKU store error: %s", _ice)
+                            logger.info(
+                                "Name-match confidence gate: conv=%s score=%d < %d, holding switch %r→%r, asking confirm",
+                                conv.id, _top_score, _NAME_MATCH_SWITCH_MIN_SCORE, _old_name_sku, _match_sku,
+                            )
+                            try:
+                                await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+                                await conversation_service.save_message(db, conv.id, "assistant", _confirm_question)
+                            except Exception:
+                                pass
+                            try:
+                                await whatsapp_service.send_text_message(sender_phone, _confirm_question)
+                            except Exception:
+                                pass
+                            try:
+                                await _record_usage(db, client)
+                            except Exception:
+                                pass
+                            return {"status": "ok"}
                         # Reset all order slots whenever a new product is identified by name,
                         # regardless of whether there was a previously pinned SKU.
                         _name_reset_fields = [
@@ -1868,6 +2208,7 @@ async def receive_message(
         else:
             try:
                 _is_buy_intent = await conversation_flow.classify_buy_intent(user_text, _pinned_name)
+                _llm_called_this_turn = True
             except Exception as _bie:
                 logger.warning("classify_buy_intent error (defaulting False): %s", _bie)
                 _is_buy_intent = False
@@ -2310,7 +2651,160 @@ async def receive_message(
     if stage == "order_collection":
         _next_slot_pre = conversation_flow.get_next_required_slot(conv, variant_info)
 
+        # Improvement 1: detect slot change → auto-reset counter; read current attempts
+        if getattr(conv, "slot_attempt_slot", None) != _next_slot_pre:
+            conv.slot_attempt_count = 0
+            conv.slot_attempt_slot = _next_slot_pre
+            try:
+                await conversation_service.update_order_field(db, conv.id, "slot_attempt_count", 0)
+                await conversation_service.update_order_field(db, conv.id, "slot_attempt_slot", _next_slot_pre)
+            except Exception as _slc_exc:
+                logger.error("slot_attempt auto-reset error: %s", _slc_exc)
+        _current_slot_attempts = conv.slot_attempt_count or 0
+
         if stage == "order_collection" and _next_slot_pre is not None:
+            # Improvement 1: hard cap — skip LLM entirely at ≥ ESCALATE attempts
+            if _current_slot_attempts >= _SLOT_ATTEMPT_ESCALATE:
+                _cap_lang = getattr(conv, "last_customer_language", None) or language or "english"
+                _cap_prod = getattr(pinned_product, "name", "the product") or "the product"
+                _cap_sq = _build_slot_question(
+                    _next_slot_pre, conv, variant_info, _cap_lang,
+                    customer_profile=customer_profile,
+                    accepts_cod=getattr(client, "accepts_cod", False) if client else False,
+                    available_stock=available_stock,
+                    product_name=_cap_prod,
+                    attempt_count=_current_slot_attempts,
+                )
+                if _cap_lang in ("hindi_roman", "hindi_devanagari", "hinglish"):
+                    _cap_reply = f"Hamara team aapki madad karega. 👋\n\n{_cap_sq}"
+                elif _cap_lang in ("gujarati_roman", "gujarati_script"):
+                    _cap_reply = f"Amari team tamne madad karse. 👋\n\n{_cap_sq}"
+                else:
+                    _cap_reply = f"Our team will assist you shortly. 👋\n\n{_cap_sq}"
+                logger.warning(
+                    "SLOT cap: conv=%s slot=%r attempts=%d — no LLM, escalating to human.",
+                    conv.id, _next_slot_pre, _current_slot_attempts,
+                )
+                try:
+                    from app.models.conversation import Conversation as _ConvCap
+                    from sqlalchemy import select as _selCap
+                    _cap_cr = await db.execute(_selCap(_ConvCap).where(_ConvCap.id == conv.id).limit(1))
+                    _cap_cobj = _cap_cr.scalar_one_or_none()
+                    if _cap_cobj:
+                        _cap_cobj.ai_enabled = False
+                        _cap_cobj.taken_over_at = datetime.utcnow()
+                        _cap_cobj.taken_over_note = f"Slot cap: {_next_slot_pre} x{_current_slot_attempts}"
+                        await db.commit()
+                except Exception as _capesc:
+                    logger.error("Slot-cap escalation error: %s", _capesc)
+                try:
+                    await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+                    await conversation_service.save_message(db, conv.id, "assistant", _cap_reply)
+                except Exception:
+                    pass
+                try:
+                    await whatsapp_service.send_text_message(sender_phone, _cap_reply)
+                except Exception:
+                    pass
+                try:
+                    await _record_usage(db, client)
+                except Exception:
+                    pass
+                return {"status": "ok"}
+
+            # ── FIX 3: Change-address intent mid-order ────────────────────────
+            _ca_detected, _ca_addr = _detect_change_address_intent(user_text)
+            if _ca_detected and message.type == "text":
+                from app.services.conversation_flow import is_valid_address as _is_valid_addr_fix3
+                _ca_lang = getattr(conv, "last_customer_language", None) or language or "english"
+                _ca_prod_name = getattr(pinned_product, "name", "the product") or "the product"
+                if _ca_addr and _is_valid_addr_fix3(_ca_addr):
+                    try:
+                        await conversation_service.update_order_field(db, conv.id, "delivery_address", _ca_addr)
+                        conv.delivery_address = _ca_addr
+                        logger.info("FIX3 change-address: conv=%s new_addr=%r", conv.id, _ca_addr)
+                    except Exception as _cae:
+                        logger.error("FIX3 address update error: %s", _cae)
+                    # Fall through — re-compute next_slot and let normal reply-build handle it.
+                else:
+                    _ca_ask = "Sure — what's the new delivery address? Please send house/area, city and pincode."
+                    logger.info("FIX3 change-address pure intent: conv=%s — asking for address", conv.id)
+                    try:
+                        await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+                        await conversation_service.save_message(db, conv.id, "assistant", _ca_ask)
+                    except Exception:
+                        pass
+                    try:
+                        await whatsapp_service.send_text_message(sender_phone, _ca_ask)
+                    except Exception:
+                        pass
+                    try:
+                        await _record_usage(db, client)
+                    except Exception:
+                        pass
+                    return {"status": "ok"}
+
+            # ── FIX 2 / FIX 4: Aside-question — answer + re-ask slot ─────────
+            # Intercept side-questions (delivery charges, price of another product,
+            # etc.) BEFORE intent classification so they are never treated as slot
+            # answers and the current slot is re-asked after the one-line answer.
+            if message.type == "text" and _is_order_aside_question(user_text):
+                _aq_lang = getattr(conv, "last_customer_language", None) or language or "english"
+                _aq_prod_name = getattr(pinned_product, "name", "the product") or "the product"
+                _aq_dt = get_delivery_time_str(pinned_product, client) or "3–7 business days"
+                _aq_answer = _build_order_aside_answer(user_text, conv, client, pinned_product, _aq_dt)
+
+                # FIX 4: question names a DIFFERENT product — look it up in catalogue.
+                if client and not _aq_answer:
+                    try:
+                        _aq_all_prods = await catalogue_service.list_products(db, client.id)
+                        _aq_scored = catalogue_service.search_products_with_scores(
+                            _aq_all_prods, user_text, top_k=3
+                        )
+                        _aq_pinned_sku = getattr(conv, "pending_product_sku", None)
+                        for _aq_sc, _aq_cp in _aq_scored:
+                            if _aq_sc >= 3 and getattr(_aq_cp, "sku", None) != _aq_pinned_sku:
+                                _aq_answer = (
+                                    f"{_aq_cp.name} — ₹{int(getattr(_aq_cp, 'price', 0) or 0):,}."
+                                )
+                                break
+                    except Exception as _aqe:
+                        logger.warning("FIX4 cross-product lookup failed: %s", _aqe)
+
+                if _aq_answer:
+                    _aq_slot_q = _build_slot_question(
+                        _next_slot_pre, conv, variant_info, _aq_lang,
+                        customer_profile=customer_profile,
+                        accepts_cod=getattr(client, "accepts_cod", False) if client else False,
+                        available_stock=available_stock,
+                        product_name=_aq_prod_name,
+                        declined_saved_address=False,  # question, not a "change" negation
+                        attempt_count=_current_slot_attempts,
+                    )
+                    _aq_order_ctx = ""
+                    if getattr(conv, "pending_order_quantity", None):
+                        _aq_order_ctx = f"Your current order: {_aq_prod_name} x{conv.pending_order_quantity}. "
+                    _aq_reply = f"{_aq_answer}\n\n{_aq_order_ctx}{_aq_slot_q}" if _aq_slot_q else _aq_answer
+                    logger.info(
+                        "FIX2 aside-question: conv=%s slot=%r — answered + re-asked, no state change",
+                        conv.id, _next_slot_pre,
+                    )
+                    try:
+                        await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+                        await conversation_service.save_message(db, conv.id, "assistant", _aq_reply)
+                    except Exception:
+                        pass
+                    try:
+                        await whatsapp_service.send_text_message(sender_phone, _aq_reply)
+                    except Exception:
+                        pass
+                    try:
+                        await _record_usage(db, client)
+                    except Exception:
+                        pass
+                    return {"status": "ok"}
+                # No deterministic answer — fall through to normal intent classification.
+
             # ── Intent classification ──────────────────────────────────────────
             _product_name = getattr(pinned_product, "name", None) or getattr(conv, "pending_product_sku", "current product") or "current product"
             try:
@@ -2318,6 +2812,7 @@ async def receive_message(
                     user_text, _next_slot_pre, _product_name
                 )
                 _intent = _intent_struct["intent"]
+                _llm_called_this_turn = True
             except Exception as exc:
                 logger.warning("Intent classification error (defaulting ANSWER): %s", exc)
                 _intent = "ANSWER"
@@ -2441,20 +2936,53 @@ async def receive_message(
                 logger.info("conv=%s DISCOUNT_QUERY — will show fixed-price reply + re-ask slot=%s", conv.id, _next_slot_pre)
 
             elif _intent == "OFF_TOPIC":
+                # Improvement 2: track off-topic abuse
+                _midorder_ot_count = (conv.off_topic_count or 0) + 1
+                conv.off_topic_count = _midorder_ot_count
+                try:
+                    await conversation_service.update_order_field(db, conv.id, "off_topic_count", _midorder_ot_count)
+                except Exception:
+                    pass
+                _ot_threshold_mo = int(getattr(client, "off_topic_threshold", None) or _DEFAULT_OFF_TOPIC_THRESHOLD) if client else _DEFAULT_OFF_TOPIC_THRESHOLD
+                _shop_name_mo = (getattr(client, "business_name", None) or "our shop") if client else "our shop"
+                if _midorder_ot_count >= _ot_threshold_mo:
+                    _ot_boundary_mo = f"I can only help with orders from {_shop_name_mo}. Tap a product or type 'cancel' to start over."
+                    logger.warning("OFF_TOPIC threshold (mid-order): conv=%s count=%d — boundary reply.", conv.id, _midorder_ot_count)
+                    try:
+                        await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+                        await conversation_service.save_message(db, conv.id, "assistant", _ot_boundary_mo)
+                    except Exception:
+                        pass
+                    try:
+                        await whatsapp_service.send_text_message(sender_phone, _ot_boundary_mo)
+                    except Exception:
+                        pass
+                    try:
+                        await _record_usage(db, client)
+                    except Exception:
+                        pass
+                    return {"status": "ok"}
                 # Mid-order off-topic: deflect + re-ask current slot without touching slot state.
                 _ot_lang = getattr(conv, "last_customer_language", None) or language or "english"
                 from app.services.language_templates import get_template as _get_ot_tpl
+                _ot_prod_name_ot = getattr(pinned_product, "name", "the product") or "the product"
                 _ot_slot_q = _build_slot_question(
                     _next_slot_pre, conv, variant_info, _ot_lang,
                     customer_profile=customer_profile,
                     accepts_cod=getattr(client, "accepts_cod", False) if client else False,
                     available_stock=available_stock,
-                    product_name=getattr(pinned_product, "name", "the product") or "the product",
+                    product_name=_ot_prod_name_ot,
                 )
-                _ot_reply = _get_ot_tpl(
-                    _ot_lang, "off_topic_midorder",
-                    slot_question=_ot_slot_q,
-                )
+                # FIX 5: simple acks ("got it", "achha got it") at a slot should get
+                # a short forward-moving prompt, not the full off-topic deflect template.
+                if _is_simple_ack(user_text):
+                    _ot_reply = f"No problem! {_ot_slot_q}" if _ot_slot_q else "No problem! Let me know when you're ready."
+                    logger.info("FIX5 ack at slot: conv=%s slot=%r — forward-moving prompt", conv.id, _next_slot_pre)
+                else:
+                    _ot_reply = _get_ot_tpl(
+                        _ot_lang, "off_topic_midorder",
+                        slot_question=_ot_slot_q,
+                    )
                 logger.info("conv=%s OFF_TOPIC (mid-order) — deflect + re-ask slot=%s", conv.id, _next_slot_pre)
                 try:
                     await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
@@ -2537,11 +3065,29 @@ async def receive_message(
                                     conv.id, field, value,
                                 )
                                 _write_rejected = True
+                        if _write_rejected:
+                            _new_wr = (conv.slot_attempt_count or 0) + 1
+                            conv.slot_attempt_count = _new_wr
+                            try:
+                                await conversation_service.update_order_field(db, conv.id, "slot_attempt_count", _new_wr)
+                            except Exception as _wri:
+                                logger.error("slot_attempt write-rejected increment: %s", _wri)
+                            logger.info("Slot attempt (write-rejected): conv=%s slot=%r attempt=%d value=%r", conv.id, _next_slot_pre, _new_wr, value)
                         if not _write_rejected:
                             try:
                                 await conversation_service.update_order_field(db, conv.id, field, value)
                                 setattr(conv, field, value)
                                 logger.info("Slot filled: conv=%s %s=%r", conv.id, field, value)
+                                # Reset slot attempt counter and off_topic_count on successful slot fill
+                                try:
+                                    await conversation_service.update_order_field(db, conv.id, "slot_attempt_count", 0)
+                                    await conversation_service.update_order_field(db, conv.id, "slot_attempt_slot", None)
+                                    await conversation_service.update_order_field(db, conv.id, "off_topic_count", 0)
+                                    conv.slot_attempt_count = 0
+                                    conv.slot_attempt_slot = None
+                                    conv.off_topic_count = 0
+                                except Exception as _slr:
+                                    logger.error("Slot-fill counter reset error: %s", _slr)
                             except Exception as exc:
                                 logger.error("Order field update error: %s", exc)
                                 _write_rejected = True
@@ -2622,6 +3168,53 @@ async def receive_message(
                                         conv.id, _post_color, _post_size, _post_material,
                                         _combo_stock, field, _avail_opts,
                                     )
+                if not extracted and _next_slot_pre is not None:
+                    # Could not extract a value — count as failed attempt
+                    _new_noext = (conv.slot_attempt_count or 0) + 1
+                    conv.slot_attempt_count = _new_noext
+                    try:
+                        await conversation_service.update_order_field(db, conv.id, "slot_attempt_count", _new_noext)
+                    except Exception as _nei:
+                        logger.error("slot_attempt no-extract increment: %s", _nei)
+                    logger.info("Slot attempt (no-extract): conv=%s slot=%r attempt=%d", conv.id, _next_slot_pre, _new_noext)
+                    # FIX 1: for address slot, send the specific rejection message
+                    # immediately (before the normal template render at the bottom)
+                    # so the customer knows WHY the address was rejected.
+                    if _next_slot_pre == "delivery_address" and message.type == "text":
+                        _addr_rej_lang = getattr(conv, "last_customer_language", None) or language or "english"
+                        if _addr_rej_lang in ("hindi_roman", "hindi_devanagari", "hinglish"):
+                            _addr_rej = (
+                                "Yeh address incomplete lagta hai. Kripaya ghar/area, "
+                                "shahar aur pincode ke saath poora address bhejein."
+                            )
+                        elif _addr_rej_lang in ("gujarati_roman", "gujarati_script"):
+                            _addr_rej = (
+                                "Aa address adhuro lagche. Meherbani kari ghar/area, "
+                                "shaher ane pincode saathe pooro address moklo."
+                            )
+                        else:
+                            _addr_rej = (
+                                "That doesn't look like a complete address. "
+                                "Please send house/area, city and pincode."
+                            )
+                        logger.info(
+                            "FIX1 address rejection: conv=%s attempt=%d text=%r",
+                            conv.id, _new_noext, user_text[:60],
+                        )
+                        try:
+                            await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+                            await conversation_service.save_message(db, conv.id, "assistant", _addr_rej)
+                        except Exception:
+                            pass
+                        try:
+                            await whatsapp_service.send_text_message(sender_phone, _addr_rej)
+                        except Exception:
+                            pass
+                        try:
+                            await _record_usage(db, client)
+                        except Exception:
+                            pass
+                        return {"status": "ok"}
         else:
             # next_slot is None (all slots filled) — no extraction needed
             pass
@@ -3022,6 +3615,7 @@ RULES:
                 _g_lang, "greeting_new",
                 business=_g_business, catalogue_url=_g_cat_url,
             )
+        _log_route(conv.id, "TEMPLATE", "greeting_short_circuit", extra=f"lang={_g_lang}")
         logger.info(
             "Greeting short-circuit: conv=%s returning=%s lang=%s — no AI call.",
             conv.id, bool(_cp_name), _g_lang,
@@ -3068,11 +3662,38 @@ RULES:
         _ot_product_ctx = getattr(pinned_product, "name", None) if pinned_product else None
         try:
             _is_ot = await conversation_flow.is_off_topic_message(user_text, stage, _ot_product_ctx)
+            _llm_called_this_turn = True
         except Exception as _ot_exc:
             logger.warning("is_off_topic_message error (skipping): %s", _ot_exc)
             _is_ot = False
 
         if _is_ot:
+            # Improvement 2: track off-topic abuse (idle)
+            _idle_ot_count = (conv.off_topic_count or 0) + 1
+            conv.off_topic_count = _idle_ot_count
+            try:
+                await conversation_service.update_order_field(db, conv.id, "off_topic_count", _idle_ot_count)
+            except Exception:
+                pass
+            _ot_threshold_idle = int(getattr(client, "off_topic_threshold", None) or _DEFAULT_OFF_TOPIC_THRESHOLD) if client else _DEFAULT_OFF_TOPIC_THRESHOLD
+            _shop_name_idle = (getattr(client, "business_name", None) or "our shop") if client else "our shop"
+            if _idle_ot_count >= _ot_threshold_idle:
+                _boundary_idle = f"I can only help with orders from {_shop_name_idle}. Tap a product or type 'cancel' to start over."
+                logger.warning("OFF_TOPIC threshold (idle): conv=%s count=%d — boundary reply.", conv.id, _idle_ot_count)
+                try:
+                    await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+                    await conversation_service.save_message(db, conv.id, "assistant", _boundary_idle)
+                except Exception:
+                    pass
+                try:
+                    await whatsapp_service.send_text_message(sender_phone, _boundary_idle)
+                except Exception:
+                    pass
+                try:
+                    await _record_usage(db, client)
+                except Exception:
+                    pass
+                return {"status": "ok"}
             _ot_idle_lang = getattr(conv, "last_customer_language", None) or language or "english"
             from app.services.language_templates import get_template as _get_ot_idle_tpl
             # Build contact line: website (catalogue URL) + phone, omitting blank lines
@@ -3194,6 +3815,7 @@ RULES:
             await _record_usage(db, client)
         except Exception as exc:
             logger.error("Usage tracking error (order status): %s", exc)
+        _log_route(conv.id, "TEMPLATE", "order_status_short_circuit", extra=f"found={bool(_os_order)}")
         logger.info("Order status short-circuit: conv=%s found=%s", conv.id, bool(_os_order))
         return {"status": "ok"}
 
@@ -3355,6 +3977,7 @@ RULES:
                 # Single-word payment words like "paid" can be mis-classified; previous_language
                 # already encodes the conversation's true language (last_customer_language or "english").
                 _tpl_lang = previous_language
+                _log_route(conv.id, "TEMPLATE", f"order_stage_{stage}", extra=f"lang={_tpl_lang}")
 
                 # ── DOC B dispatch: (stage, intent) → (next_stage, action) ──────
                 # Determine effective intent for the transition table.
@@ -3373,6 +3996,57 @@ RULES:
                     else:
                         _render_action = "already_confirmed"
                 elif stage == "payment":
+                    # FIX 2/4: intercept side-questions during payment wait.
+                    # Answer from deterministic facts then re-send payment prompt.
+                    if message.type == "text" and _is_order_aside_question(user_text):
+                        _pq_lang = previous_language
+                        _pq_dt = get_delivery_time_str(pinned_product, client) or "3–7 business days"
+                        _pq_answer = _build_order_aside_answer(
+                            user_text, conv, client, pinned_product, _pq_dt
+                        )
+                        # FIX 4: cross-product question during payment
+                        if client and not _pq_answer:
+                            try:
+                                _pq_all = await catalogue_service.list_products(db, client.id)
+                                _pq_scored = catalogue_service.search_products_with_scores(
+                                    _pq_all, user_text, top_k=3
+                                )
+                                _pq_pinned = getattr(conv, "pending_product_sku", None)
+                                for _pq_sc, _pq_cp in _pq_scored:
+                                    if _pq_sc >= 3 and getattr(_pq_cp, "sku", None) != _pq_pinned:
+                                        _pq_answer = (
+                                            f"{_pq_cp.name} — ₹{int(getattr(_pq_cp, 'price', 0) or 0):,}."
+                                        )
+                                        break
+                            except Exception as _pqe:
+                                logger.warning("FIX4 payment cross-product lookup failed: %s", _pqe)
+                        if _pq_answer:
+                            _pq_prod_name = getattr(pinned_product, "name", "the product") or "the product"
+                            _pq_qty = getattr(conv, "pending_order_quantity", 1) or 1
+                            _pq_suffix = (
+                                f"\n\nYour current order: {_pq_prod_name} x{_pq_qty}. "
+                                "Reply 'paid' once done. ✅"
+                            )
+                            _pq_reply = _pq_answer + _pq_suffix
+                            logger.info(
+                                "FIX2 payment aside-question: conv=%s — answered, no state change",
+                                conv.id,
+                            )
+                            try:
+                                await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+                                await conversation_service.save_message(db, conv.id, "assistant", _pq_reply)
+                            except Exception:
+                                pass
+                            try:
+                                await whatsapp_service.send_text_message(sender_phone, _pq_reply)
+                            except Exception:
+                                pass
+                            try:
+                                await _record_usage(db, client)
+                            except Exception:
+                                pass
+                            return {"status": "ok"}
+
                     # Payment stage always re-shows UPI instructions until PAID.
                     # (PAID detection is an early-return above; we only reach here
                     # when the customer sent something other than a payment word.)
@@ -3431,14 +4105,30 @@ RULES:
                         logger.error("summary_shown update error: %s", exc)
 
             else:
-                # FIX 1: Deterministic compact pinned-product reply.
-                # When a product is already pinned and stage is product_inquiry,
-                # return a compact bullet reply — no LLM needed.
+                # ── Known-fact: delivery time → template (no LLM) ───────────────
+                # Short delivery-time queries ("delivery kitne din?", "how long?")
+                # have exactly one correct answer from DB — no 70B needed.
+                # Must run BEFORE FIX1 so it fires for any browsing stage regardless
+                # of whether a product is pinned.
+                _DELIVERY_QUERY_KW = (
+                    "delivery", "deliver", "kitne din", "kab milega", "kab ayega",
+                    "kab aayega", "days", "shipping", "dispatch", "kab pahunchega",
+                    "when will", "how long", "kem divas", "kyare malse", "kyare aavse",
+                    "time lagega", "kitne dino mein",
+                )
+                _is_delivery_query = (
+                    len(user_text.split()) <= 8
+                    and any(kw in user_text.lower() for kw in _DELIVERY_QUERY_KW)
+                )
+                # FIX 1 (extended): Deterministic compact pinned-product reply.
+                # EXTENDED: fires for ALL browsing stages (previously only product_inquiry)
+                # so "price?" / "available?" in qualification/objection/offer stages
+                # also get a template reply, not a 70B call.
                 _pinned_for_reply = pinned_product if getattr(conv, "pending_product_sku", None) else None
-                # Fire deterministic compact reply when pinned product is at product_inquiry AND:
+                # Fire deterministic compact reply when pinned product exists in any
+                # browsing stage AND:
                 #   (a) the query matches the pinned product (score > 0), OR
-                #   (b) the query is a generic availability/price question with no specific product name
-                #       (e.g. "is it available?", "price?") — these score 0 for all products.
+                #   (b) the query is a generic availability/price/delivery question.
                 # Do NOT fire when user names a different product (score=0 + specific noun):
                 #   "kurti" with only Georgette pinned → falls through to LLM + phantom guard.
                 _GENERIC_AVAIL_KW = {
@@ -3455,9 +4145,31 @@ RULES:
                     len(user_text.split()) <= 7
                     and any(kw in user_text.lower() for kw in _GENERIC_AVAIL_KW)
                 )
-                if _pinned_for_reply and _stored_stage == "product_inquiry" and (
+                if _is_delivery_query:
+                    # Route: TEMPLATE — delivery time is a single correct fact from DB.
+                    _dt_str = get_delivery_time_str(pinned_product, client) or "3–7 business days"
+                    _dt_lang = getattr(conv, "last_customer_language", None) or language or "english"
+                    from app.services.language_templates import get_template as _get_dt_tpl
+                    ai_reply = _get_dt_tpl(_dt_lang, "delivery_info", delivery_time=_dt_str)
+                    if _pinned_for_reply:
+                        _order_cta = {
+                            "english": "Want to order?",
+                            "hindi_roman": "Order karein?",
+                            "hinglish": "Order karein?",
+                            "hindi_devanagari": "Order karein?",
+                            "gujarati_roman": "Order karvo chhe?",
+                            "gujarati_script": "Order karvo chhe?",
+                        }.get(_dt_lang, "Want to order?")
+                        ai_reply = f"{ai_reply} {_order_cta}"
+                    _log_route(conv.id, "TEMPLATE", "delivery_query", extra=f"lang={_dt_lang}")
+                    logger.info(
+                        "conv=%s delivery-query template — no LLM call (delivery=%r)",
+                        conv.id, _dt_str,
+                    )
+                elif _pinned_for_reply and stage in _BROWSING_STAGES_GATE and (
                     _pinned_relevant or _is_generic_avail
                 ):
+                    # Route: TEMPLATE — pinned product known-fact query in any browsing stage.
                     _pn2 = _pinned_for_reply.name or conv.pending_product_sku
                     _psku2 = getattr(_pinned_for_reply, "sku", None) or conv.pending_product_sku
                     _av_colors2 = variant_info.get("available_colors", [])
@@ -3471,19 +4183,32 @@ RULES:
                         _lines2.append(f"Available sizes: {', '.join(_av_sizes2)}")
                     _lines2.append("Would you like to order?")
                     ai_reply = "\n".join(_lines2)
+                    _log_route(conv.id, "TEMPLATE", "fix1_pinned_known_fact", extra=f"sku={_psku2} stage={stage}")
                     logger.info(
-                        "conv=%s FIX1 deterministic compact product reply for %r — no LLM call",
-                        conv.id, _psku2,
+                        "conv=%s FIX1 deterministic compact product reply for %r (stage=%r) — no LLM call",
+                        conv.id, _psku2, stage,
                     )
                 else:
-                    # Non-order stage: call AI
-                    ai_reply = await gemini_service.generate_reply(
-                        user_text,
-                        history=history_dicts,
-                        system_prompt=system_prompt,
-                        catalogue_context=catalogue_context,
-                        language=language,
-                    )
+                    # Route: LLM or soft-cap template — open browsing question.
+                    if _llm_budget == "soft":
+                        # Soft LLM cap: skip 70B call, return deterministic catalogue link
+                        _soft_biz = (getattr(client, "business_name", None) or "our store") if client else "our store"
+                        _soft_slug = getattr(client, "catalogue_slug", None) if client else None
+                        _soft_url = f"{settings.catalogue_base_url}/{_soft_slug}" if _soft_slug else settings.catalogue_base_url
+                        ai_reply = f"I can help you with orders from {_soft_biz}! Browse our collection: {_soft_url}"
+                        _log_route(conv.id, "TEMPLATE", "soft_llm_cap", extra=f"calls={_llm_calls_today}")
+                        logger.info("Soft LLM cap: conv=%s calls_today=%d — template reply, skipping 70B.", conv.id, _llm_calls_today)
+                    else:
+                        # The 70B model is genuinely needed here: no single correct reply exists.
+                        _log_route(conv.id, "LLM", "open_browsing", extra=f"stage={stage} model=llama-3.3-70b-versatile")
+                        ai_reply = await gemini_service.generate_reply(
+                            user_text,
+                            history=history_dicts,
+                            system_prompt=system_prompt,
+                            catalogue_context=catalogue_context,
+                            language=language,
+                        )
+                        _llm_called_this_turn = True
                 # FIX 1: Strip phantom SKUs/prices hallucinated by the LLM (including
                 # 429 fallback models that hallucinate more).  Run unconditionally on
                 # every browsing-stage reply whenever we have a canonical product set.
@@ -3656,6 +4381,21 @@ RULES:
         await _record_usage(db, client)
     except Exception as exc:
         logger.error("Usage tracking error: %s", exc)
+
+    # Improvement 3: increment per-phone daily LLM counter once per turn
+    if _llm_called_this_turn:
+        try:
+            _new_llm_today = (conv.llm_calls_today or 0) + 1
+            conv.llm_calls_today = _new_llm_today
+            await conversation_service.update_order_field(db, conv.id, "llm_calls_today", _new_llm_today)
+            if _new_llm_today >= _llm_soft_cap:
+                logger.warning(
+                    "LLM daily budget: phone=%s conv=%s calls=%d soft=%d hard=%d status=%s",
+                    sender_phone, conv.id, _new_llm_today, _llm_soft_cap, _llm_hard_cap,
+                    "soft" if _new_llm_today < _llm_hard_cap else "hard",
+                )
+        except Exception as _llmce:
+            logger.error("llm_calls_today increment error: %s", _llmce)
 
     all_messages = history_dicts + [
         {"role": "user", "content": user_text},

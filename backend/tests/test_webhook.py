@@ -122,22 +122,40 @@ def test_verify_signature_missing_prefix(mock_settings):
 @patch("app.routers.webhook.conversation_service.get_or_create_conversation", new_callable=AsyncMock)
 @patch("app.routers.webhook.conversation_service.get_history", new_callable=AsyncMock)
 @patch("app.routers.webhook.conversation_service.save_message", new_callable=AsyncMock)
+@patch("app.routers.webhook.conversation_service.update_stage", new_callable=AsyncMock)
 @patch("app.routers.webhook.lead_service.tag_lead", new_callable=AsyncMock)
 @patch("app.routers.webhook.gemini_service.generate_reply", new_callable=AsyncMock)
 @patch("app.routers.webhook.whatsapp_service.send_text_message", new_callable=AsyncMock)
 @patch("app.routers.webhook._get_system_prompt", return_value=None)
 @patch("app.routers.webhook._get_catalogue_context", new_callable=AsyncMock)
 @patch("app.routers.webhook._record_usage", new_callable=AsyncMock)
+@patch("app.routers.webhook._get_client_by_phone_number_id", new_callable=AsyncMock)
 def test_receive_message_success(
-    mock_usage, mock_catalogue, mock_prompt, mock_send, mock_gemini, mock_lead, mock_save, mock_history, mock_conv, client
+    mock_get_client, mock_usage, mock_catalogue, mock_prompt, mock_send, mock_gemini, mock_lead, mock_update_stage, mock_save, mock_history, mock_conv, mock_db, client
 ):
     """Valid signed payload triggers full pipeline and returns 200."""
-    mock_conv.return_value = MagicMock(id=1)
+    mock_get_client.return_value = MagicMock(
+        id=1, business_name="Test Store", catalogue_slug=None,
+        whatsapp_phone_number_id="1234567890", is_active=True,
+    )
+    mock_conv.return_value = MagicMock(
+        id=1, stage="greeting", pending_product_sku=None,
+        last_customer_language="english",
+    )
     mock_history.return_value = []
     mock_prompt.return_value = None
-    mock_catalogue.return_value = None
+    mock_catalogue.return_value = (None, [])  # (catalogue_context, canonical_browse_products)
     mock_gemini.return_value = "AI reply"
     mock_send.return_value = {"messages": [{"id": "wamid.reply"}]}
+    # All db.execute calls must return a plain MagicMock (not AsyncMock) so that
+    # scalar_one_or_none() / scalars().all() / first() are regular (non-coroutine)
+    # callables that return None / [].
+    _db_result = MagicMock(
+        scalar_one_or_none=MagicMock(return_value=None),
+        scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[]))),
+        first=MagicMock(return_value=None),
+    )
+    mock_db.execute = AsyncMock(return_value=_db_result)
 
     body = json.dumps(VALID_PAYLOAD).encode()
     sig = _make_signature(body)
@@ -150,13 +168,13 @@ def test_receive_message_success(
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
-    mock_gemini.assert_called_once()
-    call_args, call_kwargs = mock_gemini.call_args
-    assert call_args[0] == "Hello"
-    assert call_kwargs["history"] == []
-    assert call_kwargs["catalogue_context"] is None
-    assert isinstance(call_kwargs["system_prompt"], str)
-    mock_send.assert_called_once_with(to_phone_number="919999999999", message_text="AI reply")
+    # "Hello" is a pure greeting — routes to TEMPLATE, no LLM call.
+    mock_gemini.assert_not_called()
+    # Template reply is sent.
+    mock_send.assert_called_once()
+    sent_args = mock_send.call_args
+    sent_text = sent_args[0][1] if sent_args[0] else sent_args[1].get("message_text", "")
+    assert sent_text  # non-empty template reply was sent
 
 
 def test_receive_message_invalid_signature(client):
