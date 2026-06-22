@@ -12,7 +12,58 @@ import logging
 import re
 import unicodedata as _ud
 
+from collections import OrderedDict
+
+from app.services import cost_log
+
 logger = logging.getLogger(__name__)
+
+# Tier 2 cost-cascade cache: normalized (next_slot, phrase) → classified intent
+# dict, checked before every cheap-classify Groq call so repeated phrases
+# ("yes", "ok", "haan") cost ₹0 after the first occurrence. Capped at
+# settings.classify_cache_size (LRU eviction via OrderedDict.move_to_end).
+_classify_cache: "OrderedDict[tuple[str, str], dict]" = OrderedDict()
+
+
+def _classify_cache_get(key: tuple[str, str]) -> dict | None:
+    """Return a cached intent result for *key*, moving it to most-recently-used."""
+    hit = _classify_cache.get(key)
+    if hit is not None:
+        _classify_cache.move_to_end(key)
+    return hit
+
+
+def _classify_cache_put(key: tuple[str, str], value: dict, max_size: int) -> None:
+    """Store *value* under *key*, evicting the oldest entry once over *max_size*."""
+    _classify_cache[key] = value
+    _classify_cache.move_to_end(key)
+    while len(_classify_cache) > max_size:
+        _classify_cache.popitem(last=False)
+
+
+def _log_groq_usage(conversation_id: int | None, call_kind: str, model: str, resp, text: str) -> None:
+    """
+    Append a classify/extract Groq call to the per-conversation cost log so it
+    is visible in the cost report instead of being silently uncounted.
+
+    Args:
+        conversation_id: PK of the Conversation row, or None to skip logging.
+        call_kind:       'classify' or 'extract'.
+        model:           Groq model name used for this call.
+        resp:             The chat.completions.create() response object.
+        text:            The inbound customer text that triggered this call.
+    """
+    if conversation_id is None:
+        return
+    usage = getattr(resp, "usage", None)
+    if usage is None:
+        return
+    cost_log.log(
+        conversation_id, "IN", text,
+        path="LLM", model=model,
+        in_tok=usage.prompt_tokens, out_tok=usage.completion_tokens,
+        call_kind=call_kind,
+    )
 
 # Matches a standalone SKU token (2–4 letters + 4–6 digits), same as catalogue_service.SKU_PATTERN.
 # Also accepts a single optional space between the letter-prefix and digits (voice-transcription tolerance).
@@ -100,18 +151,64 @@ _ADDRESS_QUESTION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# P1-6: filler prefixes that get typed alongside a real address and must be
+# stripped before storing ("okay, 800 somerest, ahmedabad, 350012" → the
+# "okay," part is not part of the address).
+_ADDRESS_FILLER_RE = re.compile(
+    r"^(okay|ok|yes|sure|haan|ha|change( it)?( to)?|its|it's)[ ,:-]*",
+    re.IGNORECASE,
+)
+
+# A genuine Indian delivery address must include a 6-digit pincode.
+_PINCODE_RE = re.compile(r"\b\d{6}\b")
+
+# "use my old address" / "same as before" / "previous address" — reuse the
+# customer's saved profile address instead of rejecting as an invalid address.
+_REUSE_OLD_ADDRESS_RE = re.compile(
+    r"\b(old|previous|same|earlier)\b.*\baddress\b|\baddress\b.*\b(old|previous|same|earlier)\b"
+    r"|\bsame as before\b",
+    re.IGNORECASE,
+)
+
+def clean_address(text: str) -> str:
+    """Strip leading filler ("okay,", "sure,", "change to" etc.) from a raw address string."""
+    return _ADDRESS_FILLER_RE.sub("", text.strip()).strip().strip(",").strip()
+
+
+def classify_address_rejection(text: str) -> str:
+    """
+    Diagnose WHY is_valid_address(text) failed, so the customer can be told
+    the specific thing to fix instead of a generic "incomplete address".
+
+    Returns one of: "too_short", "no_structure", "bad_pincode". Callers should
+    only call this when is_valid_address(text) already returned False.
+    """
+    stripped = clean_address(text)
+    if len(stripped) < 10:
+        return "too_short"
+    if not any(c.isdigit() for c in stripped) and "," not in stripped:
+        return "no_structure"
+    _digit_runs = re.findall(r"\d+", stripped)
+    if _digit_runs:
+        _longest = max(_digit_runs, key=len)
+        if len(_longest) > 6 or (len(_longest) in (4, 5) and not _PINCODE_RE.search(stripped)):
+            return "bad_pincode"
+    return "too_short"  # fallback — shouldn't be reached if is_valid_address rejected it
+
 
 def is_valid_address(text: str) -> bool:
     """
     Return True only when *text* looks like a genuine delivery address.
 
     Rejects:
-    - Shorter than 10 characters
+    - Shorter than 10 characters (after stripping filler)
     - Contains no digit AND no comma (minimal address structure)
     - Is a question (contains '?' or starts with a question word)
     - Matches a stop-word (greeting, ack, command)
+    - Is a pure change/edit intent ("change it to...")
+    - Has no 6-digit pincode
     """
-    stripped = text.strip()
+    stripped = clean_address(text)
     if len(stripped) < 10:
         return False
     lower = stripped.lower()
@@ -124,6 +221,14 @@ def is_valid_address(text: str) -> bool:
         return False
     if not any(c.isdigit() for c in stripped) and "," not in stripped:
         return False
+    # A pincode-shaped digit run (if present) must be exactly 6 digits — reject
+    # an obviously truncated/garbled one (e.g. "3501" or "35001234567").
+    # Addresses with no pincode at all are still accepted (existing behaviour).
+    _digit_runs = re.findall(r"\d+", stripped)
+    if _digit_runs:
+        _longest = max(_digit_runs, key=len)
+        if len(_longest) > 6 or (len(_longest) in (4, 5) and not _PINCODE_RE.search(stripped)):
+            return False
     return True
 
 
@@ -483,6 +588,7 @@ async def classify_user_intent(
     user_text: str,
     next_slot: str,
     pinned_product_name: str,
+    conversation_id: int | None = None,
 ) -> dict:
     """
     Lightweight intent classifier — called before slot extraction when the
@@ -518,15 +624,29 @@ async def classify_user_intent(
     if any(kw in _text_lower for kw in _CANCEL_KW):
         return {"intent": "CANCEL", "entities": {}}
 
-    # Fast SKU path — a SKU token is never a valid answer to any order slot.
-    # This fires reliably regardless of which slot is active, bypassing the LLM.
-    from app.services.catalogue_service import extract_skus_from_text as _extract_skus
-    _sku_hits = _extract_skus(user_text)
-    if _sku_hits:
-        return {"intent": "NEW_PRODUCT", "entities": {"sku": _sku_hits[0]}}
+    # Fast SKU path — a SKU token is never a valid answer to most order slots.
+    # Skipped for free-text slots (name/address) where a coincidental SKU-shaped
+    # substring is common and expected — e.g. a street address with a pincode
+    # ("42 MG Road, Pune 411001" → "PUNE411001") must not be mistaken for a
+    # product switch.
+    if next_slot not in ("delivery_address", "customer_name"):
+        from app.services.catalogue_service import extract_skus_from_text as _extract_skus
+        _sku_hits = _extract_skus(user_text)
+        if _sku_hits:
+            return {"intent": "NEW_PRODUCT", "entities": {"sku": _sku_hits[0]}}
 
     from openai import AsyncOpenAI
     from app.config import get_settings
+
+    settings = get_settings()
+
+    # Tier 2 cache: a normalized phrase classifies to the same intent for the
+    # same slot/product context, so check before spending a Groq call.
+    _cache_key = (next_slot or "", pinned_product_name or "", _text_lower)
+    _cached = _classify_cache_get(_cache_key)
+    if _cached is not None:
+        logger.info("ROUTE tier=2 cache_hit=true classify intent=%s", _cached.get("intent"))
+        return _cached
 
     prompt = (
         f"Current order: {pinned_product_name}. "
@@ -543,7 +663,6 @@ async def classify_user_intent(
     )
 
     try:
-        settings = get_settings()
         client = AsyncOpenAI(
             api_key=settings.groq_api_key,
             base_url="https://api.groq.com/openai/v1",
@@ -554,7 +673,7 @@ async def classify_user_intent(
         for _attempt in range(3):
             try:
                 resp = await client.chat.completions.create(
-                    model="llama-3.1-8b-instant",
+                    model=settings.classify_model,
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=10,
                     temperature=0,
@@ -568,20 +687,26 @@ async def classify_user_intent(
                     _backoff *= 2
                     continue
                 raise
+        _log_groq_usage(conversation_id, "classify", settings.classify_model, resp, user_text)
+        logger.info("ROUTE tier=2 cache_hit=false classify model=%s", settings.classify_model)
         raw = (resp.choices[0].message.content or "").strip().upper()
         if raw in ("ANSWER", "NEW_PRODUCT", "CANCEL", "DISCOUNT_QUERY", "OFF_TOPIC", "OTHER"):
-            return {"intent": raw, "entities": {}}
+            _result = {"intent": raw, "entities": {}}
+            _classify_cache_put(_cache_key, _result, settings.classify_cache_size)
+            return _result
         # If response contains the keyword, extract it
         for label in ("NEW_PRODUCT", "CANCEL", "DISCOUNT_QUERY", "OFF_TOPIC", "OTHER", "ANSWER"):
             if label in raw:
-                return {"intent": label, "entities": {}}
+                _result = {"intent": label, "entities": {}}
+                _classify_cache_put(_cache_key, _result, settings.classify_cache_size)
+                return _result
     except Exception as exc:
         logger.warning("classify_user_intent failed (defaulting to ANSWER): %s", exc)
 
     return {"intent": "ANSWER", "entities": {}}
 
 
-async def classify_buy_intent(user_text: str, product_name: str) -> bool:
+async def classify_buy_intent(user_text: str, product_name: str, conversation_id: int | None = None) -> bool:
     """
     LLM-based buy-intent classifier for browsing stages.
 
@@ -648,6 +773,7 @@ async def classify_buy_intent(user_text: str, product_name: str) -> bool:
                     _backoff *= 2
                     continue
                 raise
+        _log_groq_usage(conversation_id, "classify", "llama-3.1-8b-instant", resp, user_text)
         raw = (resp.choices[0].message.content or "").strip().upper()
         result = raw.startswith("YES")
         logger.debug("classify_buy_intent product=%r text=%r → %s", product_name, user_text[:60], result)
@@ -661,6 +787,7 @@ async def is_off_topic_message(
     user_text: str,
     stage: str,
     pinned_product_name: str | None = None,
+    conversation_id: int | None = None,
 ) -> bool:
     """
     Return True when the customer's message is completely unrelated to the store.
@@ -711,6 +838,7 @@ async def is_off_topic_message(
             max_tokens=5,
             temperature=0,
         )
+        _log_groq_usage(conversation_id, "classify", "llama-3.1-8b-instant", resp, user_text)
         raw = (resp.choices[0].message.content or "").strip().upper()
         return raw.startswith("YES")
     except Exception as exc:
@@ -853,6 +981,58 @@ def detect_stage(
     return "product_inquiry"
 
 
+# Section 2 — deterministic multi-slot capture helpers. These let a single
+# message like "red and XL size, 2 pieces" fill color+size+quantity in one
+# turn, each validated against the pinned SKU's real DB variants, instead of
+# re-asking for a value the customer already gave.
+_SIZE_ALIASES: dict[str, str] = {
+    "extra large": "XL", "extra small": "XS", "x large": "XL", "x small": "XS",
+    "small": "S", "medium": "M", "large": "L",
+    "xl": "XL", "xxl": "XXL", "xs": "XS", "s": "S", "m": "M", "l": "L",
+}
+
+
+def _extract_size_token(text: str, available_sizes: list[str]) -> str | None:
+    """
+    Scan text for a size, matching both exact catalogue tokens and common
+    aliases ("extra large" -> "XL"), validated against available_sizes only —
+    never returns a size the pinned SKU doesn't actually stock.
+    """
+    size_map = {s.lower(): s for s in available_sizes}
+    text_lower = text.lower()
+    # Multi-word aliases first ("extra large") so they aren't shadowed by a
+    # single-word token match later in the same text.
+    for alias, canonical in _SIZE_ALIASES.items():
+        if " " in alias and alias in text_lower and canonical in size_map.values():
+            return size_map.get(canonical.lower())
+    for token in text.split():
+        bare = token.lower().strip(".,!?")
+        canonical = size_map.get(bare) or size_map.get(_SIZE_ALIASES.get(bare, ""))
+        if canonical:
+            return canonical
+    return None
+
+
+def _maybe_capture_quantity(conversation, text: str, available_stock: int | None) -> None:
+    """
+    Scan text for a quantity digit and fill it in-memory if not already set
+    and the value is within available_stock. Used so "red XL 2 pieces" fills
+    quantity alongside color/size in the same turn instead of re-asking.
+    """
+    if getattr(conversation, "pending_order_quantity", None):
+        return
+    match = re.search(r"\b(\d{1,4})\b", text)
+    if not match:
+        return
+    qty = int(match.group(1))
+    if qty < 1:
+        return
+    if available_stock is not None and qty > available_stock:
+        return
+    conversation.pending_order_quantity = qty
+    logger.info("Multi-slot: quantity=%d captured alongside another slot in one message", qty)
+
+
 def extract_order_field(
     conversation,
     user_text: str,
@@ -906,7 +1086,10 @@ def extract_order_field(
         if not digit_match:
             # No numeric digit found — don't assume 1; re-ask the slot.
             return None
-        qty = max(1, int(digit_match.group(1)))
+        qty = int(digit_match.group(1))
+        # qty < 1 is returned as-is (not clamped to 1) so the caller's
+        # write-validation (webhook.py: value < 1 → reject + re-ask) catches
+        # it instead of a "0" being silently smuggled in as a valid "1".
         if available_stock is not None and qty > available_stock:
             return ("quantity_invalid", available_stock)
         return ("pending_order_quantity", qty)
@@ -915,6 +1098,21 @@ def extract_order_field(
     if next_slot == "color":
         for color in vi.get("available_colors", []):
             if color.lower() in text_lower:
+                # Section 2 multi-slot: scan the SAME message for size and
+                # quantity too ("red and XL size, 2 pieces") so they aren't
+                # dropped and the customer isn't re-asked for a value already
+                # given — apply directly to the in-memory conversation object;
+                # it persists with the next commit in this request, same as
+                # any other ORM mutation.
+                if vi.get("needs_size"):
+                    canonical_size = _extract_size_token(text, vi.get("available_sizes", []))
+                    if canonical_size and not getattr(conversation, "selected_size", None):
+                        conversation.selected_size = canonical_size
+                        logger.info(
+                            "Multi-slot: size=%r captured alongside color=%r in one message",
+                            canonical_size, color,
+                        )
+                _maybe_capture_quantity(conversation, text, available_stock)
                 return ("selected_color", color)
         return None
 
@@ -930,6 +1128,7 @@ def extract_order_field(
         for token in words:
             canonical = size_map.get(token.lower())
             if canonical:
+                _maybe_capture_quantity(conversation, text, available_stock)
                 return ("selected_size", canonical)
         return None
 
@@ -983,6 +1182,10 @@ def extract_order_field(
                 return ("delivery_address", saved_address)
             if _reply in _SAVED_ADDRESS_NEGATIONS:
                 return None  # customer wants to enter a different address
+        # Customer explicitly asks to reuse the address on file, even when the
+        # agent didn't just offer it (e.g. mid-rejection-loop: "use my old address").
+        if saved_address and _REUSE_OLD_ADDRESS_RE.search(text):
+            return ("delivery_address", saved_address)
         # If last agent message asked for name+address and name wasn't extracted
         # yet (customer skipped the name turn), split the reply.
         if _last_agent_asked_name_and_address(history) and not conversation.customer_name:
@@ -996,7 +1199,7 @@ def extract_order_field(
         if _SKU_ONLY_PATTERN.match(text.strip()):
             return None
         if is_valid_address(text):
-            return ("delivery_address", text)
+            return ("delivery_address", clean_address(text))
         return None
 
     # ── PAYMENT METHOD ────────────────────────────────────────────────────────

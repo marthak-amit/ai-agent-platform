@@ -321,12 +321,18 @@ async def replay_http(replay_db_url, monkeypatch):
         "app.services.conversation_flow.classify_buy_intent",
         mock.AsyncMock(return_value=False),
     )
-    # classify_user_intent: return "ANSWER" (neutral — does not trigger any
-    # special branch; lets keyword/stage logic drive behaviour).
-    monkeypatch.setattr(
-        "app.services.conversation_flow.classify_user_intent",
-        mock.AsyncMock(return_value="ANSWER"),
+    # classify_user_intent: do NOT replace the function itself — it has real
+    # keyword fast-paths (cancel, price-objection, SKU) that must keep working
+    # in tests without any network call. Instead, disable only the Groq call
+    # at the bottom of the function so it can never reach the network; its own
+    # except-block already defaults to {"intent": "ANSWER", "entities": {}} on
+    # any exception, which preserves the old neutral behaviour for messages
+    # that don't hit a fast-path.
+    _fake_groq_client = mock.MagicMock()
+    _fake_groq_client.chat.completions.create = mock.AsyncMock(
+        side_effect=RuntimeError("Groq disabled in replay tests")
     )
+    monkeypatch.setattr("openai.AsyncOpenAI", lambda *a, **kw: _fake_groq_client)
     # is_off_topic_message: return False so the off-topic guard never fires.
     monkeypatch.setattr(
         "app.services.conversation_flow.is_off_topic_message",

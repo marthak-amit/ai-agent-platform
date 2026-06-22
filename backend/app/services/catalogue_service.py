@@ -33,6 +33,10 @@ _STOP_WORDS = {
     "much", "many", "any", "some", "more", "all", "about", "for", "of",
     "in", "on", "at", "to", "by", "with", "from", "into", "and", "or",
     "price", "cost", "rate", "stock", "available", "availability",
+    # Generic adjectives/fillers that appear in many unrelated product names
+    # ("kurti new one") and would otherwise inflate the match score for a
+    # query that names a different, unrelated product ("new jeans available?").
+    "new", "one", "item", "piece", "product", "good", "nice",
 }
 
 

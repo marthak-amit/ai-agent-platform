@@ -1,0 +1,19 @@
+{
+  "description": "Captured production bug (conv id=52, phone 917575092467): customer twice explicitly confirmed PR17761 (Traditional Choli, Red, XL, ₹3,999) after completing an unrelated order for SR31045 (Georgette Party Wear). The stale last_shown_sku=SR31045 from the completed order was blindly repinned on a bare 'yes', and the order placed was SR31045 Red/M x2 = ₹2,200 — wrong SKU, wrong size, wrong price.",
+  "root_cause": "last_shown_sku was only ever written by the deterministic product-card path. Products resolved via the LLM open_browsing route (e.g. 'choli che?' -> PR17761) never updated it, so it stayed stale at the previous order's SKU.",
+  "fix": "app.services.conversation_service.set_last_shown_sku() is now the single writer, called from BOTH the deterministic card path and the open_browsing LLM-resolved path (backend/app/routers/webhook.py, open_browsing branch). See backend/tests/test_render_reply.py for the regression coverage.",
+  "messages": [
+    {"role": "user", "content": "choli che?"},
+    {"role": "assistant_intent_json", "content": {"intent": "ASK_PRODUCT", "sku": "PR17761", "slots": {}, "question_topic": null}},
+    {"role": "user", "content": "yes I want to buy red choli xl size"},
+    {"role": "assistant_intent_json", "content": {"intent": "ANSWER", "sku": "PR17761", "slots": {"color": "Red", "size": "XL", "quantity": null}, "question_topic": null}},
+    {"role": "user", "content": "I already told you man"},
+    {"role": "assistant_intent_json", "content": {"intent": "ANSWER", "sku": "PR17761", "slots": {"color": "Red", "size": "XL", "quantity": null}, "question_topic": null}},
+    {"role": "user", "content": "yes"}
+  ],
+  "expected": {
+    "last_shown_sku_after_choli_turns": "PR17761",
+    "pinned_sku_after_bare_yes": "PR17761",
+    "never": "SR31045"
+  }
+}

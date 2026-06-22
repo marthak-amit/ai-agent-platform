@@ -275,9 +275,14 @@ async def resume_conversation(
     conv.ai_enabled = True
     conv.taken_over_at = None
     conv.taken_over_note = None
+    # Give the bot a clean slate on resume — otherwise a stale attempt count
+    # instantly re-trips the cap on the very next message (resume→re-escalate loop).
+    conv.slot_attempt_count = 0
+    conv.slot_attempt_slot = None
+    conv.off_topic_count = 0
     await db.commit()
     await db.refresh(conv)
-    logger.info("AI resumed for conversation %d.", conv_id)
+    logger.info("AI resumed for conversation %d — attempt counters reset.", conv_id)
     return await get_conversation(conv_id, db)
 
 

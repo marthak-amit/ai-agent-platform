@@ -271,16 +271,19 @@ async def test_list_all_real(replay_http, replay_session, monkeypatch):
         replay_session, phone=phone, pnid=pnid
     )
 
-    # Clean AI reply — no phantoms
+    # Clean AI understanding — Section 1: the LLM returns structured JSON
+    # (never prose); render_reply.render_product_list_reply() builds the
+    # actual customer-facing text from the DB-fetched product rows.
+    import json as _json
     monkeypatch.setattr(
         "app.services.gemini_service.generate_reply",
-        mock.AsyncMock(return_value=(
-            "Here are our sarees:\n"
-            "• Cotton Saree [SR10001] — ₹800\n"
-            "• Silk Saree [SR10002] — ₹1500\n"
-            "• Banarasi Saree [SR10003] — ₹2200\n"
-            "Which one interests you?"
-        )),
+        mock.AsyncMock(return_value=_json.dumps({
+            "intent": "LIST_PRODUCTS",
+            "sku": None,
+            "skus": ["SR10001", "SR10002", "SR10003"],
+            "slots": {"color": None, "size": None, "quantity": None},
+            "question_topic": None,
+        })),
     )
 
     captured: list[str] = []

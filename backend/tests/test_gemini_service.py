@@ -194,8 +194,8 @@ async def test_generate_reply_calls_correct_model(mock_get_client, mock_settings
 
     call_kwargs = mock_client.chat.completions.create.call_args.kwargs
     assert call_kwargs["model"] == "llama-3.3-70b-versatile"
-    assert call_kwargs["max_tokens"] == 300
-    assert call_kwargs["temperature"] == 0.7
+    assert call_kwargs["max_tokens"] == 150
+    assert call_kwargs["temperature"] == 0.3
 
 
 # ── _get_client ───────────────────────────────────────────────────────────────

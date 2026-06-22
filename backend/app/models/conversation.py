@@ -68,6 +68,18 @@ class Conversation(Base):
     # SKU mentioned mid-order when customer may want to switch products (migration 0034)
     interrupted_sku: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
+    # Last product card shown to the customer — survives the post-order reset
+    # of pending_product_sku so a bare "yes" after order completion can be
+    # repinned deterministically instead of falling through to the LLM
+    # (migration 0043).
+    last_shown_sku: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+    # JSON list of SKUs shown together in a still-open "which one?" multi-option
+    # list (e.g. two name-matched products). Non-empty means a CHOICE is pending —
+    # a bare affirmative ("Yes") is not a valid answer and must be rejected/re-asked
+    # rather than repinned from last_shown_sku (migration 0044).
+    pending_choice_skus: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # Browsed SKUs — JSON list of SKUs the customer showed buying intent for this conversation.
     # Appended on every product switch/pin; used for end-of-order cross-sell.
     browsed_skus: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

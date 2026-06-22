@@ -137,7 +137,13 @@ async def create_order(
 
     Returns:
         The newly created and refreshed Order instance.
+
+    Raises:
+        AssertionError: if quantity is not a positive integer — final guard
+            so no order can be placed with qty < 1 regardless of any
+            upstream slot-filling bug.
     """
+    assert isinstance(quantity, int) and quantity >= 1, f"invalid order quantity: {quantity!r}"
     year = datetime.now(timezone.utc).year
     count = await _get_order_count_for_year(client_id, year, db)
     order_number = f"ORD-{year}-{str(count + 1).zfill(4)}"

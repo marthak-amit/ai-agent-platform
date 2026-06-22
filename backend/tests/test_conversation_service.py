@@ -64,9 +64,11 @@ async def test_get_history_returns_messages(db, mock_settings):
     """get_history returns a list of messages from the query result."""
     from app.models.message import Message
 
+    # get_history queries ORDER BY created_at DESC (newest first) then reverses
+    # the result to ascending — so the mocked DB result must be in desc order.
     msgs = [
-        Message(id=1, conversation_id=1, role="user", content="Hello"),
         Message(id=2, conversation_id=1, role="model", content="Hi there"),
+        Message(id=1, conversation_id=1, role="user", content="Hello"),
     ]
     mock_scalars = MagicMock()
     mock_scalars.all.return_value = msgs

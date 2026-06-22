@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import logging
 import random
+import re
 import secrets
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -32,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.db import get_db
 from app.schemas.webhook import WhatsAppWebhookPayload
-from app.services import catalogue_service, conversation_service, customer_service, escalation_service, gemini_service, lead_service, order_service, usage_service, vision_service, voice_service, whatsapp_service
+from app.services import catalogue_service, conversation_service, cost_log, customer_service, escalation_service, gemini_service, lead_service, order_service, usage_service, vision_service, voice_service, whatsapp_service
 from app.services import conversation_flow, language_service as _lang_svc, order_state_machine
 from app.services.delivery_service import get_delivery_time_str
 from app.services.language_templates import format_price
@@ -200,6 +201,84 @@ def _is_order_aside_question(text: str) -> bool:
     return any(kw in lower for kw in _ORDER_QUESTION_KEYWORDS)
 
 
+def _is_availability_question(text: str) -> bool:
+    """True for 'is X available?' / 'do you have X?' style stock questions."""
+    lower = text.lower().strip()
+    if "available" in lower or "availability" in lower or "in stock" in lower or "out of stock" in lower:
+        return True
+    return lower.startswith("do you have") or lower.startswith("is there")
+
+
+# Common saree/garment colour words used to spot a colour named in an
+# availability question even when it isn't one of this product's variants.
+_KNOWN_COLOR_WORDS = frozenset({
+    "orange", "blue", "green", "pink", "red", "yellow", "black", "white",
+    "purple", "maroon", "beige", "grey", "gray", "brown", "navy", "gold",
+    "silver", "cream", "magenta", "turquoise", "teal", "lavender",
+})
+
+
+def _build_availability_answer(
+    user_text: str,
+    pinned_product,
+    variant_info: dict | None,
+    available_stock: int | None,
+) -> str:
+    """
+    Answer an availability question ("is orange available?") from the
+    CATALOG / current product's variants — never from the KB, since KB
+    keyword overlap on a word like "available" can return an unrelated FAQ.
+
+    Returns "" when there isn't enough info to answer confidently (caller
+    should fall back to a safe message rather than inventing an answer).
+    """
+    if pinned_product is None:
+        return ""
+    lower = user_text.lower()
+    prod_name = getattr(pinned_product, "name", None) or "this product"
+    vi = variant_info or {}
+    colors = vi.get("available_colors", []) or []
+    sizes = vi.get("available_sizes", []) or []
+    materials = vi.get("available_materials", []) or []
+
+    for options in (colors, sizes, materials):
+        for opt in options:
+            if opt and opt.lower() in lower:
+                return f"Yes, {opt} is available for {prod_name}."
+
+    cleaned = lower.replace("?", " ")
+    for word in cleaned.split():
+        word = word.strip(".,!")
+        if word in _KNOWN_COLOR_WORDS and word not in {c.lower() for c in colors}:
+            opts = ", ".join(colors) if colors else "see our catalogue"
+            return f"{word.capitalize()} isn't available for {prod_name}. Available colors: {opts}."
+
+    # No specific attribute named — fall back to overall stock state.
+    if available_stock is not None:
+        if available_stock <= 0:
+            return f"Sorry, {prod_name} is currently out of stock."
+        return f"Yes, {prod_name} is available."
+    return ""
+
+
+# Matches "deliver(y) to/in <place>", "ship to <place>", "send to <place>".
+_DELIVERY_CITY_RE = _re_addr.compile(
+    r"\b(?:deliver(?:y)?|ship|send)\s+(?:it\s+)?(?:to|in|at)\s+([A-Za-z][A-Za-z\s]{1,25})",
+    _re_addr.IGNORECASE,
+)
+
+
+def _extract_delivery_city(text: str) -> str | None:
+    """Return the place name from a 'deliver to <city>?' question, or None."""
+    match = _DELIVERY_CITY_RE.search(text)
+    if not match:
+        return None
+    city = match.group(1).strip(" ?.,!")
+    # Drop a trailing question word that sometimes gets captured, e.g. "Mumbai please".
+    city = _re_addr.sub(r"\s+(please|pls|too|also)$", "", city, flags=_re_addr.IGNORECASE).strip()
+    return city or None
+
+
 def _build_order_aside_answer(
     user_text: str,
     conv,
@@ -229,6 +308,12 @@ def _build_order_aside_answer(
     if any(kw in lower for kw in ("delivery", "deliver", "shipping", "dispatch",
                                    "kitne din", "kab milega", "kab aayega")):
         dt = delivery_time_str or "3–7 business days"
+        city = _extract_delivery_city(user_text)
+        if city:
+            # No per-city delivery restriction data exists in the catalogue —
+            # service is pan-India, so answer the yes/no honestly instead of
+            # a generic delivery-time line that ignores the city asked about.
+            return f"Yes, we deliver to {city}. Delivery: {dt}."
         return f"Delivery: {dt}."
 
     # Price / total of current order
@@ -268,6 +353,8 @@ def _detect_change_address_intent(text: str) -> tuple[bool, str | None]:
     (True, None) when only intent without address was expressed,
     (False, None) when no change-address intent detected.
     """
+    from app.services.conversation_flow import clean_address as _clean_addr_fn
+
     lower = text.lower().strip()
     # Pure intent without an address
     _PURE_CHANGE_INTENT = (
@@ -279,20 +366,47 @@ def _detect_change_address_intent(text: str) -> tuple[bool, str | None]:
         # Try to strip intent prefix and see if there's an address left
         stripped = _CHANGE_ADDR_RE.sub("", text.strip()).strip()
         if stripped and stripped.lower() != text.lower().strip():
-            return (True, stripped)
+            return (True, _clean_addr_fn(stripped))
         return (True, None)
 
-    # Intent with embedded address
-    if _CHANGE_ADDR_INTENT_RE.search(text):
-        stripped = _CHANGE_ADDR_RE.sub("", text.strip()).strip()
-        return (True, stripped if stripped else None)
+    # Intent with embedded address — strip everything UP TO AND INCLUDING the
+    # matched change-phrase (wherever it occurs, even after a lead-in like
+    # "Please"/"Sure,"), not just when the phrase is at position 0. An
+    # anchored-only strip leaves "Please change it to <addr>" untouched and
+    # the raw command text would otherwise be stored as the address.
+    _intent_match = _CHANGE_ADDR_INTENT_RE.search(text)
+    if _intent_match:
+        remainder = text[_intent_match.end():].strip().lstrip(",:-").strip()
+        cleaned = _clean_addr_fn(remainder) if remainder else ""
+        return (True, cleaned if cleaned else None)
 
     return (False, None)
 
 
-def _log_route(conv_id: int, route: str, reason: str, extra: str = "") -> None:
-    """Log route=TEMPLATE|LLM for every turn so call reduction can be measured."""
-    extra_part = f" {extra}" if extra else ""
+def _log_route(
+    conv_id: int,
+    route: str,
+    reason: str,
+    extra: str = "",
+    tier: int | None = None,
+    match_score: float | None = None,
+    cache_hit: bool | None = None,
+) -> None:
+    """
+    Log route=TEMPLATE|LLM for every turn so call reduction can be measured.
+
+    tier/match_score/cache_hit are optional cost-cascade fields (see the
+    tiered routing in app/routers/webhook.py): tier 0=deterministic,
+    1=catalog match, 2=cheap classify, 3=70B reply.
+    """
+    parts = [extra] if extra else []
+    if tier is not None:
+        parts.append(f"tier={tier}")
+    if match_score is not None:
+        parts.append(f"match_score={match_score:.2f}")
+    if cache_hit is not None:
+        parts.append(f"cache_hit={cache_hit}")
+    extra_part = f" {' '.join(parts)}" if parts else ""
     logger.info("ROUTE conv=%s route=%s reason=%s%s", conv_id, route, reason, extra_part)
 
 
@@ -355,14 +469,15 @@ _DEFAULT_LLM_SOFT_CAP = 40   # LLM-calling turns per phone per UTC day
 _DEFAULT_LLM_HARD_CAP = 80
 
 # ── Per-slot attempt cap constants (Improvement 1) ────────────────────────
-_SLOT_ATTEMPT_ESCAPE_HATCH = 3   # append escape hatch at this attempt number
-_SLOT_ATTEMPT_ESCALATE = 4       # stop LLM and escalate at this attempt number
+_SLOT_ATTEMPT_ESCAPE_HATCH = 4   # append escape hatch at this attempt number
+_SLOT_ATTEMPT_ESCALATE = 6       # stop LLM and escalate at this attempt number
 
 # ── Off-topic counter threshold (Improvement 2) ───────────────────────────
 _DEFAULT_OFF_TOPIC_THRESHOLD = 4  # consecutive off-topic messages before template-only
 
 # ── Minimum score for auto-pinning/switching a product by name-match (Improvement 4) ──
 _NAME_MATCH_AUTO_PIN_MIN_SCORE = 3   # min score for first-time pin (currently always fires when _single_strong)
+_NAME_MATCH_CONFIDENCE_FLOOR = 0.4   # min (score / max-possible-score) to offer a name-matched product (Issue D)
 _NAME_MATCH_SWITCH_MIN_SCORE = 6     # min score required to SWITCH from already-pinned product silently
 
 
@@ -576,8 +691,17 @@ async def _find_sku_matched_products(db: AsyncSession, client, user_text: str) -
         # match the standard regex ({2,4} letters + {4,6} digits). If the entire
         # message is a bare alphanumeric token starting with a letter, try a direct
         # DB lookup so these short SKUs are pinned the same way as longer ones.
+        # Require at least one digit — otherwise a plain word like "pink" or "red"
+        # (a colour/attribute reply, not a SKU) can prefix-match a real SKU such as
+        # "PINK_0001" via find_product_by_sku's startswith() fallback and silently
+        # re-pin to the wrong product.
         candidate = user_text.strip().upper()
-        if candidate and candidate[0].isalpha() and candidate.isalnum():
+        if (
+            candidate
+            and candidate[0].isalpha()
+            and candidate.isalnum()
+            and any(c.isdigit() for c in candidate)
+        ):
             p = await catalogue_service.find_product_by_sku(db, client.id, candidate)
             if p:
                 return [p]
@@ -1198,6 +1322,10 @@ async def _reset_order_slots_after_completion(
         ("pending_order_quantity", None),
         ("payment_method", None),
         ("summary_shown", False),
+        # Cleared here too — a completed order's product card must never be
+        # repinned into a later, unrelated session via a stale bare "yes".
+        ("last_shown_sku", None),
+        ("pending_choice_skus", None),
     ]
     for _field, _value in _reset_fields:
         try:
@@ -1308,10 +1436,36 @@ async def receive_message(
                 user_text = "cancel"
             elif _btn_id == "paid_done":
                 user_text = "paid"
+            elif _btn_id == "offer_yes":
+                # E2: single-product offer "Yes" button — maps to the existing
+                # purchase-affirmation path (conversation_flow._PURCHASE_AFFIRMATION).
+                user_text = "yes"
+            elif _btn_id == "offer_no":
+                # E2: single-product offer "No" button — keep browsing.
+                user_text = "no"
+            elif catalogue_service.SKU_PATTERN.fullmatch(_btn_id.upper()):
+                # E2: multi-option choice button — id IS the SKU, so resolve it
+                # directly (the existing pending_choice_skus SKU-substring match
+                # below picks this up with no fuzzy matching needed).
+                user_text = _btn_id.upper()
             else:
                 user_text = interactive.button_reply.title
         elif interactive.list_reply is not None:
-            user_text = interactive.list_reply.title
+            _list_id_raw = (interactive.list_reply.id or "").lower()
+            # BUG 3 FIX: list row ids are now nonce-encoded too (see _sends_buttons
+            # for "choice_list") — decode the same way as button replies so a stale
+            # list selection can be rejected by the nonce check below.
+            _list_decoded = _decode_btn(_list_id_raw)
+            if _list_decoded is not None:
+                _list_id = _list_decoded[0].upper()
+                _btn_nonce_parsed = _list_decoded
+            else:
+                _list_id = _list_id_raw.upper()
+            if catalogue_service.SKU_PATTERN.fullmatch(_list_id):
+                # E2: list-message row id is also a SKU — resolve directly.
+                user_text = _list_id
+            else:
+                user_text = interactive.list_reply.title
         else:
             user_text = ""
         logger.info(
@@ -1350,6 +1504,17 @@ async def receive_message(
     # etc.) can reference the pre-update stage unconditionally.
     _stored_stage: str = conv.current_stage or "greeting"
 
+    # P0-3: mirror pending_product_sku into last_shown_sku, which is NEVER
+    # cleared by the post-order/cancel resets. This is what lets a bare "yes"
+    # after order completion (when a new product card is shown) repin the
+    # right SKU deterministically instead of falling through to the LLM.
+    if conv.pending_product_sku and conv.pending_product_sku != conv.last_shown_sku:
+        try:
+            await conversation_service.update_order_field(db, conv.id, "last_shown_sku", conv.pending_product_sku)
+            conv.last_shown_sku = conv.pending_product_sku
+        except Exception as _lss_exc:
+            logger.error("last_shown_sku sync error: %s", _lss_exc)
+
     # ── Improvement 3: Per-phone/day LLM budget check ─────────────────────────
     _llm_calls_today, _llm_soft_cap, _llm_hard_cap = await _check_and_reset_llm_budget(db, conv, client)
     _llm_budget = (
@@ -1358,6 +1523,14 @@ async def receive_message(
         else "ok"
     )
     _llm_called_this_turn = False  # flipped True whenever any LLM call fires this turn
+    _llm_usage = None  # set to gemini_service.get_last_usage() after any generate_reply() call
+    # Cost-fix tracking: a pick resolved from pending_choice_skus this turn means the
+    # product is already known — the open_browsing 70B classify must not also run.
+    _pick_just_resolved = False
+    # Count of catalog name-matches found this turn (set below); used to gate the
+    # ROUTE reason logged for the final LLM branch (open_browsing_no_match vs
+    # open_browsing — see VERIFY c in the cost-fix task).
+    _name_match_count = 0
 
     if _llm_budget == "hard":
         _hard_boundary = "We've noted your interest — our team will get back to you."
@@ -1451,11 +1624,16 @@ async def receive_message(
         _stored_nonce = getattr(conv, "current_button_nonce", None)
         if _stored_nonce and _p_nonce != _stored_nonce:
             _expired_reply = (
-                "That option has expired — your last action already went through."
+                "That option has expired — your last action already went through. "
+                "Let's continue from here."
             )
             logger.info(
                 "Expired button nonce: conv=%s stored=%r received=%r action=%r — rejected.",
                 conv.id, _stored_nonce, _p_nonce, _p_action,
+            )
+            logger.info(
+                "Stale button ignored conv=%s btn=%r stage=%s",
+                conv.id, _p_action, _stored_stage,
             )
             try:
                 await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
@@ -1506,6 +1684,7 @@ async def receive_message(
             ("customer_name", None), ("delivery_address", None),
             ("payment_method", None), ("summary_shown", False),
             ("pending_product_sku", None), ("interrupted_sku", None),
+            ("last_shown_sku", None), ("pending_choice_skus", None),
         ]
         for _pcf, _pcv in _pc_cancel_fields:
             try:
@@ -1818,6 +1997,217 @@ async def receive_message(
                     conv.id, len(sku_products),
                 )
 
+    # ── Pending multi-choice: resolve a numbered/name pick, or reject a bare
+    # affirmative ("Yes") against an open "which one?" list ─────────────────
+    # When two-plus name-matched products were just shown, last_shown_sku was
+    # cleared (nothing was confirmed) and pending_choice_skus holds the shown
+    # SKUs. A bare "yes" here is NOT a valid answer to "which one?" and must
+    # never fall through to the P0-3 repin below, which would otherwise pin a
+    # stale last_shown_sku from a completely different, earlier product.
+    _pending_choice_skus_list: list = []
+    try:
+        import json as _json_pcr
+        _pcs_raw = getattr(conv, "pending_choice_skus", None)
+        if _pcs_raw:
+            _pending_choice_skus_list = _json_pcr.loads(_pcs_raw)
+    except Exception:
+        _pending_choice_skus_list = []
+
+    _PC_ORDINAL_WORDS = ("first", "second", "third", "fourth")
+
+    # FIX 1: interactive button/list taps must resolve here too — a button id
+    # equal to a SKU in pending_choice_skus is handled by branch 3 below (SKU
+    # substring match) the same as typed "KU76326". Previously this whole block
+    # was gated to message.type == "text" only, so a button tap fell straight
+    # through to open-browsing/LLM routing (KB search + 70B call) instead of
+    # resolving deterministically — the cost regression in conv 52.
+    if message.type in ("text", "interactive") and _pending_choice_skus_list:
+        _picked_sku = None
+        _stripped_pc = user_text.strip()
+        _stripped_pc_lower = _stripped_pc.lower()
+
+        # Pre-fetch the candidate products once — reused for ordinal/index,
+        # SKU-substring, fuzzy-name resolution, and the re-ask message below.
+        _pc_candidates = []
+        if client:
+            for _cand_sku in _pending_choice_skus_list:
+                try:
+                    _cand_prod = await catalogue_service.find_product_by_sku(db, client.id, _cand_sku)
+                except Exception:
+                    _cand_prod = None
+                _pc_candidates.append((_cand_sku, _cand_prod))
+
+        # 1. Numeric index: "1", "2" ...
+        if _stripped_pc.isdigit():
+            _pc_idx = int(_stripped_pc) - 1
+            if 0 <= _pc_idx < len(_pending_choice_skus_list):
+                _picked_sku = _pending_choice_skus_list[_pc_idx]
+
+        # 2. Ordinal word: "first", "the second one" ...
+        if not _picked_sku:
+            for _ord_idx, _ord_word in enumerate(_PC_ORDINAL_WORDS):
+                if _ord_idx < len(_pending_choice_skus_list) and re.search(
+                    r"\b" + _ord_word + r"\b", _stripped_pc_lower
+                ):
+                    _picked_sku = _pending_choice_skus_list[_ord_idx]
+                    break
+
+        # 3. SKU substring match: "KU23444", "the KU23444 one" ...
+        if not _picked_sku:
+            for _cand_sku, _ in _pc_candidates:
+                if _cand_sku and _cand_sku.lower() in _stripped_pc_lower:
+                    _picked_sku = _cand_sku
+                    break
+
+        # 4. Exact/substring product-name match against the shown options only.
+        if not _picked_sku:
+            for _cand_sku, _cand_prod in _pc_candidates:
+                if _cand_prod and _cand_prod.name and _cand_prod.name.lower() in _stripped_pc_lower:
+                    _picked_sku = _cand_sku
+                    break
+
+        # 5. Fuzzy name/keyword match (e.g. "kurti", "the cheap one" won't score
+        # but "kurti best" will), scored ONLY against the shown candidates so
+        # the match can never resolve to a product outside this choice. Only
+        # accept when there's a single, unambiguous best match.
+        if not _picked_sku and _pc_candidates:
+            _pc_products_only = [p for _, p in _pc_candidates if p]
+            if _pc_products_only:
+                _pc_scored = catalogue_service.search_products_with_scores(_pc_products_only, _stripped_pc)
+                if _pc_scored:
+                    _pc_top_score, _pc_top_prod = _pc_scored[0]
+                    _pc_second_score = _pc_scored[1][0] if len(_pc_scored) > 1 else 0
+                    if _pc_top_score > _pc_second_score:
+                        _picked_sku = getattr(_pc_top_prod, "sku", None)
+
+        if _picked_sku:
+            _picked_from = _pending_choice_skus_list
+            try:
+                await conversation_service.update_order_field(db, conv.id, "pending_product_sku", _picked_sku)
+                conv.pending_product_sku = _picked_sku
+                await conversation_service.set_pending_choice_skus(db, conv.id, None)
+                conv.pending_choice_skus = None
+                await conversation_service.set_last_shown_sku(db, conv.id, _picked_sku)
+                conv.last_shown_sku = _picked_sku
+                _pending_choice_skus_list = []
+                _pick_just_resolved = True
+                logger.info(
+                    "Multi-choice resolved: conv=%s picked=%s from %s",
+                    conv.id, _picked_sku, _picked_from,
+                )
+                if message.type == "interactive":
+                    logger.info(
+                        "Button pick resolved by SKU conv=%s sku=%s",
+                        conv.id, _picked_sku,
+                    )
+            except Exception as exc:
+                logger.error("Multi-choice resolve error: %s", exc)
+        else:
+            # No pick resolved. If the customer named an explicit, DIFFERENT
+            # SKU (not one of the shown options), it's a deliberate switch —
+            # let it fall through to the normal SKU-pin flow rather than
+            # re-asking. Otherwise (bare "yes", an unrelated/ambiguous reply,
+            # or a typo) the choice is still open: reject and re-ask rather
+            # than guess.
+            _foreign_skus = catalogue_service.extract_skus_from_text(user_text)
+            _is_foreign_sku_ref = bool(_foreign_skus) and not any(
+                s in _pending_choice_skus_list for s in _foreign_skus
+            )
+            if not _is_foreign_sku_ref:
+                # Issue C: the reply may carry a variant (colour/size) even though
+                # it didn't resolve to one of the shown products — e.g. "Green
+                # xxl" answers a question we haven't asked yet. Stash it into the
+                # normal slot columns now (instead of discarding it) so that once
+                # the pick resolves on a later turn, the slot machine sees these
+                # already filled and never re-asks for them.
+                _PC_GENERIC_COLORS = (
+                    "red", "blue", "green", "pink", "navy", "yellow", "white",
+                    "black", "purple", "orange", "maroon", "gold", "silver",
+                    "beige", "brown",
+                )
+                _PC_SIZE_TOKENS = {
+                    "xs": "XS", "s": "S", "m": "M", "l": "L", "xl": "XL",
+                    "xxl": "XXL", "xxxl": "XXXL",
+                }
+                _pc_text_lower = _stripped_pc_lower
+                _pc_stash_color = next((c for c in _PC_GENERIC_COLORS if c in _pc_text_lower.split()), None)
+                _pc_stash_size = None
+                for _tok in _pc_text_lower.split():
+                    _bare_tok = _tok.strip(".,!?")
+                    if _bare_tok in _PC_SIZE_TOKENS:
+                        _pc_stash_size = _PC_SIZE_TOKENS[_bare_tok]
+                        break
+                if _pc_stash_color and not getattr(conv, "selected_color", None):
+                    try:
+                        await conversation_service.update_order_field(db, conv.id, "selected_color", _pc_stash_color.title())
+                        conv.selected_color = _pc_stash_color.title()
+                    except Exception as _pcce:
+                        logger.error("Multi-choice variant stash (color) error: %s", _pcce)
+                if _pc_stash_size and not getattr(conv, "selected_size", None):
+                    try:
+                        await conversation_service.update_order_field(db, conv.id, "selected_size", _pc_stash_size)
+                        conv.selected_size = _pc_stash_size
+                    except Exception as _pcse:
+                        logger.error("Multi-choice variant stash (size) error: %s", _pcse)
+                if _pc_stash_color or _pc_stash_size:
+                    logger.info(
+                        "Multi-choice variant carry-forward: conv=%s color=%r size=%r — stashed, not discarded",
+                        conv.id, _pc_stash_color, _pc_stash_size,
+                    )
+
+                logger.info("Multi-choice open: rejecting bare affirmative, re-asking conv=%s", conv.id)
+                _reask_lines = []
+                for _cs, _cp in _pc_candidates:
+                    _i = _pending_choice_skus_list.index(_cs) + 1
+                    _cname = getattr(_cp, "name", None) or _cs
+                    _cprice = int(getattr(_cp, "price", 0) or 0)
+                    _reask_lines.append(f"{_i}. {_cname} [{_cs}] — ₹{_cprice:,}")
+                _reask_msg = (
+                    "Please reply with the number of your choice:\n" + "\n".join(_reask_lines)
+                )
+                try:
+                    await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+                    await conversation_service.save_message(db, conv.id, "assistant", _reask_msg)
+                except Exception:
+                    pass
+                try:
+                    await whatsapp_service.send_text_message(sender_phone, _reask_msg)
+                except Exception:
+                    pass
+                try:
+                    await _record_usage(db, client)
+                except Exception:
+                    pass
+                return {"status": "ok"}
+
+    # ── P0-3: repin last_shown_sku on a bare affirmative after reset ─────────
+    # After order completion/cancel, pending_product_sku is cleared but a new
+    # product card may already be on screen (last_shown_sku). A bare "yes" in
+    # a browsing stage with no product pinned must repin that SKU and enter
+    # order_collection deterministically — it must NEVER be sent to the LLM,
+    # which has no memory of what card was shown and replies "Which item?".
+    # Guarded by "not _pending_choice_skus_list" — an open multi-choice list
+    # must never be silently resolved by repinning a stale last_shown_sku.
+    _p03_repinned = False
+    if (
+        message.type == "text"
+        and _stored_stage in conversation_flow._BROWSING_STAGES
+        and not getattr(conv, "pending_product_sku", None)
+        and getattr(conv, "last_shown_sku", None)
+        and not _pending_choice_skus_list
+        and user_text.strip().lower() in conversation_flow._PURCHASE_AFFIRMATION
+    ):
+        try:
+            await conversation_service.update_order_field(db, conv.id, "pending_product_sku", conv.last_shown_sku)
+            conv.pending_product_sku = conv.last_shown_sku
+            _p03_repinned = True
+            logger.info(
+                "P0-3 repin: conv=%s bare affirmative %r → pending_product_sku=%s (from last_shown_sku)",
+                conv.id, user_text, conv.last_shown_sku,
+            )
+        except Exception as _repin_exc:
+            logger.error("P0-3 repin error: %s", _repin_exc)
+
     # ── Resolve pinned product and its variant info ───────────────────────────
     # Placed HERE — after all new-SKU detection/reset logic above — so
     # variant_info always reflects conv.pending_product_sku as updated this turn.
@@ -2015,6 +2405,21 @@ async def receive_message(
         "product_inquiry", "qualification", "objection_handling", "offer_making", "greeting"
     )
     _is_bare_attribute = len(user_text.split()) == 1
+    # P1-4: a multi-word variant answer ("Pink and xl") at offer stage must NOT be
+    # treated as a new product search just because it isn't a single word — check
+    # whether the message names a colour/size/material of the ALREADY-pinned product.
+    _is_variant_answer_for_pinned = bool(
+        getattr(conv, "pending_product_sku", None)
+        and variant_info.get("has_variants")
+        and any(
+            re.search(r"\b" + re.escape(v.lower()) + r"\b", user_text.lower())
+            for v in (
+                variant_info.get("available_colors", [])
+                + variant_info.get("available_sizes", [])
+                + variant_info.get("available_materials", [])
+            )
+        )
+    )
     _active_order_context = bool(
         getattr(conv, "pending_product_sku", None)
         and (
@@ -2024,6 +2429,9 @@ async def receive_message(
             # product is already pinned at a browsing stage. Multi-word messages (explicit
             # product names) are allowed through so a customer can switch products.
             or (_browsing_stage_pinned and _is_bare_attribute)
+            # Block re-pin for a multi-word variant answer ("Pink and xl") naming an
+            # attribute of the already-pinned product.
+            or (_browsing_stage_pinned and _is_variant_answer_for_pinned)
         )
     )
     _no_sku_in_msg = not catalogue_service.extract_skus_from_text(user_text)
@@ -2038,11 +2446,40 @@ async def receive_message(
         try:
             _all_prods = await catalogue_service.list_products(db, client.id)
             _scored = catalogue_service.search_products_with_scores(_all_prods, user_text)
+            _name_match_count = len(_scored)
             if _scored:
                 _top_score, _top_prod = _scored[0]
                 _second_score = _scored[1][0] if len(_scored) > 1 else 0
-                # "Strong single match": only one result, or top score ≥2× second
-                _single_strong = len(_scored) == 1 or (_top_score >= 2 * _second_score and _top_score >= 4)
+                # "Strong single match": only one result (with a non-trivial score —
+                # a bare variant word like "Pink" can weakly score=1 against the
+                # currently pinned product's name/description and must not count),
+                # or top score ≥2× second.
+                _single_strong = (
+                    (len(_scored) == 1 and _top_score >= 2)
+                    or (_top_score >= 2 * _second_score and _top_score >= 4)
+                )
+                # Normalized 0-1 confidence for ROUTE logging/tuning only — does
+                # not gate _single_strong, which keeps its own raw-score logic.
+                _match_confidence = min(1.0, _top_score / 10.0)
+                # Issue D — minimum confidence floor: a weak overlap match (e.g. a
+                # generic word incidentally shared with an unrelated product) must
+                # never be offered as a confident pin. Confidence is the top score
+                # relative to the max possible score for the query's own keyword
+                # count (2 points per keyword on a full name match).
+                _query_keywords = catalogue_service._tokenize(user_text)
+                _max_possible_score = max(1, 2 * len(_query_keywords))
+                _floor_confidence = _top_score / _max_possible_score
+                if _single_strong and _floor_confidence < _NAME_MATCH_CONFIDENCE_FLOOR:
+                    logger.info(
+                        "Weak match below floor → not offering conv=%s query=%r score=%s",
+                        conv.id, user_text[:80], _top_score,
+                    )
+                    _single_strong = False
+                _log_route(
+                    conv.id, "TEMPLATE" if _single_strong else "LLM",
+                    "catalog_match_template" if _single_strong else "catalog_match_weak",
+                    tier=1, match_score=_match_confidence,
+                )
                 if _single_strong:
                     _match_sku = getattr(_top_prod, "sku", None)
                     if _match_sku:
@@ -2052,7 +2489,12 @@ async def receive_message(
                         # _NAME_MATCH_SWITCH_MIN_SCORE, send a confirmation question
                         # instead of silently switching.
                         _would_name_switch = bool(_old_name_sku and _match_sku != _old_name_sku)
-                        _name_switch_confident = _top_score >= _NAME_MATCH_SWITCH_MIN_SCORE
+                        # A unique match (no other catalogue product scored at all) is
+                        # confident regardless of its absolute score — there is nothing
+                        # else it could plausibly mean, so don't make the customer confirm.
+                        _name_switch_confident = (
+                            _top_score >= _NAME_MATCH_SWITCH_MIN_SCORE or len(_scored) == 1
+                        )
                         if _would_name_switch and not _name_switch_confident:
                             _cand_price = int(getattr(_top_prod, "price", 0) or 0)
                             _confirm_question = (
@@ -2081,20 +2523,28 @@ async def receive_message(
                             except Exception:
                                 pass
                             return {"status": "ok"}
-                        # Reset all order slots whenever a new product is identified by name,
-                        # regardless of whether there was a previously pinned SKU.
-                        _name_reset_fields = [
-                            ("pending_order_quantity", None), ("selected_color", None),
-                            ("selected_size", None), ("selected_material", None),
-                            ("customer_name", None), ("delivery_address", None),
-                            ("payment_method", None), ("summary_shown", False),
-                        ]
-                        for _rf, _rv in _name_reset_fields:
-                            try:
-                                await conversation_service.update_order_field(db, conv.id, _rf, _rv)
-                                setattr(conv, _rf, _rv)
-                            except Exception as exc:
-                                logger.error("Name-match slot reset (%s): %s", _rf, exc)
+                        # Reset all order slots whenever a DIFFERENT product is identified by
+                        # name. A no-op re-pin (same SKU matched again) must not wipe state —
+                        # otherwise a bare variant word that re-matches the pinned product
+                        # discards the colour/size the customer already gave (P1-4.2).
+                        if _match_sku != _old_name_sku:
+                            _name_reset_fields = [
+                                ("pending_order_quantity", None), ("selected_color", None),
+                                ("selected_size", None), ("selected_material", None),
+                                ("customer_name", None), ("delivery_address", None),
+                                ("payment_method", None), ("summary_shown", False),
+                            ]
+                            for _rf, _rv in _name_reset_fields:
+                                try:
+                                    await conversation_service.update_order_field(db, conv.id, _rf, _rv)
+                                    setattr(conv, _rf, _rv)
+                                except Exception as exc:
+                                    logger.error("Name-match slot reset (%s): %s", _rf, exc)
+                        else:
+                            logger.info(
+                                "Name-match no-op re-pin: conv=%s SKU=%s — slots preserved.",
+                                conv.id, _match_sku,
+                            )
                         try:
                             await conversation_service.update_order_field(
                                 db, conv.id, "pending_product_sku", _match_sku
@@ -2138,16 +2588,34 @@ async def receive_message(
                             )
                         except Exception as exc:
                             logger.error("Name-match variant_info re-fetch error: %s", exc)
-                # 2-3 close matches: don't pin, but rebuild context with just those products
-                elif 2 <= len(_scored) <= 3:
+                # FIX 3: 2+ close matches (any count, not just 2-3) — don't pin, but
+                # rebuild context with just those products so the deterministic
+                # multi-template list renders downstream instead of falling through
+                # to open_browsing_no_match/70B (the count was previously capped at
+                # 3, so a 4-saree match for "Is dress available?" never set
+                # pending_choice_skus and silently fell through to the LLM).
+                elif len(_scored) >= 2:
                     _match_prods = [p for _, p in _scored]
                     catalogue_context = catalogue_service.format_catalogue_context(
                         _match_prods, for_display=True
                     )
                     _canonical_browse_products = _match_prods
+                    # A "which one?" choice is now open. Record the shown SKUs so a
+                    # bare affirmative is rejected/re-asked rather than repinned from
+                    # last_shown_sku, and clear last_shown_sku since it no longer
+                    # reflects what's on screen — nothing here was pinned/confirmed.
+                    _choice_skus = [getattr(p, "sku", None) for p in _match_prods if getattr(p, "sku", None)]
+                    try:
+                        import json as _json_pcs
+                        await conversation_service.set_pending_choice_skus(db, conv.id, _choice_skus)
+                        conv.pending_choice_skus = _json_pcs.dumps(_choice_skus) if _choice_skus else None
+                        await conversation_service.set_last_shown_sku(db, conv.id, None)
+                        conv.last_shown_sku = None
+                    except Exception as exc:
+                        logger.error("Pending-choice-SKUs store error: %s", exc)
                     logger.info(
-                        "Name-match multi (%d options): conv=%s query=%r",
-                        len(_scored), conv.id, user_text[:40],
+                        "Name-match multi (%d options): conv=%s query=%r — pending_choice_skus=%s",
+                        len(_scored), conv.id, user_text[:40], _choice_skus,
                     )
         except Exception as exc:
             logger.warning("Name-match pinning failed (non-fatal): %s", exc)
@@ -2166,6 +2634,18 @@ async def receive_message(
         stored_stage=conv.current_stage,
         pending_product_sku=getattr(conv, "pending_product_sku", None),
     )
+
+    # P0-3: the repin above means the customer just affirmed an actual product
+    # card — force order_collection now rather than waiting for detect_stage's
+    # "AI last offered order" heuristic, which won't fire since the order
+    # offer was never re-sent after the reset.
+    if _p03_repinned:
+        stage = "order_collection"
+        try:
+            await conversation_service.update_stage(db, conv.id, "order_collection")
+            conv.current_stage = "order_collection"
+        except Exception as _p03_stage_exc:
+            logger.error("P0-3 stage-force error: %s", _p03_stage_exc)
 
     # ── LLM buy-intent gate (Phase 1 — DOC A/B) ──────────────────────────────
     # Replaces keyword-based Mode A→B affirmation.  When the customer is in any
@@ -2207,7 +2687,7 @@ async def receive_message(
             )
         else:
             try:
-                _is_buy_intent = await conversation_flow.classify_buy_intent(user_text, _pinned_name)
+                _is_buy_intent = await conversation_flow.classify_buy_intent(user_text, _pinned_name, conversation_id=conv.id)
                 _llm_called_this_turn = True
             except Exception as _bie:
                 logger.warning("classify_buy_intent error (defaulting False): %s", _bie)
@@ -2598,6 +3078,7 @@ async def receive_message(
                 ("customer_name", None), ("delivery_address", None),
                 ("payment_method", None), ("summary_shown", False),
                 ("pending_product_sku", None), ("interrupted_sku", None),
+                ("last_shown_sku", None), ("pending_choice_skus", None),
             ]
             for _cf, _cv in _full_cancel_fields:
                 try:
@@ -2723,11 +3204,23 @@ async def receive_message(
                         await conversation_service.update_order_field(db, conv.id, "delivery_address", _ca_addr)
                         conv.delivery_address = _ca_addr
                         logger.info("FIX3 change-address: conv=%s new_addr=%r", conv.id, _ca_addr)
+                        logger.info("Address change captured conv=%s cleaned=%r", conv.id, _ca_addr)
                     except Exception as _cae:
                         logger.error("FIX3 address update error: %s", _cae)
                     # Fall through — re-compute next_slot and let normal reply-build handle it.
                 else:
                     _ca_ask = "Sure — what's the new delivery address? Please send house/area, city and pincode."
+                    # P1-5: clear the OLD address now so next_slot resolves back to
+                    # delivery_address on the next turn — otherwise the slot machine
+                    # sees the stale address as "already filled" and the customer's
+                    # very next message (the new address) gets dropped.
+                    try:
+                        await conversation_service.update_order_field(db, conv.id, "delivery_address", None)
+                        conv.delivery_address = None
+                        await conversation_service.update_order_field(db, conv.id, "summary_shown", False)
+                        conv.summary_shown = False
+                    except Exception as _ca_clr_exc:
+                        logger.error("FIX3 address clear error: %s", _ca_clr_exc)
                     logger.info("FIX3 change-address pure intent: conv=%s — asking for address", conv.id)
                     try:
                         await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
@@ -2752,10 +3245,28 @@ async def receive_message(
                 _aq_lang = getattr(conv, "last_customer_language", None) or language or "english"
                 _aq_prod_name = getattr(pinned_product, "name", "the product") or "the product"
                 _aq_dt = get_delivery_time_str(pinned_product, client) or "3–7 business days"
-                _aq_answer = _build_order_aside_answer(user_text, conv, client, pinned_product, _aq_dt)
+                _aq_answer = ""
 
-                # FIX 4: question names a DIFFERENT product — look it up in catalogue.
-                if client and not _aq_answer:
+                # BUG 1 FIX: availability questions ("is orange available?") are
+                # resolved against the CATALOG / current product's variants, never
+                # the KB — KB keyword overlap on a word like "available" was
+                # returning unrelated FAQs (e.g. a dispatch/tracking entry).
+                if _is_availability_question(user_text):
+                    _aq_answer = _build_availability_answer(
+                        user_text, pinned_product, variant_info, available_stock,
+                    )
+                    if _aq_answer:
+                        logger.info(
+                            "FIX2 availability question: conv=%s answered from catalog/variants, skipping KB",
+                            conv.id,
+                        )
+
+                # FIX 4: question names a DIFFERENT product — look it up in catalogue
+                # FIRST. A confident named-product match is more specific than the
+                # generic pinned-product answer below, so it must take priority —
+                # otherwise _build_order_aside_answer's generic "price"/"total" branches
+                # always answer with the pinned product and this lookup never runs.
+                if not _aq_answer and client:
                     try:
                         _aq_all_prods = await catalogue_service.list_products(db, client.id)
                         _aq_scored = catalogue_service.search_products_with_scores(
@@ -2771,6 +3282,28 @@ async def receive_message(
                     except Exception as _aqe:
                         logger.warning("FIX4 cross-product lookup failed: %s", _aqe)
 
+                # Issue A: KB takes priority over the deterministic fact table —
+                # a proven past answer is more specific than a generic template.
+                if not _aq_answer and client:
+                    try:
+                        from app.services import knowledge_service as _aq_kb
+                        _aq_kb_entries = await _aq_kb.search_knowledge(
+                            client_id=client.id, query=user_text, db=db,
+                        )
+                        if _aq_kb_entries:
+                            _aq_answer = _aq_kb_entries[0].answer
+                            try:
+                                for _e in _aq_kb_entries:
+                                    _e.usage_count += 1
+                                await db.commit()
+                            except Exception:
+                                pass
+                    except Exception as _aq_kb_exc:
+                        logger.warning("FIX2 KB search failed: %s", _aq_kb_exc)
+
+                if not _aq_answer:
+                    _aq_answer = _build_order_aside_answer(user_text, conv, client, pinned_product, _aq_dt)
+
                 if _aq_answer:
                     _aq_slot_q = _build_slot_question(
                         _next_slot_pre, conv, variant_info, _aq_lang,
@@ -2785,6 +3318,10 @@ async def receive_message(
                     if getattr(conv, "pending_order_quantity", None):
                         _aq_order_ctx = f"Your current order: {_aq_prod_name} x{conv.pending_order_quantity}. "
                     _aq_reply = f"{_aq_answer}\n\n{_aq_order_ctx}{_aq_slot_q}" if _aq_slot_q else _aq_answer
+                    logger.info(
+                        "Question at order stage → answered from KB/LLM, re-prompting conv=%s",
+                        conv.id,
+                    )
                     logger.info(
                         "FIX2 aside-question: conv=%s slot=%r — answered + re-asked, no state change",
                         conv.id, _next_slot_pre,
@@ -2807,15 +3344,50 @@ async def receive_message(
 
             # ── Intent classification ──────────────────────────────────────────
             _product_name = getattr(pinned_product, "name", None) or getattr(conv, "pending_product_sku", "current product") or "current product"
-            try:
-                _intent_struct = await conversation_flow.classify_user_intent(
-                    user_text, _next_slot_pre, _product_name
+
+            # P0-2: deterministic fast-path — a trivial slot answer (color/size/
+            # qty/yes-no/free-text address) never needs an LLM classify call.
+            # Skip straight to ANSWER + extraction when the message:
+            #   - contains no price-objection / cancel keywords
+            #   - is not a bare SKU token belonging to a DIFFERENT product
+            #   - cleanly resolves via the deterministic extractor for the
+            #     current slot
+            _det_skip_llm = False
+            if (
+                message.type == "text"
+                and not conversation_flow._is_price_objection(user_text)
+                and not any(
+                    kw in user_text.lower()
+                    for kw in ("cancel", "ruk jao", "band karo", "rok do", "રદ કરો", "रद्द", "cancel karo", "nahi chahiye", "nahi karna")
                 )
-                _intent = _intent_struct["intent"]
-                _llm_called_this_turn = True
-            except Exception as exc:
-                logger.warning("Intent classification error (defaulting ANSWER): %s", exc)
+            ):
+                _det_probe = conversation_flow.extract_order_field(
+                    conv, user_text,
+                    variant_info=variant_info,
+                    conversation_history=history_dicts,
+                    available_stock=available_stock,
+                    saved_address=getattr(customer_profile, "address", None) if customer_profile else None,
+                )
+                if _det_probe is not None:
+                    _det_skip_llm = True
+
+            if _det_skip_llm:
                 _intent = "ANSWER"
+                logger.info(
+                    "conv=%s deterministic slot answer %r → ANSWER, next_slot=%s — no LLM classify call",
+                    conv.id, user_text[:40], _next_slot_pre,
+                )
+                _intent_struct = {"intent": "ANSWER", "entities": {}}
+            else:
+                try:
+                    _intent_struct = await conversation_flow.classify_user_intent(
+                        user_text, _next_slot_pre, _product_name, conversation_id=conv.id
+                    )
+                    _intent = _intent_struct["intent"]
+                    _llm_called_this_turn = True
+                except Exception as exc:
+                    logger.warning("Intent classification error (defaulting ANSWER): %s", exc)
+                    _intent = "ANSWER"
 
             _classified_intent = _intent
             logger.info("conv=%s intent=%s next_slot=%s", conv.id, _intent, _next_slot_pre)
@@ -2916,6 +3488,7 @@ async def receive_message(
                     ("customer_name", None), ("delivery_address", None),
                     ("payment_method", None), ("summary_shown", False),
                     ("pending_product_sku", None), ("interrupted_sku", None),
+                    ("last_shown_sku", None), ("pending_choice_skus", None),
                 ]
                 for _rf, _rv in _cancel_fields:
                     try:
@@ -3182,21 +3755,34 @@ async def receive_message(
                     # so the customer knows WHY the address was rejected.
                     if _next_slot_pre == "delivery_address" and message.type == "text":
                         _addr_rej_lang = getattr(conv, "last_customer_language", None) or language or "english"
+                        # Diagnose the SPECIFIC thing missing — "too_short" (no real
+                        # address text), "no_structure" (no digits/comma at all), or
+                        # "bad_pincode" (a digit run that isn't exactly 6 digits) —
+                        # so the customer knows exactly what to fix (P0-1.3).
+                        _addr_reason = conversation_flow.classify_address_rejection(user_text)
+                        _ADDR_REJ_MSGS = {
+                            "english": {
+                                "bad_pincode": "That pincode looks short — I need a 6-digit pincode. What's the full address with pincode?",
+                                "no_structure": "I need your full delivery address — house/area, city and a 6-digit pincode.",
+                                "too_short": "That doesn't look like a complete address. Please send house/area, city and a 6-digit pincode.",
+                            },
+                            "hindi": {
+                                "bad_pincode": "Yeh pincode chhota lag raha hai — mujhe 6-digit pincode chahiye. Pura address pincode ke saath bhejein.",
+                                "no_structure": "Mujhe pura delivery address chahiye — ghar/area, shahar aur 6-digit pincode.",
+                                "too_short": "Yeh address incomplete lagta hai. Kripaya ghar/area, shahar aur 6-digit pincode ke saath poora address bhejein.",
+                            },
+                            "gujarati": {
+                                "bad_pincode": "Aa pincode tunko lagi rahyo che — mane 6-digit pincode joiye. Pooro address pincode saathe moklo.",
+                                "no_structure": "Mane tamaru pooru delivery address joiye — ghar/area, shaher ane 6-digit pincode.",
+                                "too_short": "Aa address adhuro lagche. Meherbani kari ghar/area, shaher ane 6-digit pincode saathe pooro address moklo.",
+                            },
+                        }
                         if _addr_rej_lang in ("hindi_roman", "hindi_devanagari", "hinglish"):
-                            _addr_rej = (
-                                "Yeh address incomplete lagta hai. Kripaya ghar/area, "
-                                "shahar aur pincode ke saath poora address bhejein."
-                            )
+                            _addr_rej = _ADDR_REJ_MSGS["hindi"][_addr_reason]
                         elif _addr_rej_lang in ("gujarati_roman", "gujarati_script"):
-                            _addr_rej = (
-                                "Aa address adhuro lagche. Meherbani kari ghar/area, "
-                                "shaher ane pincode saathe pooro address moklo."
-                            )
+                            _addr_rej = _ADDR_REJ_MSGS["gujarati"][_addr_reason]
                         else:
-                            _addr_rej = (
-                                "That doesn't look like a complete address. "
-                                "Please send house/area, city and pincode."
-                            )
+                            _addr_rej = _ADDR_REJ_MSGS["english"][_addr_reason]
                         logger.info(
                             "FIX1 address rejection: conv=%s attempt=%d text=%r",
                             conv.id, _new_noext, user_text[:60],
@@ -3394,19 +3980,11 @@ async def receive_message(
         except Exception as exc:
             logger.warning("KB search failed: %s", exc)
 
-    # Fetch dynamic few-shot examples from recent successful orders.
-    if client:
-        try:
-            from app.services import learning_service
-            live_examples = await learning_service.get_live_examples_for_prompt(
-                client_id=client.id,
-                current_message=user_text,
-                db=db,
-            )
-            if live_examples:
-                kb_context = kb_context + "\n" + live_examples if kb_context else live_examples
-        except Exception as exc:
-            logger.warning("Learning service failed: %s", exc)
+    # Section 4: learning_service "similar past conversations" are deliberately
+    # NOT injected into the live prompt — they add tokens and can pull a wrong
+    # product/price from an old chat (the same failure class as the captured
+    # wrong-product bug). learning_service remains available for offline
+    # analytics only; it must never be imported on this live request path.
 
     # Build customer_context string for prominent prompt injection.
     # customer_profile was fetched above; build a structured block for returning customers.
@@ -3661,7 +4239,7 @@ RULES:
     ):
         _ot_product_ctx = getattr(pinned_product, "name", None) if pinned_product else None
         try:
-            _is_ot = await conversation_flow.is_off_topic_message(user_text, stage, _ot_product_ctx)
+            _is_ot = await conversation_flow.is_off_topic_message(user_text, stage, _ot_product_ctx, conversation_id=conv.id)
             _llm_called_this_turn = True
         except Exception as _ot_exc:
             logger.warning("is_off_topic_message error (skipping): %s", _ot_exc)
@@ -3961,6 +4539,7 @@ RULES:
                     catalogue_context=catalogue_context,
                     language=language,
                 )
+                _llm_usage = gemini_service.get_last_usage()
             original_type = "audio"
         else:
             # ── Part 1: Deterministic reply for order/payment/completed stages ──
@@ -4001,11 +4580,13 @@ RULES:
                     if message.type == "text" and _is_order_aside_question(user_text):
                         _pq_lang = previous_language
                         _pq_dt = get_delivery_time_str(pinned_product, client) or "3–7 business days"
-                        _pq_answer = _build_order_aside_answer(
-                            user_text, conv, client, pinned_product, _pq_dt
-                        )
-                        # FIX 4: cross-product question during payment
-                        if client and not _pq_answer:
+                        _pq_answer = ""
+
+                        # FIX 4: cross-product question during payment — try a confident
+                        # named-product catalogue match FIRST. _build_order_aside_answer's
+                        # generic "price"/"total" branches always answer with the pinned
+                        # product, so they must only run as a fallback or this never fires.
+                        if client:
                             try:
                                 _pq_all = await catalogue_service.list_products(db, client.id)
                                 _pq_scored = catalogue_service.search_products_with_scores(
@@ -4020,6 +4601,29 @@ RULES:
                                         break
                             except Exception as _pqe:
                                 logger.warning("FIX4 payment cross-product lookup failed: %s", _pqe)
+
+                        # Issue A: KB takes priority over the deterministic fact table.
+                        if not _pq_answer and client:
+                            try:
+                                from app.services import knowledge_service as _pq_kb
+                                _pq_kb_entries = await _pq_kb.search_knowledge(
+                                    client_id=client.id, query=user_text, db=db,
+                                )
+                                if _pq_kb_entries:
+                                    _pq_answer = _pq_kb_entries[0].answer
+                                    try:
+                                        for _e in _pq_kb_entries:
+                                            _e.usage_count += 1
+                                        await db.commit()
+                                    except Exception:
+                                        pass
+                            except Exception as _pq_kb_exc:
+                                logger.warning("FIX2 payment KB search failed: %s", _pq_kb_exc)
+
+                        if not _pq_answer:
+                            _pq_answer = _build_order_aside_answer(
+                                user_text, conv, client, pinned_product, _pq_dt
+                            )
                         if _pq_answer:
                             _pq_prod_name = getattr(pinned_product, "name", "the product") or "the product"
                             _pq_qty = getattr(conv, "pending_order_quantity", 1) or 1
@@ -4028,6 +4632,10 @@ RULES:
                                 "Reply 'paid' once done. ✅"
                             )
                             _pq_reply = _pq_answer + _pq_suffix
+                            logger.info(
+                                "Question at order stage → answered from KB/LLM, re-prompting conv=%s",
+                                conv.id,
+                            )
                             logger.info(
                                 "FIX2 payment aside-question: conv=%s — answered, no state change",
                                 conv.id,
@@ -4051,6 +4659,102 @@ RULES:
                     # (PAID detection is an early-return above; we only reach here
                     # when the customer sent something other than a payment word.)
                     _render_action = "reask_payment"
+                elif (
+                    stage == "awaiting_final_confirmation"
+                    and _next_slot is None
+                    and message.type == "text"
+                    and _is_order_aside_question(user_text)
+                ):
+                    # ── Issue A: side-question at the summary/confirm step ──────
+                    # detect_stage() keeps the customer in awaiting_final_confirmation
+                    # for anything that isn't yes/no/change (see conversation_flow.
+                    # detect_stage), but until now that fell straight through to the
+                    # SLOTS_DONE→show_summary transition below, silently re-dumping
+                    # the summary over an unanswered question (e.g. "Can I get
+                    # delivery in delhi?" with a KB entry that was never surfaced).
+                    # Answer from KB (preferred) or a cheap-model fallback, then
+                    # re-show the pending confirm prompt — never advance state.
+                    _afc_q_answer = ""
+                    if client:
+                        try:
+                            from app.services import knowledge_service as _afc_kb
+                            _afc_kb_entries = await _afc_kb.search_knowledge(
+                                client_id=client.id, query=user_text, db=db,
+                            )
+                            if _afc_kb_entries:
+                                _afc_q_answer = _afc_kb_entries[0].answer
+                                try:
+                                    for _e in _afc_kb_entries:
+                                        _e.usage_count += 1
+                                    await db.commit()
+                                except Exception:
+                                    pass
+                        except Exception as _afc_kb_exc:
+                            logger.warning("AFC KB search failed: %s", _afc_kb_exc)
+                    if not _afc_q_answer:
+                        _afc_dt = get_delivery_time_str(pinned_product, client) or "3–7 business days"
+                        _afc_q_answer = _build_order_aside_answer(user_text, conv, client, pinned_product, _afc_dt)
+                    if not _afc_q_answer:
+                        try:
+                            from openai import AsyncOpenAI as _AfcOpenAI
+                            _afc_settings = get_settings()
+                            _afc_client_llm = _AfcOpenAI(
+                                api_key=_afc_settings.groq_api_key,
+                                base_url="https://api.groq.com/openai/v1",
+                                max_retries=0,
+                            )
+                            _afc_resp = await _afc_client_llm.chat.completions.create(
+                                model="llama-3.1-8b-instant",
+                                messages=[{
+                                    "role": "user",
+                                    "content": (
+                                        f"A customer asked: '{user_text}'. Answer in one short, "
+                                        "friendly sentence using only general retail knowledge "
+                                        "(no specific prices/policies you don't know). If you "
+                                        "cannot answer confidently, say you'll check and get back."
+                                    ),
+                                }],
+                                max_tokens=60,
+                                temperature=0.3,
+                            )
+                            _afc_q_answer = (_afc_resp.choices[0].message.content or "").strip()
+                        except Exception as _afc_llm_exc:
+                            logger.warning("AFC cheap-model fallback failed: %s", _afc_llm_exc)
+                            _afc_q_answer = "Let me check that for you."
+                    try:
+                        _afc_summary = await _render_order_reply(
+                            action="show_summary",
+                            conv=conv, db=db, client=client,
+                            next_slot=_next_slot, variant_info=variant_info,
+                            customer_profile=customer_profile,
+                            available_stock=available_stock,
+                            declined_saved_address=_declined_saved_address,
+                            lang=_tpl_lang, is_first_slot=_is_first_slot,
+                        )
+                    except RenderError as _afc_re:
+                        logger.error(
+                            "AFC question re-show summary RenderError conv=%s: %s", conv.id, _afc_re,
+                        )
+                        _afc_summary = ""
+                    ai_reply = f"{_afc_q_answer}\n\n{_afc_summary}" if _afc_summary else _afc_q_answer
+                    logger.info(
+                        "Question at order stage → answered from KB/LLM, re-prompting conv=%s",
+                        conv.id,
+                    )
+                    try:
+                        await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+                        await conversation_service.save_message(db, conv.id, "assistant", ai_reply)
+                    except Exception:
+                        pass
+                    try:
+                        await whatsapp_service.send_text_message(sender_phone, ai_reply)
+                    except Exception:
+                        pass
+                    try:
+                        await _record_usage(db, client)
+                    except Exception:
+                        pass
+                    return {"status": "ok"}
                 else:
                     # order_collection / awaiting_final_confirmation:
                     # resolve action from the transition table.
@@ -4167,9 +4871,20 @@ RULES:
                         conv.id, _dt_str,
                     )
                 elif _pinned_for_reply and stage in _BROWSING_STAGES_GATE and (
-                    _pinned_relevant or _is_generic_avail
+                    _pinned_relevant or _is_generic_avail or _pick_just_resolved
                 ):
                     # Route: TEMPLATE — pinned product known-fact query in any browsing stage.
+                    # P0-4: deciding this BEFORE the LLM call (not after) is what makes this
+                    # a pre-check — when the message is clearly about the pinned product or a
+                    # generic availability/price question, the compact template always wins
+                    # and the LLM is never invoked, so there is nothing to discard afterward.
+                    # NOTE: this must stay scoped to _pinned_relevant/_is_generic_avail — widening
+                    # it to fire unconditionally breaks the absent-product path (e.g. "kurti" when
+                    # only a Georgette product is pinned must honestly say "not found", not show
+                    # the pinned product's card). Those messages still fall through to the LLM +
+                    # phantom-guard branch below, where the post-hoc safety net remains as
+                    # defense-in-depth — paying for that call is unavoidable since the LLM is what
+                    # determines whether the named product is even in the catalogue.
                     _pn2 = _pinned_for_reply.name or conv.pending_product_sku
                     _psku2 = getattr(_pinned_for_reply, "sku", None) or conv.pending_product_sku
                     _av_colors2 = variant_info.get("available_colors", [])
@@ -4181,12 +4896,46 @@ RULES:
                         _lines2.append(f"Available colors: {', '.join(_av_colors2)}")
                     if _av_sizes2:
                         _lines2.append(f"Available sizes: {', '.join(_av_sizes2)}")
-                    _lines2.append("Would you like to order?")
+                    _lines2.append("")
+                    _lines2.append("Would you like to order? (Yes / No)")
                     ai_reply = "\n".join(_lines2)
                     _log_route(conv.id, "TEMPLATE", "fix1_pinned_known_fact", extra=f"sku={_psku2} stage={stage}")
                     logger.info(
                         "conv=%s FIX1 deterministic compact product reply for %r (stage=%r) — no LLM call",
                         conv.id, _psku2, stage,
+                    )
+                    # BUG 2 FIX: this is a SINGLE-product offer — clear any stale
+                    # multi-choice list so a "Yes" here proceeds to order instead of
+                    # being rejected against an old 5-option list ("Multi-choice open").
+                    if getattr(conv, "pending_choice_skus", None):
+                        try:
+                            await conversation_service.set_pending_choice_skus(db, conv.id, None)
+                            conv.pending_choice_skus = None
+                        except Exception as _pcs_clr_exc:
+                            logger.error("BUG2 pending_choice_skus clear failed: %s", _pcs_clr_exc)
+                elif getattr(conv, "pending_choice_skus", None) and len(_canonical_browse_products) >= 2:
+                    # Route: TEMPLATE — catalog name-match already resolved 2-3 concrete
+                    # SKUs (see pending_choice_skus block above). The 70B model would only
+                    # reformat rows we already have — match COUNT (not match_score) gates
+                    # this, since a multi-match is unambiguous regardless of score.
+                    _ml_lines = ["Please reply with the number of your choice:"]
+                    for _ml_idx, _ml_prod in enumerate(_canonical_browse_products, 1):
+                        _ml_lines.append(
+                            f"{_ml_idx}. {_ml_prod.name} [{getattr(_ml_prod, 'sku', None)}] — "
+                            f"{format_price(getattr(_ml_prod, 'price', 0) or 0)}"
+                        )
+                    ai_reply = "\n".join(_ml_lines)
+                    _log_route(
+                        conv.id, "TEMPLATE", "catalog_multi_template",
+                        extra=f"skus={getattr(conv, 'pending_choice_skus', None)} stage={stage}",
+                    )
+                    logger.info(
+                        "conv=%s catalog multi-match template (%d options) — no LLM call",
+                        conv.id, len(_canonical_browse_products),
+                    )
+                    logger.info(
+                        "Multi-match template fired conv=%s count=%d (no LLM)",
+                        conv.id, len(_canonical_browse_products),
                     )
                 else:
                     # Route: LLM or soft-cap template — open browsing question.
@@ -4200,15 +4949,84 @@ RULES:
                         logger.info("Soft LLM cap: conv=%s calls_today=%d — template reply, skipping 70B.", conv.id, _llm_calls_today)
                     else:
                         # The 70B model is genuinely needed here: no single correct reply exists.
-                        _log_route(conv.id, "LLM", "open_browsing", extra=f"stage={stage} model=llama-3.3-70b-versatile")
-                        ai_reply = await gemini_service.generate_reply(
+                        # It is used as an UNDERSTANDER only (Section 1): it returns structured
+                        # JSON (intent/sku/slots), never the customer-facing text. render_reply()
+                        # is the single place that turns this into text, reading the resolved
+                        # product fresh from the DB — this is also the fix for the captured
+                        # wrong-product bug, since last_shown_sku is now updated here too,
+                        # whenever the LLM resolves ANY product (not just the deterministic card).
+                        # reason distinguishes a genuinely vague query (no name-match at all —
+                        # the only case this call should ever be hit for) from a named-but-
+                        # irrelevant-to-pinned-product query, which still needs the LLM to
+                        # confirm whether that name exists in the catalogue at all.
+                        _ob_reason = "open_browsing_no_match" if _name_match_count == 0 else "open_browsing"
+                        _log_route(conv.id, "LLM", _ob_reason, extra=f"stage={stage} model=llama-3.3-70b-versatile")
+                        from app.services import llm_intent as _llm_intent, render_reply as _render_reply
+
+                        _intent_result = await _llm_intent.classify_turn(
                             user_text,
                             history=history_dicts,
                             system_prompt=system_prompt,
                             catalogue_context=catalogue_context,
                             language=language,
                         )
+                        _llm_usage = gemini_service.get_last_usage()
                         _llm_called_this_turn = True
+
+                        if _intent_result.skus and client:
+                            # Multi-product browse/list query ("saree dikhao") — render
+                            # straight from DB rows, never a single pin to write here.
+                            _listed_products = []
+                            for _s in _intent_result.skus:
+                                try:
+                                    _p = await catalogue_service.find_product_by_sku(db, client.id, _s)
+                                except Exception as exc:
+                                    logger.error("open_browsing list-sku resolve error: %s", exc)
+                                    _p = None
+                                if _p is not None:
+                                    _listed_products.append(_p)
+                            if _listed_products:
+                                ai_reply = _render_reply.render_product_list_reply(_listed_products)
+                            else:
+                                _biz_name = (getattr(client, "business_name", None) or "our store") if client else "our store"
+                                ai_reply = _render_reply.render_open_browsing_reply(
+                                    _intent_result, pinned_product, variant_info, client, _biz_name, user_text
+                                )
+                        else:
+                            _resolved_product = pinned_product
+                            if _intent_result.sku and _intent_result.sku != getattr(pinned_product, "sku", None) and client:
+                                try:
+                                    _resolved_product = await catalogue_service.find_product_by_sku(
+                                        db, client.id, _intent_result.sku
+                                    )
+                                except Exception as exc:
+                                    logger.error("open_browsing sku resolve error: %s", exc)
+                                    _resolved_product = None
+
+                            _resolved_variant_info = variant_info
+                            if _resolved_product is not None and _resolved_product is not pinned_product:
+                                try:
+                                    _resolved_variant_info = await catalogue_service.get_product_variant_info(
+                                        db, _resolved_product
+                                    )
+                                except Exception as exc:
+                                    logger.error("open_browsing variant_info error: %s", exc)
+                                    _resolved_variant_info = {}
+
+                            _biz_name = (getattr(client, "business_name", None) or "our store") if client else "our store"
+                            ai_reply = _render_reply.render_open_browsing_reply(
+                                _intent_result, _resolved_product, _resolved_variant_info, client, _biz_name, user_text
+                            )
+
+                            # Section 3 single-writer: every product surfaced here updates
+                            # last_shown_sku, so a later bare "yes" repins THIS product —
+                            # never a stale SKU from an earlier, already-completed order.
+                            if _resolved_product is not None:
+                                try:
+                                    await conversation_service.set_last_shown_sku(db, conv.id, _resolved_product.sku)
+                                    conv.last_shown_sku = _resolved_product.sku
+                                except Exception as exc:
+                                    logger.error("last_shown_sku write error (open_browsing): %s", exc)
                 # FIX 1: Strip phantom SKUs/prices hallucinated by the LLM (including
                 # 429 fallback models that hallucinate more).  Run unconditionally on
                 # every browsing-stage reply whenever we have a canonical product set.
@@ -4284,7 +5102,7 @@ RULES:
                 _size_part = f" Sizes: {', '.join(_av_sizes)}." if _av_sizes else ""
                 ai_reply = (
                     f"{_pn} [{_psku}] — ₹{_pp:,} is available.{_color_part}{_size_part}"
-                    " Would you like to order?"
+                    "\n\nWould you like to order? (Yes / No)"
                 )
                 logger.info(
                     "Browsing-stage guard: pinned product %r → deterministic availability reply (conv=%s)",
@@ -4322,6 +5140,7 @@ RULES:
                         _size_part = f" Sizes: {', '.join(_av_sizes)}." if _av_sizes else ""
                         ai_reply = (
                             f"{_pn} [{_psku}] — ₹{_pp:,} is available.{_color_part}{_size_part}"
+                            " Reply Yes to order, or No to keep browsing."
                             " Would you like to order?"
                         )
                     else:
@@ -4336,7 +5155,14 @@ RULES:
         await conversation_service.save_message(db, conv.id, "user", saved_user_content, original_type=original_type, wamid=wamid)
         if transcribed_text:
             ai_reply = f"_{transcribed_text}_\n\n{ai_reply}"
-        await conversation_service.save_message(db, conv.id, "assistant", ai_reply)
+        if _llm_usage:
+            await conversation_service.save_message(
+                db, conv.id, "assistant", ai_reply,
+                path="LLM", model=_llm_usage["model"],
+                in_tok=_llm_usage["in_tok"], out_tok=_llm_usage["out_tok"],
+            )
+        else:
+            await conversation_service.save_message(db, conv.id, "assistant", ai_reply)
     except Exception as exc:
         logger.error("DB error saving messages for conv %s: %s", conv.id, exc)
         if transcribed_text:
@@ -4661,6 +5487,7 @@ RULES:
                     "Auto-created order %s (status=%s) from conversation %s",
                     created_order.order_number, _order_initial_status, conv.id,
                 )
+                cost_log.print_report(conv.id, created_order.order_number)
 
                 # Bank transfer: send details as a separate message (UPI instructions
                 # are already embedded in ai_reply; COD needs no payment step).
@@ -4708,6 +5535,60 @@ RULES:
     _client_accepts_cod = getattr(client, "accepts_cod", False) if client else False
     button_type = _should_use_buttons(stage, ai_reply, _client_accepts_cod, next_slot=_next_slot) if is_whatsapp else "text"
 
+    # ── E2: interactive buttons/list for product offers and multi-option choices ──
+    # Purely additive on top of the text reply already built above — typing
+    # "yes"/"1"/a product name still resolves exactly as before; tapping is
+    # just a faster path to the same outcome.
+    _offer_buttons: list[dict] = []
+    _choice_buttons: list[dict] = []
+    _choice_list_rows: list[dict] = []
+    if is_whatsapp and button_type == "text":
+        if (
+            "would you like to order?" in ai_reply.lower()
+            and pinned_product is not None
+            and getattr(conv, "pending_product_sku", None)
+        ):
+            button_type = "offer_buttons"
+            _offer_buttons = [
+                {"id": "offer_yes", "title": "Yes"},
+                {"id": "offer_no", "title": "No"},
+            ]
+        else:
+            _pcs_for_buttons: list = []
+            try:
+                import json as _json_btn
+                _pcs_raw_btn = getattr(conv, "pending_choice_skus", None)
+                if _pcs_raw_btn:
+                    _pcs_for_buttons = _json_btn.loads(_pcs_raw_btn)
+            except Exception:
+                _pcs_for_buttons = []
+            if _pcs_for_buttons and client:
+                _choice_products = []
+                for _cb_sku in _pcs_for_buttons:
+                    try:
+                        _cb_p = await catalogue_service.find_product_by_sku(db, client.id, _cb_sku)
+                    except Exception:
+                        _cb_p = None
+                    if _cb_p:
+                        _choice_products.append(_cb_p)
+                if 2 <= len(_choice_products) <= 3:
+                    # WhatsApp allows max 3 buttons — one per product, id=SKU.
+                    button_type = "choice_buttons"
+                    for _cb_p in _choice_products:
+                        _choice_buttons.append({
+                            "id": _cb_p.sku,
+                            "title": (_cb_p.name or _cb_p.sku)[:20],
+                        })
+                elif len(_choice_products) >= 4:
+                    # 4+ options: WhatsApp buttons cap at 3 — use a list message instead.
+                    button_type = "choice_list"
+                    for _cb_p in _choice_products[:10]:
+                        _choice_list_rows.append({
+                            "id": _cb_p.sku,
+                            "title": (_cb_p.name or _cb_p.sku)[:24],
+                            "description": format_price(getattr(_cb_p, "price", 0) or 0),
+                        })
+
     # phone_number_id: prefer the one in the webhook metadata (most accurate),
     # fall back to the client's configured ID.
     pid = webhook_phone_number_id or (
@@ -4742,7 +5623,14 @@ RULES:
     # Encode it into every interactive button ID so the server can validate it
     # on the next tap.  Only needed when we are actually sending buttons.
     _send_nonce: str | None = None
-    _sends_buttons = button_type in ("confirm_buttons", "paid_button", "payment_buttons")
+    # BUG 3 FIX: offer/choice buttons were never nonce-encoded, so a tap on an
+    # old "Yes/No" offer or an old multi-choice option always processed even
+    # after the conversation moved past that stage. Cover them the same way
+    # as confirm/paid/payment buttons.
+    _sends_buttons = button_type in (
+        "confirm_buttons", "paid_button", "payment_buttons",
+        "offer_buttons", "choice_buttons", "choice_list",
+    )
     if _sends_buttons and is_whatsapp and pid:
         _send_nonce = await _rotate_nonce(db, conv.id, conv)
 
@@ -4824,6 +5712,47 @@ RULES:
                 to_phone_number=sender_phone,
                 body_text=ai_reply,
                 buttons=[{"id": _nb("paid_done"), "title": "I've Paid"}],
+                phone_number_id=pid,
+            )
+            if not sent:
+                await whatsapp_service.send_text_message(
+                    to_phone_number=sender_phone,
+                    message_text=ai_reply,
+                )
+        elif button_type == "offer_buttons" and pid:
+            sent = await whatsapp_service.send_button_message(
+                to_phone_number=sender_phone,
+                body_text=ai_reply,
+                buttons=[{**b, "id": _nb(b["id"])} for b in _offer_buttons],
+                phone_number_id=pid,
+            )
+            if not sent:
+                await whatsapp_service.send_text_message(
+                    to_phone_number=sender_phone,
+                    message_text=ai_reply,
+                )
+        elif button_type == "choice_buttons" and pid:
+            sent = await whatsapp_service.send_button_message(
+                to_phone_number=sender_phone,
+                body_text=ai_reply,
+                buttons=[{**b, "id": _nb(b["id"])} for b in _choice_buttons],
+                phone_number_id=pid,
+            )
+            if not sent:
+                await whatsapp_service.send_text_message(
+                    to_phone_number=sender_phone,
+                    message_text=ai_reply,
+                )
+        elif button_type == "choice_list" and pid:
+            sent = await whatsapp_service.send_list_message(
+                to_phone_number=sender_phone,
+                header_text="Choose an option",
+                body_text=ai_reply,
+                button_text="View options",
+                sections=[{
+                    "title": "Options",
+                    "rows": [{**r, "id": _nb(r["id"])} for r in _choice_list_rows],
+                }],
                 phone_number_id=pid,
             )
             if not sent:

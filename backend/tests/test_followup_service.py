@@ -198,6 +198,11 @@ async def test_send_followups_sends_all_eligible(mock_db):
     from datetime import datetime, timedelta, timezone
     now = datetime.now(timezone.utc)
 
+    # send_followups looks up the lead's Conversation via db.execute(...).scalar_one_or_none()
+    # synchronously (no await on that call) — use an explicit MagicMock so Python 3.13's
+    # AsyncMock auto-children don't turn it into a coroutine (see comment above).
+    mock_db.execute.return_value = MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+
     with patch(
         "app.services.followup_service.get_eligible_leads",
         new=AsyncMock(return_value=[
@@ -234,6 +239,8 @@ async def test_send_followups_records_failure_on_whatsapp_error(mock_db):
         httpx.HTTPStatusError("401", request=MagicMock(), response=MagicMock()),
         {"messages": [{"id": "wamid.ok"}]},
     ])
+
+    mock_db.execute.return_value = MagicMock(scalar_one_or_none=MagicMock(return_value=None))
 
     with patch(
         "app.services.followup_service.get_eligible_leads",
@@ -287,6 +294,8 @@ async def test_send_followups_correct_phone_number_used(mock_db):
 
     from datetime import datetime, timedelta, timezone
     wa_mock = AsyncMock(return_value={})
+
+    mock_db.execute.return_value = MagicMock(scalar_one_or_none=MagicMock(return_value=None))
 
     with patch(
         "app.services.followup_service.get_eligible_leads",

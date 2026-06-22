@@ -1,8 +1,13 @@
 """
-Learning service.
+Learning service — OFFLINE / ANALYTICS USE ONLY.
 
-Mines past successful conversations to produce few-shot examples that are
-injected into the system prompt, helping the agent mirror proven reply patterns.
+Mines past successful conversations to produce few-shot examples of proven
+reply patterns. Do NOT import this module on the live webhook request path:
+injecting "similar past conversations" into a live prompt adds tokens and can
+pull a wrong product/price from an old chat — the same failure class as the
+captured wrong-product bug (see Section 4 of
+external_data/trim_and_unify_prompt.md). Use this for batch/admin analysis
+only.
 
 A "successful" conversation is one that reached the 'completed' stage
 (i.e. an order was placed).  The most recent matching conversations are

@@ -543,8 +543,8 @@ async def test_scenario9_address_yes_single_confirm_ui(replay_http, replay_sessi
     (action=show_summary, not reask_confirm), and no order row yet (order is
     still pending_confirmation, not completed).
     """
-    phone = _phone("0009")
-    pnid = _pnid("0009")
+    phone = _phone("0022")
+    pnid = _pnid("0022")
     client, product = await _seed(
         replay_session, phone=phone, phone_number_id=pnid,
         product_sku="S9SKU", product_name="Cotton Saree",
@@ -570,7 +570,7 @@ async def test_scenario9_address_yes_single_confirm_ui(replay_http, replay_sessi
     resp = await _msg(
         replay_http, phone,
         "12 Sea View Road, Chennai",  # plain address (not saved-address confirm)
-        pnid=pnid, wamid=f"wamid.s9.{int(time.time())}",
+        pnid=pnid, wamid=f"wamid.s22.{int(time.time())}",
     )
     assert resp.status_code == 200
 
@@ -594,7 +594,7 @@ async def test_scenario9_address_yes_single_confirm_ui(replay_http, replay_sessi
     assert conv_row.delivery_address is not None, "Delivery address should be saved after this turn"
 
     print(
-        f"\n[S9] stage={conv_row.current_stage} order_count={len(orders)} "
+        f"\n[S22] stage={conv_row.current_stage} order_count={len(orders)} "
         f"address={conv_row.delivery_address!r} — single confirm UI path ✓"
     )
 
@@ -1974,3 +1974,75 @@ async def test_happy_path_zero_llm(replay_http, replay_session):
         f"\n[ZLL] order={o.order_number} status={o.status} stock_after={stock} "
         f"— full happy path with ZERO LLM calls (all stubs in worst-case state) ✓"
     )
+
+
+# ---------------------------------------------------------------------------
+# Scenario 9 — CI invariant: typing "0" for quantity must never place an
+# order (conv=52 banarasi bug fix, P0-1/P0-2)
+# ---------------------------------------------------------------------------
+
+async def test_scenario22_zero_quantity_never_advances_or_places_order(replay_http, replay_session):
+    """
+    Regression for conv=52: customer typed "5" (correctly re-prompted as
+    over-stock), then "0" — which used to be silently coerced to qty=1 and
+    advanced the flow straight to the address slot, ultimately placing a
+    paid order for 1 unit the customer never agreed to.
+
+    Invariant: for every placed order, 1 <= qty <= stock_at_time. Feeding
+    "0" at the quantity slot must leave quantity unfilled, must NOT advance
+    to the next slot, and must NEVER result in a placed order.
+    """
+    phone = _phone("0022")
+    pnid = _pnid("0022")
+    client, product = await _seed(
+        replay_session, phone=phone, phone_number_id=pnid,
+        product_sku="BANARASI1", product_name="Banarasi Saree",
+        price=999.0, stock=1, payment_method="COD",
+    )
+    product_id = product.id
+
+    conv_id = await _prime_conv(
+        replay_session, phone=phone, product=product,
+        stage="order_collection",
+    )
+
+    # "5" — exceeds stock (1) — must re-prompt, no slot fill.
+    resp1 = await _msg(replay_http, phone, "5", pnid=pnid, wamid=f"wamid.s22.a.{int(time.time())}")
+    assert resp1.status_code == 200
+
+    from app.models.conversation import Conversation
+    conv_after_5 = (await replay_session.execute(
+        select(Conversation).where(Conversation.id == conv_id)
+        .execution_options(populate_existing=True)
+    )).scalar_one()
+    assert not conv_after_5.pending_order_quantity, (
+        f"'5' (over-stock) must not fill quantity, got {conv_after_5.pending_order_quantity!r}"
+    )
+    assert conv_after_5.current_stage == "order_collection"
+
+    # "0" — must re-prompt, NOT advance to address, NOT leave a stale qty=1.
+    resp2 = await _msg(replay_http, phone, "0", pnid=pnid, wamid=f"wamid.s22.b.{int(time.time())}")
+    assert resp2.status_code == 200
+
+    conv_after_0 = (await replay_session.execute(
+        select(Conversation).where(Conversation.id == conv_id)
+        .execution_options(populate_existing=True)
+    )).scalar_one()
+    assert not conv_after_0.pending_order_quantity, (
+        f"'0' must not fill quantity (no stale qty=1 fallback), "
+        f"got {conv_after_0.pending_order_quantity!r}"
+    )
+    assert conv_after_0.current_stage == "order_collection", (
+        f"'0' must not advance the flow to the address slot, "
+        f"got stage={conv_after_0.current_stage!r}"
+    )
+    assert not conv_after_0.delivery_address, (
+        "'0' must not have advanced into collecting an address"
+    )
+
+    orders = await _get_orders(replay_session, conv_id)
+    stock = await _get_stock(replay_session, product_id)
+    assert len(orders) == 0, f"No order may exist after qty=0 input, got {len(orders)}"
+    assert stock == 1, f"Stock must be untouched, got {stock}"
+
+    print(f"\n[S22] qty=0 correctly rejected — no order, no stage advance, stock unchanged")

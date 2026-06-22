@@ -153,6 +153,20 @@ def test_get_me_returns_profile(client, mock_db, mock_settings):
         phone=None,
         gemini_system_prompt=DEFAULT_SYSTEM_PROMPT,
         is_active=True,
+        # Non-nullable fields with column-level defaults — must be set explicitly
+        # since this Client is never flushed through a real DB session.
+        hsn_code="5007",
+        briefing_enabled=True,
+        briefing_time="09:00",
+        dashboard_language="en",
+        catalogue_theme_color="#6366F1",
+        accepts_cod=False,
+        accepts_upi=True,
+        accepts_bank_transfer=False,
+        onboarding_step=0,
+        onboarding_completed=False,
+        plan_slug="starter",
+        daily_message_limit=100,
     )
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = existing
@@ -189,9 +203,29 @@ def test_logout_returns_200(client, mock_db, mock_settings):
 # --- helpers ---
 
 async def _set_id(obj):
-    """Side effect to simulate DB setting an id on a new model."""
+    """
+    Side effect to simulate db.refresh() on a newly inserted model.
+
+    A real DB flush applies every column's server-side/Python default; this
+    mock never flushes, so non-nullable fields would otherwise stay None and
+    fail ClientOut's pydantic validation. Mirror app.models.client.Client's
+    declared defaults here.
+    """
     obj.id = 1
     obj.business_name = obj.business_name or ""
     from app.models.client import DEFAULT_SYSTEM_PROMPT
 
     obj.gemini_system_prompt = DEFAULT_SYSTEM_PROMPT
+    obj.is_active = True
+    obj.hsn_code = "5007"
+    obj.briefing_enabled = True
+    obj.briefing_time = "09:00"
+    obj.dashboard_language = "en"
+    obj.catalogue_theme_color = "#6366F1"
+    obj.accepts_cod = False
+    obj.accepts_upi = True
+    obj.accepts_bank_transfer = False
+    obj.onboarding_step = 0
+    obj.onboarding_completed = False
+    obj.plan_slug = obj.plan_slug or "starter"
+    obj.daily_message_limit = obj.daily_message_limit or 100

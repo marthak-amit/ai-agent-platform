@@ -20,6 +20,7 @@ def _make_product(**kwargs) -> Product:
         # New fields added in migration 0008 — must be set explicitly since
         # SQLAlchemy column defaults only fire on DB insert, not Python construction.
         is_active=True, low_stock_alert=5, sku=None, category=None,
+        has_variants=False,
     )
     defaults.update(kwargs)
     return Product(**defaults)

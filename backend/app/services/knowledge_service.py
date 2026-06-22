@@ -18,25 +18,47 @@ from app.models.knowledge_base import KnowledgeBase
 
 logger = logging.getLogger(__name__)
 
+# Stopwords excluded from overlap scoring so a single shared filler word
+# (e.g. "is", "the", "you") never counts as relevance on its own — that was
+# letting an unrelated FAQ (e.g. a dispatch/tracking entry) win just because
+# it shared "is" or "available" with an unrelated question.
+_STOPWORDS = frozenset({
+    "is", "are", "the", "a", "an", "to", "of", "in", "on", "do", "does",
+    "i", "you", "we", "it", "this", "that", "for", "and", "or", "can",
+    "will", "be", "have", "has", "my", "your", "please", "yes", "no",
+})
+
+# Minimum overlap-to-query-words ratio (after stopword removal) for a KB
+# entry to be considered relevant enough to answer with. Below this, the
+# top hit is more likely a coincidental word match than a real answer.
+_MIN_RELEVANCE_RATIO = 0.5
+
 
 async def search_knowledge(
     client_id: int,
     query: str,
     db: AsyncSession,
     limit: int = 3,
+    min_relevance: float = _MIN_RELEVANCE_RATIO,
 ) -> list[KnowledgeBase]:
     """
     Keyword-overlap search over active, approved KB entries for a client.
 
-    Scores each entry by the number of query words that appear in the
-    question text. Returns up to *limit* best-matching entries, highest
-    score first.  Returns an empty list when no words overlap.
+    Scores each entry by the number of meaningful (non-stopword) query words
+    that appear in the question text, relative to the number of meaningful
+    query words. Returns up to *limit* best-matching entries, highest score
+    first. Returns an empty list when no entry clears *min_relevance* — this
+    is a relevance threshold so an unrelated FAQ is never returned just
+    because it shares one filler word with the query.
 
     Args:
-        client_id: Owning client ID.
-        query:     Customer message text used as the search query.
-        db:        Async DB session.
-        limit:     Maximum number of entries to return.
+        client_id:     Owning client ID.
+        query:         Customer message text used as the search query.
+        db:            Async DB session.
+        limit:         Maximum number of entries to return.
+        min_relevance: Minimum overlap/query-word ratio required to keep a
+                       result (default 0.5 — at least half the meaningful
+                       query words must appear in the entry's question).
 
     Returns:
         List of KnowledgeBase instances ordered by relevance score (desc).
@@ -50,13 +72,21 @@ async def search_knowledge(
     )
     entries = result.scalars().all()
 
-    query_words = set(query.lower().split())
+    query_words = {w for w in query.lower().split() if w.strip("?.,!")} - _STOPWORDS
+    query_words = {w.strip("?.,!") for w in query_words}
+    if not query_words:
+        return []
+
     scored: list[tuple[int, KnowledgeBase]] = []
     for entry in entries:
-        entry_words = set(entry.question.lower().split())
+        entry_words = {w.strip("?.,!") for w in entry.question.lower().split()} - _STOPWORDS
         overlap = len(query_words & entry_words)
-        if overlap > 0:
-            scored.append((overlap, entry))
+        if overlap == 0:
+            continue
+        ratio = overlap / len(query_words)
+        if ratio < min_relevance:
+            continue
+        scored.append((overlap, entry))
 
     scored.sort(key=lambda x: x[0], reverse=True)
     top = [e for _, e in scored[:limit]]

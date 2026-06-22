@@ -17,6 +17,7 @@ Note on role translation:
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import logging
 
@@ -28,15 +29,42 @@ from app.services.conversation_flow import get_stage_instructions
 
 logger = logging.getLogger(__name__)
 
+# Set by generate_reply() right after each Groq call so callers can read the
+# real token usage for cost logging without changing generate_reply()'s
+# return type (it has many existing callers that expect a plain string).
+_last_usage: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "_last_usage", default=None
+)
+
+
+def get_last_usage() -> dict | None:
+    """
+    Return and clear the token usage recorded by the most recent generate_reply() call.
+
+    Returns:
+        Dict with 'model', 'in_tok', 'out_tok', or None if no usage was recorded
+        (e.g. every model was rate-limited and the busy fallback was returned).
+    """
+    usage = _last_usage.get()
+    _last_usage.set(None)
+    return usage
+
 _GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
-# Tried in order — if one is rate-limited (429), fall back to the next.
-_GROQ_MODELS = [
-    "llama-3.3-70b-versatile",                 # primary
-    "llama-3.1-8b-instant",                    # fallback 1 — smaller, fewer tokens
-    "meta-llama/llama-4-scout-17b-16e-instruct",  # fallback 2 — Llama 4 Scout on Groq
-    "qwen/qwen3-32b",                          # fallback 3 — Qwen 3 32B on Groq
-]
+
+def _groq_models() -> list[str]:
+    """
+    Models tried in order for generate_reply() — if one is rate-limited (429),
+    fall back to the next. Primary model is Tier 3's REPLY_MODEL setting
+    (settings.reply_model), tunable without a redeploy.
+    """
+    settings = get_settings()
+    return [
+        settings.reply_model,                          # primary — Tier 3 open-ended reply
+        "llama-3.1-8b-instant",                        # fallback 1 — smaller, fewer tokens
+        "meta-llama/llama-4-scout-17b-16e-instruct",    # fallback 2 — Llama 4 Scout on Groq
+        "qwen/qwen3-32b",                              # fallback 3 — Qwen 3 32B on Groq
+    ]
 
 _BUSY_FALLBACK_REPLY = "Abhi thodi busy hoon. 2 minute mein reply karungi. 🙏"
 
@@ -75,6 +103,7 @@ async def generate_reply(
     catalogue_context: str | None = None,
     language: str | None = None,
     previous_language: str | None = None,
+    response_format: dict | None = None,
 ) -> str:
     """
     Send a user message to Groq and return the AI-generated reply.
@@ -152,24 +181,30 @@ async def generate_reply(
 
     messages.append({"role": "user", "content": user_message})
 
+    _models = _groq_models()
     prompt_hash = hashlib.md5(full_system.encode()).hexdigest()[:8]
-    logger.info("AI call | prompt_v:%s | model:%s | history_len:%d", prompt_hash, _GROQ_MODELS[0], len(history or []))
+    logger.info("AI call | prompt_v:%s | model:%s | history_len:%d", prompt_hash, _models[0], len(history or []))
+    logger.info("ROUTE tier=3 model=%s reason=open_ended_or_ambiguous", _models[0])
 
     # 8b has a tight per-request context limit — pre-build a slimmed system prompt
     # that drops kb/learning examples (appended last) by truncating to 8000 chars.
     # current_instruction and customer_context (near the top) are always preserved.
     _slim_system = full_system[:8000] if len(full_system) > 8000 else None
 
-    for model in _GROQ_MODELS:
+    for model in _models:
         _messages = messages
         if model == "llama-3.1-8b-instant" and _slim_system is not None:
             _messages = [{"role": "system", "content": _slim_system}] + messages[1:]
         try:
+            _kwargs = {}
+            if response_format is not None:
+                _kwargs["response_format"] = response_format
             response = await client.chat.completions.create(
                 model=model,
                 messages=_messages,
                 max_tokens=150,
                 temperature=0.3,
+                **_kwargs,
             )
         except Exception as exc:
             exc_str = str(exc)
@@ -182,6 +217,13 @@ async def generate_reply(
         if not reply:
             raise RuntimeError("OpenAI returned an empty response.")
         reply = reply.strip()
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            _last_usage.set({
+                "model": model,
+                "in_tok": usage.prompt_tokens,
+                "out_tok": usage.completion_tokens,
+            })
         logger.info("AI reply | prompt_v:%s | model:%s | reply_len:%d | tokens_approx:%d", prompt_hash, model, len(reply), len(reply.split()))
         return reply
 
@@ -594,8 +636,11 @@ COD Accepted: {client_accepts_cod}
         f"Customer wrote in {language.upper()} — match their language exactly."
     )
 
-    from training.agent_training import get_examples_for_stage
-    few_shot_block = get_examples_for_stage(conversation_stage)
+    # Section 4 trim: few-shot examples were prose-style guidance for an LLM
+    # that used to write customer-facing text directly. Now that render_reply()
+    # (not the LLM) owns wording/style, they only add tokens without changing
+    # JSON-classification behaviour — dropped from the live prompt.
+    few_shot_block = ""
 
     customer_context_block = (
         f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -610,7 +655,18 @@ COD Accepted: {client_accepts_cod}
     # still enforced at order time via the slot-machine's available_stock path.
     _BROWSING_STAGES = {"greeting", "product_inquiry", "qualification", "objection_handling", "offer_making"}
     _prompt_for_display = conversation_stage in _BROWSING_STAGES
-    _products_block = format_products_for_prompt(products, for_display=_prompt_for_display)
+
+    # Section 4 trim: once a SKU is pinned (order_collection / awaiting_final_
+    # confirmation), the renderer reads that product from the DB directly —
+    # the LLM no longer needs the full catalogue, just a one-line reference,
+    # so it can't accidentally reference a different product's price/variants.
+    if order_product is not None and conversation_stage in _slot_machine_stages:
+        _products_block = (
+            f"• {order_product_name} [{getattr(order_product, 'sku', '')}] — "
+            f"₹{getattr(order_product, 'price', 0) or 0:,.0f} (pinned — see CURRENT ORDER above)"
+        )
+    else:
+        _products_block = format_products_for_prompt(products, for_display=_prompt_for_display)
 
     return f"""{lang_rule}
 You are a professional sales agent for {business_name} — a {business_type} business based in India.

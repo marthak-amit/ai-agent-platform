@@ -5,7 +5,9 @@ Provides get-or-create semantics for conversations and append-only
 message storage. Used by both the WhatsApp and Instagram webhook handlers.
 """
 
+import json
 import logging
+from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +17,7 @@ logger = logging.getLogger(__name__)
 from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.lead import Lead
+from app.services import cost_log
 
 _ROLE_MAP = {
     "human": "user",
@@ -107,6 +110,10 @@ async def save_message(
     content: str,
     original_type: str | None = None,
     wamid: str | None = None,
+    path: str = "TEMPLATE",
+    model: str | None = None,
+    in_tok: int = 0,
+    out_tok: int = 0,
 ) -> Message:
     """
     Append a message to a conversation.
@@ -118,6 +125,11 @@ async def save_message(
         content:         Raw text of the message.
         original_type:   Media type the content was derived from ('audio', 'image'), or None.
         wamid:           WhatsApp Message ID from Meta for deduplication, or None.
+        path:            'TEMPLATE' (₹0, default) or 'LLM' — which path produced this
+                         message, for the per-conversation cost report.
+        model:           Groq model name, only meaningful when path is 'LLM'.
+        in_tok:          Real prompt tokens from the provider response, when path is 'LLM'.
+        out_tok:         Real completion tokens from the provider response, when path is 'LLM'.
 
     Returns:
         Persisted Message instance.
@@ -132,6 +144,13 @@ async def save_message(
     db.add(msg)
     await db.commit()
     await db.refresh(msg)
+
+    direction = "OUT" if normalize_role(role) == "assistant" else "IN"
+    cost_log.log(
+        conversation_id, direction, content,
+        path=path, model=model, in_tok=in_tok, out_tok=out_tok,
+    )
+
     return msg
 
 
@@ -236,6 +255,35 @@ async def update_order_field(
     if conv:
         setattr(conv, field, value)
         await db.commit()
+
+
+async def set_last_shown_sku(db: AsyncSession, conversation_id: int, sku: str) -> None:
+    """
+    Single writer for Conversation.last_shown_sku.
+
+    Every time ANY product is surfaced to the customer — the deterministic
+    product card OR a product resolved from an LLM-understood turn — this is
+    the only function that should update last_shown_sku, so a later bare
+    affirmative ("yes") always repins the product the customer actually just
+    saw/confirmed, not a stale SKU from an earlier, already-completed order.
+    """
+    await update_order_field(db, conversation_id, "last_shown_sku", sku)
+
+
+async def set_pending_choice_skus(
+    db: AsyncSession, conversation_id: int, skus: Optional[list] = None
+) -> None:
+    """
+    Single writer for Conversation.pending_choice_skus.
+
+    Call with a non-empty list when a "which one?" multi-option list is shown
+    to the customer, and with None/[] to close the choice once it is resolved
+    (pinned, or the customer asks something unrelated). While this is set, a
+    bare affirmative ("Yes") must NOT be treated as a repin of last_shown_sku —
+    it is not a valid answer to "which one?".
+    """
+    value = json.dumps(skus) if skus else None
+    await update_order_field(db, conversation_id, "pending_choice_skus", value)
 
 
 async def get_customer_history(

@@ -1,7 +1,8 @@
 """
 Tests for app/services/lead_service.py.
 
-_classify is synchronous keyword-based — no AI call.
+classify_lead (app.services.intent_service) is synchronous, stage-first with
+keyword fallback — no AI call. lead_service._classify was replaced by it.
 """
 
 from unittest.mock import AsyncMock, MagicMock
@@ -9,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.services import lead_service
+from app.services.intent_service import classify_lead
 
 
 @pytest.fixture
@@ -49,24 +51,24 @@ async def test_tag_lead_updates_existing_lead(db, mock_settings):
 
 
 def test_classify_returns_hot_on_order_keyword(mock_settings):
-    """_classify returns 'hot' for order-intent keywords."""
-    result = lead_service._classify([{"role": "user", "content": "order karna hai"}])
+    """classify_lead returns 'hot' for order-intent keywords."""
+    result = classify_lead("order karna hai", "greeting")
     assert result == "hot"
 
 
 def test_classify_returns_warm_on_price_keyword(mock_settings):
-    """_classify returns 'warm' for interest keywords."""
-    result = lead_service._classify([{"role": "user", "content": "price kya hai"}])
+    """classify_lead returns 'warm' for browsing-signal keywords."""
+    result = classify_lead("delivery time kitna lagega", "greeting")
     assert result == "warm"
 
 
 def test_classify_returns_cold_on_empty_messages(mock_settings):
-    """_classify returns 'cold' for empty message list."""
-    result = lead_service._classify([])
+    """classify_lead returns 'cold' for an empty message."""
+    result = classify_lead("", "greeting")
     assert result == "cold"
 
 
 def test_classify_returns_cold_on_no_keywords(mock_settings):
-    """_classify returns 'cold' when no hot/warm keywords found."""
-    result = lead_service._classify([{"role": "user", "content": "hello"}])
+    """classify_lead returns 'cold' when no hot/warm keywords found."""
+    result = classify_lead("hello", "greeting")
     assert result == "cold"
