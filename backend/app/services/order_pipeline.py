@@ -20,9 +20,12 @@ existing call sites continue to work unchanged.
 import logging
 import re as _re_addr
 import secrets
+from dataclasses import dataclass
 from datetime import datetime
 
-from app.services import conversation_service
+from sqlalchemy import select
+
+from app.services import conversation_service, customer_service
 
 # NOTE: deliberately uses the webhook router's logger name (not __name__) so
 # log lines emitted by helpers moved out of webhook.py during the strangler-fig
@@ -31,6 +34,58 @@ from app.services import conversation_service
 # "app.routers.webhook" specifically (e.g. tests/replay/test_characterization_gaps.py).
 # Revisit this once all callers have moved off the legacy logger name.
 logger = logging.getLogger("app.routers.webhook")
+
+
+# ---------------------------------------------------------------------------
+# Channel-neutral result type (SLICE 2)
+# ---------------------------------------------------------------------------
+# Early guards (rate limit / dedup / hard LLM cap / stale-paid / nonce /
+# cancel-in-payment / blocklist / human-takeover / duplicate confirm+payment)
+# previously did `await whatsapp_service.send_text_message(...); return` inline
+# in webhook.py. They are converted here to return a PipelineResult (or None
+# when the guard does not fire) so the WhatsApp adapter in webhook.py — and,
+# later, an Instagram adapter — can decide how to actually send it.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ButtonSpec:
+    """One WhatsApp/Instagram quick-reply button: id + display title."""
+
+    id: str
+    title: str
+
+
+@dataclass
+class ListOptionSpec:
+    """One row in a WhatsApp list message: id + display title."""
+
+    id: str
+    title: str
+
+
+@dataclass
+class PipelineResult:
+    """
+    Channel-neutral outcome of processing one inbound message.
+
+    text:         Plain-text reply, or None when nothing should be sent
+                  (e.g. silent save during human takeover).
+    buttons:      Quick-reply buttons to render, if any.
+    list_options: List-message rows to render, if any.
+    images:       List of (image_url, caption) tuples to send before/after text.
+    nonce:        New button nonce to persist, if the adapter needs to know it.
+    skip_send:    True when the pipeline already decided nothing should be
+                  sent to the customer at all (distinct from text=None with a
+                  send still expected to happen, which doesn't occur today).
+    """
+
+    text: str | None
+    buttons: list[ButtonSpec] | None = None
+    list_options: list[ListOptionSpec] | None = None
+    images: list[tuple[str, str]] | None = None
+    nonce: str | None = None
+    skip_send: bool = False
 
 # ---------------------------------------------------------------------------
 # Button-nonce helpers (BUG 4 FIX)
@@ -604,3 +659,373 @@ def _build_slot_question(
 
     # None — all slots collected, caller should show order summary instead.
     return ""
+
+
+# ---------------------------------------------------------------------------
+# SLICE 2: early guards
+# ---------------------------------------------------------------------------
+# Each guard below previously did, inline in webhook.py's receive_message:
+#   await conversation_service.save_message(...)   # (sometimes)
+#   await whatsapp_service.send_text_message(sender_phone, reply)
+#   return {"status": "ok"}
+# Converted to: persist whatever DB state the original code persisted, then
+# return a PipelineResult instead of sending. webhook.py's adapter is
+# responsible for actually calling whatsapp_service.send_text_message with
+# the returned text and then returning early. Guards that don't fire return
+# None so the caller continues to the next stage of receive_message.
+#
+# NOTE: signature verification, payload parsing, sender/wamid/message-type/
+# text extraction and button-nonce decoding happen BEFORE this point in
+# webhook.py and are NOT moved — this function only consumes already-parsed
+# values, per the architecture.
+# ---------------------------------------------------------------------------
+
+
+async def run_hard_llm_cap_guard(
+    db,
+    conv,
+    client,
+    sender_phone: str,
+    user_text: str,
+    wamid: str | None,
+    llm_calls_today: int,
+) -> "PipelineResult | None":
+    """
+    Hard LLM-budget guard: block all LLM, escalate to human, and reply with a
+    boundary message when the per-phone/day hard cap has been hit.
+
+    Mirrors webhook.py's original inline HARD LLM cap block verbatim (DB
+    writes, message saves, logging) — only the final send is deferred to the
+    caller via the returned PipelineResult.
+    """
+    _hard_boundary = "We've noted your interest — our team will get back to you."
+    logger.warning(
+        "HARD LLM cap: phone=%s conv=%s calls_today=%d — blocking all LLM and escalating.",
+        sender_phone, conv.id, llm_calls_today,
+    )
+    try:
+        from app.models.conversation import Conversation as _ConvHardCap
+        _hc_r = await db.execute(select(_ConvHardCap).where(_ConvHardCap.id == conv.id).limit(1))
+        _hc_c = _hc_r.scalar_one_or_none()
+        if _hc_c:
+            _hc_c.ai_enabled = False
+            _hc_c.taken_over_at = datetime.utcnow()
+            _hc_c.taken_over_note = f"Hard LLM cap reached: {llm_calls_today} calls"
+            await db.commit()
+    except Exception as _hce:
+        logger.error("Hard-cap takeover failed: %s", _hce)
+    try:
+        await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+        await conversation_service.save_message(db, conv.id, "assistant", _hard_boundary)
+    except Exception:
+        pass
+    return PipelineResult(text=_hard_boundary)
+
+
+async def run_stale_paid_guard(
+    db,
+    conv,
+    sender_phone: str,
+    user_text: str,
+    wamid: str | None,
+    stored_stage: str,
+) -> "PipelineResult | None":
+    """
+    BUG 2 FIX: reply to a stale "I've Paid" tap with a friendly message and
+    no state change, when there's no pending_payment order to mark paid.
+
+    Returns None when the guard does not apply (not a paid-signal, in
+    payment stage already, or a payable order does exist).
+    """
+    _is_paid_signal = (
+        user_text.lower().strip() in {
+            "paid", "done", "sent", "transferred",
+            "ho gaya", "kar diya", "payment done",
+        }
+        and stored_stage not in ("payment",)
+    )
+    if not _is_paid_signal:
+        return None
+
+    from app.models.order import Order as _PaidGuardOrderModel
+    _pg_result = await db.execute(
+        select(_PaidGuardOrderModel)
+        .where(
+            _PaidGuardOrderModel.conversation_id == conv.id,
+            _PaidGuardOrderModel.status == "pending_payment",
+        )
+        .limit(1)
+    )
+    _pg_order = _pg_result.scalar_one_or_none()
+    if _pg_order is not None:
+        return None
+
+    _pg_lang = getattr(conv, "last_customer_language", None) or "english"
+    if _pg_lang in ("hindi_roman", "hindi_devanagari", "hinglish"):
+        _pg_reply = "Woh order cancel ho chuka tha. Kya aap naya order dena chahte hain?"
+    elif _pg_lang in ("gujarati_roman", "gujarati_script"):
+        _pg_reply = "Pehelo order cancel thai gayo hato. Navo order karva maango chho?"
+    else:
+        _pg_reply = "That order was already cancelled — want to start a new one?"
+    logger.info(
+        "Stale 'paid' signal from %s — no pending_payment order for conv=%s, "
+        "replying friendly, no state change.",
+        sender_phone, conv.id,
+    )
+    try:
+        await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+        await conversation_service.save_message(db, conv.id, "assistant", _pg_reply)
+    except Exception as exc:
+        logger.error("Stale-paid save error: %s", exc)
+    return PipelineResult(text=_pg_reply)
+
+
+async def run_button_nonce_guard(
+    db,
+    conv,
+    sender_phone: str,
+    user_text: str,
+    wamid: str | None,
+    stored_stage: str,
+    btn_nonce_parsed: "tuple[str, str, str] | None",
+) -> "PipelineResult | None":
+    """
+    BUG 4 FIX: reject a stale/out-of-order nonce-encoded button tap.
+
+    Rotates the nonce immediately on a VALID tap (returns None in that case
+    so the caller continues processing); returns a PipelineResult with the
+    "expired" message when the nonce does not match.
+    """
+    if btn_nonce_parsed is None:
+        return None
+    _p_action, _p_conv_id_str, _p_nonce = btn_nonce_parsed
+    _stored_nonce = getattr(conv, "current_button_nonce", None)
+    if _stored_nonce and _p_nonce != _stored_nonce:
+        _expired_reply = (
+            "That option has expired — your last action already went through. "
+            "Let's continue from here."
+        )
+        logger.info(
+            "Expired button nonce: conv=%s stored=%r received=%r action=%r — rejected.",
+            conv.id, _stored_nonce, _p_nonce, _p_action,
+        )
+        logger.info(
+            "Stale button ignored conv=%s btn=%r stage=%s",
+            conv.id, _p_action, stored_stage,
+        )
+        try:
+            await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+            await conversation_service.save_message(db, conv.id, "assistant", _expired_reply)
+        except Exception:
+            pass
+        return PipelineResult(text=_expired_reply)
+    # Valid nonce — rotate immediately so the same button cannot fire twice.
+    if _stored_nonce:
+        await _rotate_nonce(db, conv.id, conv)
+    return None
+
+
+async def run_cancel_in_payment_guard(
+    db,
+    conv,
+    client,
+    sender_phone: str,
+    user_text: str,
+    wamid: str | None,
+    stored_stage: str,
+    record_usage,
+) -> "PipelineResult | None":
+    """
+    Cancel-in-payment guard: handle "cancel" tapped/typed while stage="payment"
+    (pending UPI confirmation) — cancels the pending_payment Order, resets
+    order slots, sets stage back to "greeting".
+
+    record_usage: the webhook module's _record_usage(db, client) callable,
+    passed in rather than imported, since it stays defined in webhook.py.
+    """
+    if not (user_text.lower().strip() == "cancel" and stored_stage == "payment"):
+        return None
+
+    from app.models.order import Order as _PayCancelOrderModel
+    try:
+        _pc_result = await db.execute(
+            select(_PayCancelOrderModel)
+            .where(
+                _PayCancelOrderModel.conversation_id == conv.id,
+                _PayCancelOrderModel.status == "pending_payment",
+            )
+            .order_by(_PayCancelOrderModel.created_at.desc())
+            .limit(1)
+        )
+        _pc_order = _pc_result.scalar_one_or_none()
+        if _pc_order:
+            _pc_order.status = "cancelled"
+            await db.commit()
+            logger.info(
+                "Order %s → cancelled (conv=%s) [PAYMENT-STAGE CANCEL]",
+                _pc_order.order_number, conv.id,
+            )
+    except Exception as exc:
+        logger.error("Payment-stage cancel: order cancellation failed for conv=%s: %s", conv.id, exc)
+
+    _pc_cancel_fields = [
+        ("pending_order_quantity", None), ("selected_color", None),
+        ("selected_size", None), ("selected_material", None),
+        ("customer_name", None), ("delivery_address", None),
+        ("payment_method", None), ("summary_shown", False),
+        ("pending_product_sku", None), ("interrupted_sku", None),
+        ("last_shown_sku", None), ("pending_choice_skus", None),
+    ]
+    for _pcf, _pcv in _pc_cancel_fields:
+        try:
+            await conversation_service.update_order_field(db, conv.id, _pcf, _pcv)
+            setattr(conv, _pcf, _pcv)
+        except Exception as exc:
+            logger.error("Payment-stage cancel slot reset (%s): %s", _pcf, exc)
+    try:
+        await conversation_service.update_stage(db, conv.id, "greeting")
+    except Exception as exc:
+        logger.error("Payment-stage cancel stage reset: %s", exc)
+
+    _pc_lang = getattr(conv, "last_customer_language", None) or "english"
+    if _pc_lang in ("hindi_roman", "hindi_devanagari", "hinglish"):
+        _pc_reply = "Order cancel kar diya gaya. ✅ Kya main kuch aur help kar sakta hoon?"
+    elif _pc_lang in ("gujarati_roman", "gujarati_script"):
+        _pc_reply = "Order cancel thai gayu. ✅ Koi biju kaam hoy to kaho!"
+    else:
+        _pc_reply = "Order cancelled. ✅ Anything else I can help you with?"
+    logger.info("conv=%s PAYMENT-STAGE CANCEL — order cancelled, slots reset, stage=greeting", conv.id)
+    try:
+        await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+        await conversation_service.save_message(db, conv.id, "assistant", _pc_reply)
+    except Exception as exc:
+        logger.error("Payment-stage cancel save error: %s", exc)
+    try:
+        await record_usage(db, client)
+    except Exception:
+        pass
+    return PipelineResult(text=_pc_reply)
+
+
+async def run_blocklist_guard(db, client, sender_phone: str) -> bool:
+    """
+    Upsert the customer profile (best-effort) and report whether they are
+    blocklisted.
+
+    Returns True when the customer is blocked (caller should drop the
+    message with no reply at all — matches original "message dropped, no
+    send" behaviour exactly, hence bool rather than PipelineResult).
+    """
+    if not client:
+        return False
+    try:
+        customer = await customer_service.upsert_customer(
+            db,
+            client_id=client.id,
+            phone=sender_phone,
+        )
+        await db.commit()
+        if customer.is_blocked:
+            logger.info("Blocked customer %s — message dropped.", sender_phone)
+            return True
+    except Exception as exc:
+        logger.warning("Customer upsert failed: %s", exc)
+    return False
+
+
+async def run_human_takeover_guard(
+    db, conv, sender_phone: str, user_text: str, wamid: str | None
+) -> "PipelineResult | None":
+    """
+    Human takeover guard: when conv.ai_enabled is False, silently save the
+    inbound message and produce a PipelineResult that sends nothing at all
+    (skip_send=True) — mirrors the original "save message, no reply" path.
+    """
+    if conv.ai_enabled is not False:
+        return None
+    await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+    logger.info(
+        "AI paused for %s — human takeover active, message saved silently.",
+        sender_phone,
+    )
+    return PipelineResult(text=None, skip_send=True)
+
+
+async def run_duplicate_confirm_tap_guard(
+    db, conv, message_type: str, sender_phone: str, user_text: str, wamid: str | None
+) -> "PipelineResult | None":
+    """
+    Duplicate "Confirm Order" tap guard: an already-tappable button pressed
+    again after the conversation reached "completed" gets a friendly
+    already-confirmed reply with no AI call.
+    """
+    _CONFIRM_TAP_KW = frozenset({"confirm order", "✅ confirm order", "confirm", "pakka"})
+    if not (
+        message_type == "interactive"
+        and (conv.current_stage or "greeting") == "completed"
+        and user_text.lower().strip() in _CONFIRM_TAP_KW
+    ):
+        return None
+    _already_confirmed_reply = (
+        "Your order is already confirmed ✅ We'll update you once it's dispatched. "
+        "Thank you! 🙏"
+    )
+    logger.info(
+        "Duplicate 'Confirm Order' tap from %s on already-completed conv=%s — "
+        "sending friendly reminder, no AI call.",
+        sender_phone, conv.id,
+    )
+    try:
+        await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+        await conversation_service.save_message(db, conv.id, "assistant", _already_confirmed_reply)
+    except Exception as exc:
+        logger.error("DB save error for duplicate confirm tap: %s", exc)
+    return PipelineResult(text=_already_confirmed_reply)
+
+
+async def run_duplicate_payment_word_guard(
+    db, conv, message_type: str, sender_phone: str, user_text: str, wamid: str | None
+) -> "PipelineResult | None":
+    """
+    FIX E: payment-confirmation words sent AFTER the order is already
+    completed (e.g. a second "paid"/"done" tap) get a deterministic
+    already-confirmed reply instead of a fresh AI call or duplicate Order row.
+    """
+    _PAYMENT_RECONFIRM_KW = frozenset({
+        "paid", "done", "sent", "transferred", "ho gaya", "kar diya",
+        "completed", "payment done", "bhej diya", "kiya", "payment ho gaya",
+        "payment kar diya", "gpay", "phonepay", "paytm", "phonepe",
+    })
+    if not (
+        message_type == "text"
+        and (conv.current_stage or "greeting") == "completed"
+        and user_text.lower().strip() in _PAYMENT_RECONFIRM_KW
+    ):
+        return None
+    _prev_lang = getattr(conv, "last_customer_language", "english") or "english"
+    if _prev_lang in ("hindi_roman", "hinglish", "hindi_devanagari"):
+        _payment_dup_reply = (
+            "Aapka order confirm ho chuka hai ✅ Delivery 3-5 business days mein hogi. "
+            "Koi aur help chahiye? 🙏"
+        )
+    elif _prev_lang in ("gujarati_roman", "gujarati_script"):
+        _payment_dup_reply = (
+            "Tamaro order confirm thai gayo chhe ✅ Delivery 3-5 business days maa thase. "
+            "Koi madad joiye? 🙏"
+        )
+    else:
+        _payment_dup_reply = (
+            "Your order is already confirmed ✅ Delivery in 3-5 business days. "
+            "Anything else I can help with? 🙏"
+        )
+    logger.info(
+        "Duplicate payment word '%s' from %s on already-completed conv=%s — "
+        "returning deterministic reply, no AI call.",
+        user_text, sender_phone, conv.id,
+    )
+    try:
+        await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+        await conversation_service.save_message(db, conv.id, "assistant", _payment_dup_reply)
+    except Exception as exc:
+        logger.error("DB save error for duplicate payment reply: %s", exc)
+    return PipelineResult(text=_payment_dup_reply)

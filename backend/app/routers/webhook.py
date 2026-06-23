@@ -54,6 +54,14 @@ from app.services.order_pipeline import (
     _is_simple_ack,
     _log_route,
     _rotate_nonce,
+    run_blocklist_guard,
+    run_cancel_in_payment_guard,
+    run_button_nonce_guard,
+    run_duplicate_confirm_tap_guard,
+    run_duplicate_payment_word_guard,
+    run_hard_llm_cap_guard,
+    run_human_takeover_guard,
+    run_stale_paid_guard,
 )
 
 logger = logging.getLogger(__name__)
@@ -984,31 +992,16 @@ async def receive_message(
     # open_browsing — see VERIFY c in the cost-fix task).
     _name_match_count = 0
 
+    # ── SLICE 2: early guards (delegated to order_pipeline) ──────────────────
+    # Each guard below returns a PipelineResult when it fires (caller sends
+    # the text and returns) or None when it doesn't (caller continues).
+
     if _llm_budget == "hard":
-        _hard_boundary = "We've noted your interest — our team will get back to you."
-        logger.warning(
-            "HARD LLM cap: phone=%s conv=%s calls_today=%d — blocking all LLM and escalating.",
-            sender_phone, conv.id, _llm_calls_today,
+        _guard_result = await run_hard_llm_cap_guard(
+            db, conv, client, sender_phone, user_text, wamid, _llm_calls_today,
         )
         try:
-            from app.models.conversation import Conversation as _ConvHardCap
-            from sqlalchemy import select as _selHC
-            _hc_r = await db.execute(_selHC(_ConvHardCap).where(_ConvHardCap.id == conv.id).limit(1))
-            _hc_c = _hc_r.scalar_one_or_none()
-            if _hc_c:
-                _hc_c.ai_enabled = False
-                _hc_c.taken_over_at = datetime.utcnow()
-                _hc_c.taken_over_note = f"Hard LLM cap reached: {_llm_calls_today} calls"
-                await db.commit()
-        except Exception as _hce:
-            logger.error("Hard-cap takeover failed: %s", _hce)
-        try:
-            await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
-            await conversation_service.save_message(db, conv.id, "assistant", _hard_boundary)
-        except Exception:
-            pass
-        try:
-            await whatsapp_service.send_text_message(sender_phone, _hard_boundary)
+            await whatsapp_service.send_text_message(sender_phone, _guard_result.text)
         except Exception:
             pass
         return {"status": "ok"}
@@ -1021,48 +1014,15 @@ async def receive_message(
     # Instead reply with a clear, friendly message and return early.
     # This guard runs for BOTH the interactive button (paid_done) and the typed
     # "paid" keyword (typed into chat at a non-payment stage).
-    _is_paid_signal = (
-        user_text.lower().strip() in {
-            "paid", "done", "sent", "transferred",
-            "ho gaya", "kar diya", "payment done",
-        }
-        and _stored_stage not in ("payment",)
+    _stale_paid_result = await run_stale_paid_guard(
+        db, conv, sender_phone, user_text, wamid, _stored_stage,
     )
-    if _is_paid_signal:
-        from app.models.order import Order as _PaidGuardOrderModel
-        _pg_result = await db.execute(
-            select(_PaidGuardOrderModel)
-            .where(
-                _PaidGuardOrderModel.conversation_id == conv.id,
-                _PaidGuardOrderModel.status == "pending_payment",
-            )
-            .limit(1)
-        )
-        _pg_order = _pg_result.scalar_one_or_none()
-        if _pg_order is None:
-            # No payable order — stale tap or duplicate.  Never mark anything paid.
-            _pg_lang = getattr(conv, "last_customer_language", None) or "english"
-            if _pg_lang in ("hindi_roman", "hindi_devanagari", "hinglish"):
-                _pg_reply = "Woh order cancel ho chuka tha. Kya aap naya order dena chahte hain?"
-            elif _pg_lang in ("gujarati_roman", "gujarati_script"):
-                _pg_reply = "Pehelo order cancel thai gayo hato. Navo order karva maango chho?"
-            else:
-                _pg_reply = "That order was already cancelled — want to start a new one?"
-            logger.info(
-                "Stale 'paid' signal from %s — no pending_payment order for conv=%s, "
-                "replying friendly, no state change.",
-                sender_phone, conv.id,
-            )
-            try:
-                await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
-                await conversation_service.save_message(db, conv.id, "assistant", _pg_reply)
-            except Exception as exc:
-                logger.error("Stale-paid save error: %s", exc)
-            try:
-                await whatsapp_service.send_text_message(sender_phone, _pg_reply)
-            except Exception as exc:
-                logger.error("Stale-paid send error: %s", exc)
-            return {"status": "ok"}
+    if _stale_paid_result is not None:
+        try:
+            await whatsapp_service.send_text_message(sender_phone, _stale_paid_result.text)
+        except Exception as exc:
+            logger.error("Stale-paid send error: %s", exc)
+        return {"status": "ok"}
 
     # ── BUG 4 FIX: validate button nonce ─────────────────────────────────────
     # If a nonce-encoded interactive button was received, check it against the
@@ -1071,35 +1031,15 @@ async def receive_message(
     # nonce) → reply "That option has expired" and stop.  No state change.
     # We rotate the nonce immediately on a valid tap so a second tap of the
     # same button always fails.
-    if _btn_nonce_parsed is not None:
-        _p_action, _p_conv_id_str, _p_nonce = _btn_nonce_parsed
-        _stored_nonce = getattr(conv, "current_button_nonce", None)
-        if _stored_nonce and _p_nonce != _stored_nonce:
-            _expired_reply = (
-                "That option has expired — your last action already went through. "
-                "Let's continue from here."
-            )
-            logger.info(
-                "Expired button nonce: conv=%s stored=%r received=%r action=%r — rejected.",
-                conv.id, _stored_nonce, _p_nonce, _p_action,
-            )
-            logger.info(
-                "Stale button ignored conv=%s btn=%r stage=%s",
-                conv.id, _p_action, _stored_stage,
-            )
-            try:
-                await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
-                await conversation_service.save_message(db, conv.id, "assistant", _expired_reply)
-            except Exception:
-                pass
-            try:
-                await whatsapp_service.send_text_message(sender_phone, _expired_reply)
-            except Exception:
-                pass
-            return {"status": "ok"}
-        # Valid nonce — rotate immediately so the same button cannot fire twice.
-        if _stored_nonce:
-            await _rotate_nonce(db, conv.id, conv)
+    _nonce_guard_result = await run_button_nonce_guard(
+        db, conv, sender_phone, user_text, wamid, _stored_stage, _btn_nonce_parsed,
+    )
+    if _nonce_guard_result is not None:
+        try:
+            await whatsapp_service.send_text_message(sender_phone, _nonce_guard_result.text)
+        except Exception:
+            pass
+        return {"status": "ok"}
 
     # ── Cancel-in-payment guard ───────────────────────────────────────────────
     # When customer is in the "payment" stage (UPI: order created as
@@ -1107,94 +1047,24 @@ async def receive_message(
     # neither the AFC CANCEL block (needs stored=awaiting_final_confirmation) nor
     # the CANCEL intent block (needs stage=order_collection) fires.  Handle it
     # here as an early return: cancel the pending_payment order and go to greeting.
-    if user_text.lower().strip() == "cancel" and _stored_stage == "payment":
-        from app.models.order import Order as _PayCancelOrderModel
+    _cancel_in_payment_result = await run_cancel_in_payment_guard(
+        db, conv, client, sender_phone, user_text, wamid, _stored_stage, _record_usage,
+    )
+    if _cancel_in_payment_result is not None:
         try:
-            _pc_result = await db.execute(
-                select(_PayCancelOrderModel)
-                .where(
-                    _PayCancelOrderModel.conversation_id == conv.id,
-                    _PayCancelOrderModel.status == "pending_payment",
-                )
-                .order_by(_PayCancelOrderModel.created_at.desc())
-                .limit(1)
-            )
-            _pc_order = _pc_result.scalar_one_or_none()
-            if _pc_order:
-                _pc_order.status = "cancelled"
-                await db.commit()
-                logger.info(
-                    "Order %s → cancelled (conv=%s) [PAYMENT-STAGE CANCEL]",
-                    _pc_order.order_number, conv.id,
-                )
-        except Exception as exc:
-            logger.error("Payment-stage cancel: order cancellation failed for conv=%s: %s", conv.id, exc)
-
-        _pc_cancel_fields = [
-            ("pending_order_quantity", None), ("selected_color", None),
-            ("selected_size", None), ("selected_material", None),
-            ("customer_name", None), ("delivery_address", None),
-            ("payment_method", None), ("summary_shown", False),
-            ("pending_product_sku", None), ("interrupted_sku", None),
-            ("last_shown_sku", None), ("pending_choice_skus", None),
-        ]
-        for _pcf, _pcv in _pc_cancel_fields:
-            try:
-                await conversation_service.update_order_field(db, conv.id, _pcf, _pcv)
-                setattr(conv, _pcf, _pcv)
-            except Exception as exc:
-                logger.error("Payment-stage cancel slot reset (%s): %s", _pcf, exc)
-        try:
-            await conversation_service.update_stage(db, conv.id, "greeting")
-        except Exception as exc:
-            logger.error("Payment-stage cancel stage reset: %s", exc)
-
-        _pc_lang = getattr(conv, "last_customer_language", None) or "english"
-        if _pc_lang in ("hindi_roman", "hindi_devanagari", "hinglish"):
-            _pc_reply = "Order cancel kar diya gaya. ✅ Kya main kuch aur help kar sakta hoon?"
-        elif _pc_lang in ("gujarati_roman", "gujarati_script"):
-            _pc_reply = "Order cancel thai gayu. ✅ Koi biju kaam hoy to kaho!"
-        else:
-            _pc_reply = "Order cancelled. ✅ Anything else I can help you with?"
-        logger.info("conv=%s PAYMENT-STAGE CANCEL — order cancelled, slots reset, stage=greeting", conv.id)
-        try:
-            await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
-            await conversation_service.save_message(db, conv.id, "assistant", _pc_reply)
-        except Exception as exc:
-            logger.error("Payment-stage cancel save error: %s", exc)
-        try:
-            await whatsapp_service.send_text_message(sender_phone, _pc_reply)
+            await whatsapp_service.send_text_message(sender_phone, _cancel_in_payment_result.text)
         except Exception as exc:
             logger.error("Payment-stage cancel send error: %s", exc)
-        try:
-            await _record_usage(db, client)
-        except Exception:
-            pass
         return {"status": "ok"}
 
     # Upsert customer profile — best-effort; never block the message flow.
-    if client:
-        try:
-            customer = await customer_service.upsert_customer(
-                db,
-                client_id=client.id,
-                phone=sender_phone,
-            )
-            await db.commit()
-            # Block listed customers get no AI reply
-            if customer.is_blocked:
-                logger.info("Blocked customer %s — message dropped.", sender_phone)
-                return {"status": "ok"}
-        except Exception as exc:
-            logger.warning("Customer upsert failed: %s", exc)
+    # Block listed customers get no AI reply.
+    if await run_blocklist_guard(db, client, sender_phone):
+        return {"status": "ok"}
 
     # Human takeover: save message silently, skip AI entirely.
-    if conv.ai_enabled is False:
-        await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
-        logger.info(
-            "AI paused for %s — human takeover active, message saved silently.",
-            sender_phone,
-        )
+    _takeover_result = await run_human_takeover_guard(db, conv, sender_phone, user_text, wamid)
+    if _takeover_result is not None:
         return {"status": "ok"}
 
     # ── Duplicate "Confirm Order" tap guard ───────────────────────────────────
@@ -1202,28 +1072,12 @@ async def receive_message(
     # When the conversation is already in "completed" stage and the customer taps
     # "Confirm Order" (or any affirmative button that looks like a confirmation),
     # short-circuit with a friendly plain-text reply — no AI call, no escalation.
-    _CONFIRM_TAP_KW = frozenset({"confirm order", "✅ confirm order", "confirm", "pakka"})
-    if (
-        message.type == "interactive"
-        and (conv.current_stage or "greeting") == "completed"
-        and user_text.lower().strip() in _CONFIRM_TAP_KW
-    ):
-        _already_confirmed_reply = (
-            "Your order is already confirmed ✅ We'll update you once it's dispatched. "
-            "Thank you! 🙏"
-        )
-        logger.info(
-            "Duplicate 'Confirm Order' tap from %s on already-completed conv=%s — "
-            "sending friendly reminder, no AI call.",
-            sender_phone, conv.id,
-        )
+    _dup_confirm_result = await run_duplicate_confirm_tap_guard(
+        db, conv, message.type, sender_phone, user_text, wamid,
+    )
+    if _dup_confirm_result is not None:
         try:
-            await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
-            await conversation_service.save_message(db, conv.id, "assistant", _already_confirmed_reply)
-        except Exception as exc:
-            logger.error("DB save error for duplicate confirm tap: %s", exc)
-        try:
-            await whatsapp_service.send_text_message(sender_phone, _already_confirmed_reply)
+            await whatsapp_service.send_text_message(sender_phone, _dup_confirm_result.text)
         except Exception as exc:
             logger.error("Send error for duplicate confirm reply: %s", exc)
         return {"status": "ok"}
@@ -1232,44 +1086,12 @@ async def receive_message(
     # (e.g. customer taps "PAID" again, or sends "done"/"transferred") must
     # never trigger a fresh AI "Order confirmed!" reply or a second Order row.
     # Return a deterministic already-confirmed message and stop processing.
-    _PAYMENT_RECONFIRM_KW = frozenset({
-        "paid", "done", "sent", "transferred", "ho gaya", "kar diya",
-        "completed", "payment done", "bhej diya", "kiya", "payment ho gaya",
-        "payment kar diya", "gpay", "phonepay", "paytm", "phonepe",
-    })
-    if (
-        message.type == "text"
-        and (conv.current_stage or "greeting") == "completed"
-        and user_text.lower().strip() in _PAYMENT_RECONFIRM_KW
-    ):
-        _prev_lang = getattr(conv, "last_customer_language", "english") or "english"
-        if _prev_lang in ("hindi_roman", "hinglish", "hindi_devanagari"):
-            _payment_dup_reply = (
-                "Aapka order confirm ho chuka hai ✅ Delivery 3-5 business days mein hogi. "
-                "Koi aur help chahiye? 🙏"
-            )
-        elif _prev_lang in ("gujarati_roman", "gujarati_script"):
-            _payment_dup_reply = (
-                "Tamaro order confirm thai gayo chhe ✅ Delivery 3-5 business days maa thase. "
-                "Koi madad joiye? 🙏"
-            )
-        else:
-            _payment_dup_reply = (
-                "Your order is already confirmed ✅ Delivery in 3-5 business days. "
-                "Anything else I can help with? 🙏"
-            )
-        logger.info(
-            "Duplicate payment word '%s' from %s on already-completed conv=%s — "
-            "returning deterministic reply, no AI call.",
-            user_text, sender_phone, conv.id,
-        )
+    _dup_payment_result = await run_duplicate_payment_word_guard(
+        db, conv, message.type, sender_phone, user_text, wamid,
+    )
+    if _dup_payment_result is not None:
         try:
-            await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
-            await conversation_service.save_message(db, conv.id, "assistant", _payment_dup_reply)
-        except Exception as exc:
-            logger.error("DB save error for duplicate payment reply: %s", exc)
-        try:
-            await whatsapp_service.send_text_message(sender_phone, _payment_dup_reply)
+            await whatsapp_service.send_text_message(sender_phone, _dup_payment_result.text)
         except Exception as exc:
             logger.error("Send error for duplicate payment reply: %s", exc)
         return {"status": "ok"}
