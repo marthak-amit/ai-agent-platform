@@ -98,8 +98,38 @@ def replay_db_url():
     admin_engine2.dispose()
 
 
+@pytest_asyncio.fixture(scope="function", autouse=True)
+async def _clean_replay_db(replay_db_url):
+    """
+    Truncate every table before each test runs.
+
+    Tests in this package share one Postgres database per module (schema
+    created once via alembic migrations in `replay_db_url`), but individual
+    tests seed their own rows via `session.commit()` / real HTTP requests and
+    never clean up after themselves. Without this, leftover clients/products/
+    conversations from earlier tests in the same file leak into later tests'
+    catalogue or conversation-lookup queries — passing in isolation but
+    failing (e.g. UniqueViolationError on a reused phone/email, or bogus
+    extra rows in "list all" assertions) only when the file/suite runs as a
+    batch. Truncating up front makes every test start from a verified clean
+    slate regardless of run order.
+    """
+    engine = create_async_engine(replay_db_url, echo=False)
+    async with engine.connect() as conn:
+        table_names = await conn.run_sync(
+            lambda sync_conn: sa.inspect(sync_conn).get_table_names()
+        )
+        tables = [t for t in table_names if t != "alembic_version"]
+        if tables:
+            quoted = ", ".join(f'"{t}"' for t in tables)
+            await conn.execute(sa.text(f"TRUNCATE TABLE {quoted} RESTART IDENTITY CASCADE"))
+            await conn.commit()
+    await engine.dispose()
+    yield
+
+
 @pytest_asyncio.fixture(scope="function")
-async def replay_session(replay_db_url):
+async def replay_session(replay_db_url, _clean_replay_db):
     """Yield an AsyncSession connected to the replay DB (auto-rollback per test)."""
     engine = create_async_engine(replay_db_url, echo=False)
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -248,7 +278,7 @@ async def seed_variant_and_simple(
 # ---------------------------------------------------------------------------
 
 @pytest_asyncio.fixture(scope="function")
-async def replay_http(replay_db_url, monkeypatch):
+async def replay_http(replay_db_url, _clean_replay_db, monkeypatch):
     """
     Return an AsyncClient wired to the real app using the replay DB.
 

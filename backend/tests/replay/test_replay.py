@@ -543,8 +543,8 @@ async def test_scenario9_address_yes_single_confirm_ui(replay_http, replay_sessi
     (action=show_summary, not reask_confirm), and no order row yet (order is
     still pending_confirmation, not completed).
     """
-    phone = _phone("0022")
-    pnid = _pnid("0022")
+    phone = _phone("0009")
+    pnid = _pnid("0009")
     client, product = await _seed(
         replay_session, phone=phone, phone_number_id=pnid,
         product_sku="S9SKU", product_name="Cotton Saree",
