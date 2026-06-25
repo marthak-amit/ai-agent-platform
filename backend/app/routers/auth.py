@@ -107,8 +107,8 @@ class ClientOut(BaseModel):
     phone: Optional[str]
     gemini_system_prompt: str
     whatsapp_phone_number_id: Optional[str] = None
-    whatsapp_access_token: Optional[str] = None
-    instagram_access_token: Optional[str] = None
+    whatsapp_connected: bool = False
+    instagram_connected: bool = False
     instagram_account_id: Optional[str] = None
     gst_number: Optional[str] = None
     business_address: Optional[str] = None
@@ -154,6 +154,8 @@ class ClientOut(BaseModel):
         # Never expose Razorpay secret key
         if obj.razorpay_key_secret:
             obj.razorpay_key_secret = "****"
+        obj.whatsapp_connected = bool(client.whatsapp_access_token)
+        obj.instagram_connected = bool(client.instagram_access_token)
         return obj
 
 
@@ -165,8 +167,6 @@ class UpdateMeRequest(BaseModel):
     gemini_system_prompt: Optional[str] = None
     whatsapp_phone_number_id: Optional[str] = None
     whatsapp_access_token: Optional[str] = None
-    instagram_access_token: Optional[str] = None
-    instagram_account_id: Optional[str] = None
     gst_number: Optional[str] = None
     business_address: Optional[str] = None
     hsn_code: Optional[str] = None
@@ -336,10 +336,6 @@ async def update_me(
         current_client.whatsapp_phone_number_id = body.whatsapp_phone_number_id
     if body.whatsapp_access_token is not None:
         current_client.whatsapp_access_token = body.whatsapp_access_token
-    if body.instagram_access_token is not None:
-        current_client.instagram_access_token = body.instagram_access_token
-    if body.instagram_account_id is not None:
-        current_client.instagram_account_id = body.instagram_account_id
     if body.gst_number is not None:
         current_client.gst_number = body.gst_number
     if body.business_address is not None:

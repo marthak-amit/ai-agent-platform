@@ -152,7 +152,7 @@ async def widget_message(
     session_id = body.session_id or str(uuid.uuid4())
 
     conv = await conversation_service.get_or_create_conversation(
-        db, session_id, channel="website"
+        db, session_id, channel="website", client_id=client.id
     )
     history = await conversation_service.get_history(db, conv.id)
     history_dicts = [{"role": m.role, "content": m.content} for m in history]
@@ -190,7 +190,10 @@ async def widget_message(
         {"role": "model", "content": ai_reply},
     ]
     try:
-        await lead_service.tag_lead(db, session_id, conv.id, all_messages)
+        await lead_service.tag_lead(
+            db, session_id, conv.id, all_messages,
+            client_id=client.id, channel="website",
+        )
     except Exception as exc:
         logger.error("Lead tagging error on widget: %s", exc)
 

@@ -50,6 +50,11 @@ class FakeConv:
         pending_order_quantity=None,
         customer_name=None,
         delivery_address=None,
+        # Defaults to pre-filled, mirroring WhatsApp's auto-fill-from-sender
+        # behavior (see order_pipeline.run_slot_state_machine) — these fixtures
+        # model the WA channel unless a test explicitly passes mobile_number=None
+        # to exercise the Instagram-style "still needs to be asked" case.
+        mobile_number="9999999999",
         payment_method=None,
         current_stage="order_collection",
         interrupted_sku=None,
@@ -61,6 +66,7 @@ class FakeConv:
         self.pending_order_quantity = pending_order_quantity
         self.customer_name = customer_name
         self.delivery_address = delivery_address
+        self.mobile_number = mobile_number
         self.payment_method = payment_method
         self.current_stage = current_stage
         self.interrupted_sku = interrupted_sku
@@ -237,12 +243,12 @@ class TestHappyPathNonVariant:
         assert result == ("pending_order_quantity", 5)
 
     def test_a14_nonvariant_slot_sequence(self):
-        """A14: Slot order for non-variant: quantity → customer_name → delivery_address → payment_method."""
-        assert get_order_slots(VI_NO_VARIANT) == ["quantity", "customer_name", "delivery_address", "payment_method"]
+        """A14: Slot order for non-variant: quantity → customer_name → delivery_address → mobile_number → payment_method."""
+        assert get_order_slots(VI_NO_VARIANT) == ["quantity", "customer_name", "delivery_address", "mobile_number", "payment_method"]
 
     def test_a15_variant_slot_sequence_color_size(self):
         """A15: Slot order for color+size variant product."""
-        assert get_order_slots(VI_COLOR_SIZE) == ["color", "size", "quantity", "customer_name", "delivery_address", "payment_method"]
+        assert get_order_slots(VI_COLOR_SIZE) == ["color", "size", "quantity", "customer_name", "delivery_address", "mobile_number", "payment_method"]
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -588,8 +594,8 @@ class TestPostCompletionRecovery:
         assert stage == "greeting"
 
     def test_f7_color_only_variant_slot_order(self):
-        """F7: Color-only variant → slot order: color → quantity → name → addr → payment."""
-        assert get_order_slots(VI_COLOR_ONLY) == ["color", "quantity", "customer_name", "delivery_address", "payment_method"]
+        """F7: Color-only variant → slot order: color → quantity → name → addr → mobile → payment."""
+        assert get_order_slots(VI_COLOR_ONLY) == ["color", "quantity", "customer_name", "delivery_address", "mobile_number", "payment_method"]
 
     def test_f8_material_variant_slot_order(self):
         """F8: Color+material variant → slot order includes color then material."""
@@ -787,3 +793,73 @@ class TestStageDetection:
         conv = FakeConv(selected_color="Gold")
         result = extract_order_field(conv, "Silk chahiye", VI_MATERIAL)
         assert result == ("selected_material", "Silk")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# CATEGORY H — mobile_number (Phase 3a+: channel-conditional delivery slot)
+#
+# mobile_number is delivery data, not identity. On WhatsApp the sender IS a
+# phone number, so order_pipeline.run_slot_state_machine auto-fills it before
+# slot-filling starts — these conversation_flow-level tests model that by
+# defaulting FakeConv.mobile_number to a pre-filled value (see FakeConv above).
+#
+# Instagram has no order pipeline wired up yet (app/routers/instagram.py only
+# does Gemini chit-chat + vision, no slots) — so the IG side of this slot is
+# characterized here, directly against get_next_required_slot/extract_order_field
+# with mobile_number=None, rather than through an end-to-end HTTP replay (which
+# would require an Instagram order pipeline that does not exist).
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestMobileNumberSlot:
+    """H1–H6: channel-conditional mobile_number slot behavior."""
+
+    def test_h1_wa_style_prefilled_conv_skips_to_payment(self):
+        """H1: WA-style conv (mobile_number pre-filled) → next_slot is payment_method, not mobile_number."""
+        conv = FakeConv(
+            customer_name="Amit", delivery_address="12 MG Road, Surat, 395002",
+            pending_order_quantity=1,
+        )
+        assert conv.mobile_number == "9999999999"
+        assert get_next_required_slot(conv, VI_NO_VARIANT) == "payment_method"
+
+    def test_h2_ig_style_empty_mobile_is_next_slot(self):
+        """H2: IG-style conv (mobile_number=None) → next_slot is mobile_number, not payment_method."""
+        conv = FakeConv(
+            customer_name="Amit", delivery_address="12 MG Road, Surat, 395002",
+            pending_order_quantity=1, mobile_number=None,
+        )
+        assert get_next_required_slot(conv, VI_NO_VARIANT) == "mobile_number"
+
+    def test_h3_ig_garbage_mobile_rejected(self):
+        """H3: Garbage input for the mobile_number slot is rejected (None, re-ask)."""
+        conv = FakeConv(
+            customer_name="Amit", delivery_address="12 MG Road, Surat, 395002",
+            pending_order_quantity=1, mobile_number=None,
+        )
+        assert extract_order_field(conv, "lol no", VI_NO_VARIANT) is None
+        assert extract_order_field(conv, "12345", VI_NO_VARIANT) is None
+        assert extract_order_field(conv, "abcdefghij", VI_NO_VARIANT) is None
+
+    def test_h4_ig_valid_mobile_accepted_and_normalized(self):
+        """H4: A valid 10-digit Indian mobile number is accepted; +91/0 prefixes are normalized away."""
+        conv = FakeConv(
+            customer_name="Amit", delivery_address="12 MG Road, Surat, 395002",
+            pending_order_quantity=1, mobile_number=None,
+        )
+        assert extract_order_field(conv, "9876543210", VI_NO_VARIANT) == ("mobile_number", "9876543210")
+        assert extract_order_field(conv, "+91 98765 43210", VI_NO_VARIANT) == ("mobile_number", "9876543210")
+        assert extract_order_field(conv, "0-9876543210", VI_NO_VARIANT) == ("mobile_number", "9876543210")
+
+    def test_h5_mobile_number_in_slot_order_between_address_and_payment(self):
+        """H5: mobile_number sits after delivery_address and before payment_method in slot order."""
+        slots = get_order_slots(VI_NO_VARIANT)
+        assert slots.index("delivery_address") < slots.index("mobile_number") < slots.index("payment_method")
+
+    def test_h6_landline_or_invalid_first_digit_rejected(self):
+        """H6: numbers not starting with 6-9, or wrong length, are rejected as garbage."""
+        conv = FakeConv(
+            customer_name="Amit", delivery_address="12 MG Road, Surat, 395002",
+            pending_order_quantity=1, mobile_number=None,
+        )
+        assert extract_order_field(conv, "0123456789", VI_NO_VARIANT) is None  # starts with 0, 10 digits
+        assert extract_order_field(conv, "98765432101", VI_NO_VARIANT) is None  # 11 digits

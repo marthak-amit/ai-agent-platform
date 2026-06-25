@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Boolean, DateTime, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -23,10 +23,23 @@ class Conversation(Base):
     """
 
     __tablename__ = "conversations"
+    __table_args__ = (
+        UniqueConstraint(
+            "client_id", "channel", "phone_number",
+            name="uq_conversations_client_channel_phone",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     phone_number: Mapped[str] = mapped_column(String, index=True)
     channel: Mapped[str] = mapped_column(String, default="whatsapp")
+
+    # Tenant owner — NOT NULL + part of the composite unique key above
+    # (client_id, channel, phone_number) since the contract stage of the
+    # identity migration (migration 0047).
+    client_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("clients.id"), nullable=False, index=True
+    )
 
     # Human-takeover fields (migration 0010)
     ai_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
@@ -48,6 +61,11 @@ class Conversation(Base):
     customer_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     delivery_address: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     pending_order_quantity: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # Delivery contact number — NOT identity (identity key is phone_number above).
+    # WhatsApp: auto-filled from the sender's WA number. Instagram: collected as
+    # an order slot since the IGSID is not a phone number (migration 0048).
+    mobile_number: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     # Payment method chosen by customer during order collection (migration 0024)
     payment_method: Mapped[Optional[str]] = mapped_column(String, nullable=True)

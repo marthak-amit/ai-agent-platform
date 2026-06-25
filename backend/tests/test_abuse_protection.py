@@ -38,7 +38,7 @@ def _vi(sizes=None, colors=None, materials=None):
 
 
 def test_slot_escape_hatch_at_attempt_3():
-    from app.routers.webhook import _build_slot_question, _SLOT_ATTEMPT_ESCAPE_HATCH
+    from app.services.order_pipeline import _build_slot_question, _SLOT_ATTEMPT_ESCAPE_HATCH
 
     assert _SLOT_ATTEMPT_ESCAPE_HATCH == 3  # confirm the threshold we tested
 
@@ -54,7 +54,7 @@ def test_slot_escape_hatch_at_attempt_3():
 
 
 def test_slot_no_escape_hatch_below_threshold():
-    from app.routers.webhook import _build_slot_question
+    from app.services.order_pipeline import _build_slot_question
 
     vi = _vi(colors=["Red", "Blue"])
     reply = _build_slot_question("color", _FakeConv(), vi, "english", attempt_count=1)
@@ -62,7 +62,7 @@ def test_slot_no_escape_hatch_below_threshold():
 
 
 def test_escape_hatch_also_on_material():
-    from app.routers.webhook import _build_slot_question
+    from app.services.order_pipeline import _build_slot_question
 
     vi = _vi(materials=["Cotton", "Silk"])
     reply = _build_slot_question("material", _FakeConv(), vi, "english", attempt_count=4)
@@ -75,7 +75,7 @@ def test_escape_hatch_also_on_material():
 
 def test_full_size_list_displayed_and_accepted():
     """All sizes in variant_info appear in the slot question text."""
-    from app.routers.webhook import _build_slot_question
+    from app.services.order_pipeline import _build_slot_question
 
     all_sizes = ["S", "M", "L", "XL", "XXL", "3XL", "38", "40"]
     vi = _vi(sizes=all_sizes)
@@ -85,7 +85,7 @@ def test_full_size_list_displayed_and_accepted():
 
 
 def test_full_color_list_displayed():
-    from app.routers.webhook import _build_slot_question
+    from app.services.order_pipeline import _build_slot_question
 
     all_colors = ["Red", "Blue", "Green", "Pink", "Maroon", "Black"]
     vi = _vi(colors=all_colors)
@@ -99,7 +99,7 @@ def test_full_color_list_displayed():
 # ---------------------------------------------------------------------------
 
 def test_name_match_switch_threshold_higher_than_first_pin():
-    from app.routers.webhook import _NAME_MATCH_SWITCH_MIN_SCORE, _NAME_MATCH_AUTO_PIN_MIN_SCORE
+    from app.services.order_pipeline import _NAME_MATCH_SWITCH_MIN_SCORE, _NAME_MATCH_AUTO_PIN_MIN_SCORE
 
     # Switch threshold must be stricter than first-pin threshold
     assert _NAME_MATCH_SWITCH_MIN_SCORE > _NAME_MATCH_AUTO_PIN_MIN_SCORE
@@ -110,7 +110,7 @@ def test_name_match_switch_threshold_higher_than_first_pin():
 # ---------------------------------------------------------------------------
 
 def test_llm_budget_constants():
-    from app.routers.webhook import _DEFAULT_LLM_SOFT_CAP, _DEFAULT_LLM_HARD_CAP, _SLOT_ATTEMPT_ESCALATE
+    from app.services.order_pipeline import _DEFAULT_LLM_SOFT_CAP, _DEFAULT_LLM_HARD_CAP, _SLOT_ATTEMPT_ESCALATE
 
     assert _DEFAULT_LLM_SOFT_CAP > 0
     assert _DEFAULT_LLM_HARD_CAP > _DEFAULT_LLM_SOFT_CAP
@@ -147,7 +147,7 @@ def test_reset_conv_includes_new_fields():
 # ---------------------------------------------------------------------------
 
 def test_off_topic_threshold_constant():
-    from app.routers.webhook import _DEFAULT_OFF_TOPIC_THRESHOLD
+    from app.services.order_pipeline import _DEFAULT_OFF_TOPIC_THRESHOLD
 
     assert _DEFAULT_OFF_TOPIC_THRESHOLD >= 3  # must give at least 3 chances
     assert _DEFAULT_OFF_TOPIC_THRESHOLD <= 10  # must not be absurdly permissive
@@ -217,7 +217,7 @@ def test_is_valid_address_accepts_address_with_comma_no_digit():
 
 
 def test_detect_change_address_intent_with_address():
-    from app.routers.webhook import _detect_change_address_intent
+    from app.services.order_pipeline import _detect_change_address_intent
 
     detected, addr = _detect_change_address_intent("change it to s-11 new road, goa")
     assert detected is True
@@ -226,7 +226,7 @@ def test_detect_change_address_intent_with_address():
 
 
 def test_detect_change_address_intent_pure():
-    from app.routers.webhook import _detect_change_address_intent
+    from app.services.order_pipeline import _detect_change_address_intent
 
     detected, addr = _detect_change_address_intent("I just want to change the address")
     assert detected is True
@@ -235,14 +235,14 @@ def test_detect_change_address_intent_pure():
 
 
 def test_detect_change_address_intent_negative():
-    from app.routers.webhook import _detect_change_address_intent
+    from app.services.order_pipeline import _detect_change_address_intent
 
     detected, _ = _detect_change_address_intent("Blue colour please")
     assert detected is False
 
 
 def test_is_order_aside_question():
-    from app.routers.webhook import _is_order_aside_question
+    from app.services.order_pipeline import _is_order_aside_question
 
     questions = [
         "how much delivery charges?",
@@ -256,7 +256,7 @@ def test_is_order_aside_question():
 
 
 def test_is_not_order_aside_question():
-    from app.routers.webhook import _is_order_aside_question
+    from app.services.order_pipeline import _is_order_aside_question
 
     non_questions = [
         "Blue",
@@ -271,7 +271,7 @@ def test_is_not_order_aside_question():
 
 
 def test_is_simple_ack():
-    from app.routers.webhook import _is_simple_ack
+    from app.services.order_pipeline import _is_simple_ack
 
     acks = ["ok", "got it", "i got it", "achha got it", "noted", "fine"]
     for a in acks:

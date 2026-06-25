@@ -33,7 +33,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.replay.conftest import _PG_AVAILABLE, WA_PHONE_NUMBER_ID
-from tests.replay.helpers import send_button, send_message
+from tests.replay.helpers import capture_all, send_button, send_message
 
 pytestmark = pytest.mark.skipif(
     not _PG_AVAILABLE, reason="local Postgres not reachable"
@@ -191,6 +191,7 @@ async def _seed_confirmation_client(session: AsyncSession, *, phone: str, pnid: 
     conv = Conversation(
         phone_number=phone,
         channel="whatsapp",
+        client_id=client.id,
         current_stage="awaiting_final_confirmation",
         pending_product_sku="KU99001",
         pending_order_quantity=2,
@@ -235,16 +236,7 @@ async def test_no_phantom_products(replay_http, replay_session, monkeypatch):
         )),
     )
 
-    captured: list[str] = []
-    orig_send = mock.AsyncMock(return_value=None)
-
-    async def _capture(to_phone_number, message_text):
-        captured.append(message_text)
-
-    monkeypatch.setattr(
-        "app.services.whatsapp_service.send_text_message",
-        _capture,
-    )
+    captured = capture_all(monkeypatch)
 
     resp = await send_message(replay_http, phone, "Georgette Party Wear", phone_number_id=pnid)
     assert resp.status_code == 200, resp.text
@@ -286,15 +278,7 @@ async def test_list_all_real(replay_http, replay_session, monkeypatch):
         })),
     )
 
-    captured: list[str] = []
-
-    async def _capture(to_phone_number, message_text):
-        captured.append(message_text)
-
-    monkeypatch.setattr(
-        "app.services.whatsapp_service.send_text_message",
-        _capture,
-    )
+    captured = capture_all(monkeypatch)
 
     resp = await send_message(replay_http, phone, "saree dikhao", phone_number_id=pnid)
     assert resp.status_code == 200, resp.text

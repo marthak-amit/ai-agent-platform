@@ -138,7 +138,8 @@ async def import_recipients_from_conversations(
 
     conv_result = await db.execute(
         select(Conversation.phone_number).where(
-            Conversation.channel == "whatsapp"
+            Conversation.channel == "whatsapp",
+            Conversation.client_id == campaign.client_id,
         ).distinct()
     )
     phones = [r[0] for r in conv_result.all() if r[0] not in existing_phones]

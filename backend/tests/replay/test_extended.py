@@ -65,6 +65,7 @@ async def _prime(session, *, phone, product, stage, **slots):
     conv = Conversation(
         phone_number=phone,
         channel="whatsapp",
+        client_id=product.client_id,
         current_stage=stage,
         pending_product_sku=product.sku,
         summary_shown=slots.pop("summary_shown", stage == "awaiting_final_confirmation"),

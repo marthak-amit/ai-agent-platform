@@ -324,7 +324,9 @@ async def test_multi_option_list_pick_by_typed_number(replay_http, replay_sessio
     await replay_session.refresh(prod_b)
 
     from app.models.conversation import Conversation
-    conv = Conversation(phone_number=phone, channel="whatsapp", current_stage="greeting")
+    conv = Conversation(
+        phone_number=phone, channel="whatsapp", client_id=client.id, current_stage="greeting"
+    )
     replay_session.add(conv)
     await replay_session.commit()
     await replay_session.refresh(conv)
@@ -411,7 +413,9 @@ async def test_multi_option_list_pick_by_button_sku(replay_http, replay_session)
     await replay_session.refresh(prod_b)
 
     from app.models.conversation import Conversation
-    conv = Conversation(phone_number=phone, channel="whatsapp", current_stage="greeting")
+    conv = Conversation(
+        phone_number=phone, channel="whatsapp", client_id=client.id, current_stage="greeting"
+    )
     replay_session.add(conv)
     await replay_session.commit()
     await replay_session.refresh(conv)
@@ -601,14 +605,16 @@ async def test_catalog_match_template_route_is_free(replay_http, replay_session,
     import logging
     phone = _phone("0500")
     pnid = _pnid("0500")
-    await _seed(
+    client, _product = await _seed(
         replay_session, phone=phone, phone_number_id=pnid,
         product_sku="CM0001", product_name="Kanjivaram Silk Saree",
         price=3500.0, stock=8, payment_method="COD",
     )
 
     from app.models.conversation import Conversation
-    conv = Conversation(phone_number=phone, channel="whatsapp", current_stage="greeting")
+    conv = Conversation(
+        phone_number=phone, channel="whatsapp", client_id=client.id, current_stage="greeting"
+    )
     replay_session.add(conv)
     await replay_session.commit()
 
@@ -655,4 +661,171 @@ async def test_catalog_match_template_route_is_free(replay_http, replay_session,
     assert llm_priced_entries == [], (
         f"catalog_match_template turn must not produce a priced LLM cost_log entry; "
         f"found: {llm_priced_entries!r}"
+    )
+
+
+# ===========================================================================
+# 7. Address-confirmation gate (deterministic yes/change/unclear classifier)
+# ===========================================================================
+
+async def _seed_returning_customer_at_address_confirm(
+    replay_session, *, phone_suffix: str, name: str, address: str,
+):
+    """
+    Seed a returning Customer + a Conversation already sitting at the
+    saved-address confirm prompt (stage=order_collection, name+quantity
+    filled, delivery_address still empty, last assistant turn offered the
+    saved address). Mirrors the exact transcript that triggered the bug:
+    "{name}, deliver to: {address}? (yes/change)".
+    """
+    phone = _phone(phone_suffix)
+    pnid = _pnid(phone_suffix)
+    client, product = await seed_client_and_product(
+        replay_session, phone=phone, wa_phone_number_id=pnid,
+        product_sku=f"AC{phone_suffix}", product_name="Address Confirm Kurta",
+        price=799.0, stock=10, payment_method="COD",
+    )
+
+    from app.models.customer import Customer
+    customer = Customer(
+        client_id=client.id, phone=phone, name=name, address=address,
+        total_orders=2, total_spent=1500.0,
+    )
+    replay_session.add(customer)
+
+    from app.models.conversation import Conversation
+    conv = Conversation(
+        phone_number=phone, channel="whatsapp", client_id=client.id,
+        current_stage="order_collection",
+        customer_name=name,
+        pending_order_quantity=1,
+        pending_product_sku=product.sku,
+        delivery_address=None,
+    )
+    replay_session.add(conv)
+    await replay_session.commit()
+
+    from app.models.message import Message
+    msg = Message(
+        conversation_id=conv.id, role="model",
+        content=f"{name}, deliver to: {address}? (yes/change)",
+    )
+    replay_session.add(msg)
+    await replay_session.commit()
+
+    return phone, pnid, conv.id
+
+
+def _joined_replies():
+    from app.services import whatsapp_service
+    replied_texts = []
+    for call in whatsapp_service.send_text_message.call_args_list:
+        args, kwargs = call
+        replied_texts.append(kwargs.get("message_text") or (args[1] if len(args) > 1 else ""))
+    return "\n".join(replied_texts)
+
+
+async def test_address_confirm_garbage_reply_reprompts_without_validating(replay_http, replay_session):
+    """
+    "Hi" in reply to the saved-address confirm prompt must re-prompt with the
+    yes/change instruction — it must NOT be run through address validation
+    ("doesn't look like a complete address") and must NOT change the saved
+    address or the conversation stage.
+    """
+    phone, pnid, conv_id = await _seed_returning_customer_at_address_confirm(
+        replay_session, phone_suffix="0600", name="Amit", address="702 Somerest, Ahmedabad",
+    )
+
+    from app.services import whatsapp_service
+    whatsapp_service.send_text_message.reset_mock()
+    resp = await _msg(replay_http, phone, "Hi", pnid=pnid, wamid=f"wamid.ac.hi.{int(time.time())}")
+    assert resp.status_code == 200, resp.text
+
+    joined_reply = _joined_replies()
+    print(f"[AC-1] reply to 'Hi': {joined_reply!r}")
+    assert "doesn't look like a complete address" not in joined_reply.lower()
+    assert "yes" in joined_reply.lower() and "change" in joined_reply.lower()
+
+    conv = await _get_conv(replay_session, phone)
+    assert conv.delivery_address is None, (
+        f"Garbage reply must not change delivery_address; got {conv.delivery_address!r}"
+    )
+    assert conv.current_stage == "order_collection"
+
+    # Saved address still accepted on a follow-up "yes".
+    whatsapp_service.send_text_message.reset_mock()
+    resp = await _msg(replay_http, phone, "yes", pnid=pnid, wamid=f"wamid.ac.yes.{int(time.time())}")
+    assert resp.status_code == 200, resp.text
+    conv2 = await _get_conv(replay_session, phone)
+    assert conv2.delivery_address == "702 Somerest, Ahmedabad", (
+        f"'yes' after the confirm prompt must accept the saved address; got {conv2.delivery_address!r}"
+    )
+    joined_reply2 = _joined_replies()
+    print(f"[AC-1] reply to 'yes': {joined_reply2!r}")
+    assert "doesn't look like a complete address" not in joined_reply2.lower()
+
+
+async def test_address_confirm_negated_change_keeps_saved_address(replay_http, replay_session):
+    """
+    "I do not want to change the address." must be classified as a
+    confirmation (negation of "change" inverts intent back to keep-saved),
+    NOT as an explicit change request.
+    """
+    phone, pnid, conv_id = await _seed_returning_customer_at_address_confirm(
+        replay_session, phone_suffix="0601", name="Priya", address="14 MG Road, Pune",
+    )
+
+    from app.services import whatsapp_service
+    whatsapp_service.send_text_message.reset_mock()
+    resp = await _msg(
+        replay_http, phone, "I do not want to change the address.",
+        pnid=pnid, wamid=f"wamid.ac.neg.{int(time.time())}",
+    )
+    assert resp.status_code == 200, resp.text
+
+    conv = await _get_conv(replay_session, phone)
+    joined_reply = _joined_replies()
+    print(f"[AC-2] reply: {joined_reply!r}; delivery_address={conv.delivery_address!r}")
+
+    assert conv.delivery_address == "14 MG Road, Pune", (
+        f"Negated change ('I do not want to change the address') must keep the "
+        f"saved address; got {conv.delivery_address!r}"
+    )
+    assert "what's the new delivery address" not in joined_reply.lower(), (
+        "Negated change must not start the change-address flow"
+    )
+
+
+async def test_address_confirm_explicit_change_starts_new_address_flow(replay_http, replay_session):
+    """
+    "change" must start the change-address flow (ask for a new address),
+    and the very next message — a real address — must be validated and
+    filled, leaving the customer's old saved address untouched on file.
+    """
+    phone, pnid, conv_id = await _seed_returning_customer_at_address_confirm(
+        replay_session, phone_suffix="0602", name="Rohit", address="5 Park Street, Kolkata",
+    )
+
+    from app.services import whatsapp_service
+    whatsapp_service.send_text_message.reset_mock()
+    resp = await _msg(replay_http, phone, "change", pnid=pnid, wamid=f"wamid.ac.chg.{int(time.time())}")
+    assert resp.status_code == 200, resp.text
+
+    conv = await _get_conv(replay_session, phone)
+    joined_reply = _joined_replies()
+    print(f"[AC-3] reply to 'change': {joined_reply!r}")
+    assert conv.delivery_address is None, (
+        f"'change' must clear delivery_address so the next turn asks fresh; got {conv.delivery_address!r}"
+    )
+    assert "new delivery address" in joined_reply.lower()
+
+    whatsapp_service.send_text_message.reset_mock()
+    resp = await _msg(
+        replay_http, phone, "702 Somerest, Ahmedabad, 350010",
+        pnid=pnid, wamid=f"wamid.ac.newaddr.{int(time.time())}",
+    )
+    assert resp.status_code == 200, resp.text
+    conv2 = await _get_conv(replay_session, phone)
+    assert conv2.delivery_address and "somerest" in conv2.delivery_address.lower(), (
+        f"A real address sent right after 'change' must be validated and filled; got {conv2.delivery_address!r}"
     )

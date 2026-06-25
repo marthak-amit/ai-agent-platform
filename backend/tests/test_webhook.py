@@ -120,15 +120,15 @@ def test_verify_signature_missing_prefix(mock_settings):
 
 
 @patch("app.routers.webhook.conversation_service.get_or_create_conversation", new_callable=AsyncMock)
-@patch("app.routers.webhook.conversation_service.get_history", new_callable=AsyncMock)
-@patch("app.routers.webhook.conversation_service.save_message", new_callable=AsyncMock)
-@patch("app.routers.webhook.conversation_service.update_stage", new_callable=AsyncMock)
-@patch("app.routers.webhook.lead_service.tag_lead", new_callable=AsyncMock)
-@patch("app.routers.webhook.gemini_service.generate_reply", new_callable=AsyncMock)
-@patch("app.routers.webhook.whatsapp_service.send_text_message", new_callable=AsyncMock)
-@patch("app.routers.webhook._get_system_prompt", return_value=None)
-@patch("app.routers.webhook._get_catalogue_context", new_callable=AsyncMock)
-@patch("app.routers.webhook._record_usage", new_callable=AsyncMock)
+@patch("app.services.order_pipeline.conversation_service.get_history", new_callable=AsyncMock)
+@patch("app.services.order_pipeline.conversation_service.save_message", new_callable=AsyncMock)
+@patch("app.services.order_pipeline.conversation_service.update_stage", new_callable=AsyncMock)
+@patch("app.services.order_pipeline.lead_service.tag_lead", new_callable=AsyncMock)
+@patch("app.services.order_pipeline.gemini_service.generate_reply", new_callable=AsyncMock)
+@patch("app.services.whatsapp_service.send_text_message", new_callable=AsyncMock)
+@patch("app.services.order_pipeline._get_system_prompt", return_value=None)
+@patch("app.services.order_pipeline._get_catalogue_context", new_callable=AsyncMock)
+@patch("app.services.order_pipeline._record_usage", new_callable=AsyncMock)
 @patch("app.routers.webhook._get_client_by_phone_number_id", new_callable=AsyncMock)
 def test_receive_message_success(
     mock_get_client, mock_usage, mock_catalogue, mock_prompt, mock_send, mock_gemini, mock_lead, mock_update_stage, mock_save, mock_history, mock_conv, mock_db, client
@@ -214,7 +214,7 @@ def test_receive_status_update(client):
     body = json.dumps(status_payload).encode()
     sig = _make_signature(body)
 
-    with patch("app.routers.webhook.gemini_service.generate_reply") as mock_gemini:
+    with patch("app.services.order_pipeline.gemini_service.generate_reply") as mock_gemini:
         response = client.post(
             "/webhook",
             content=body,
@@ -234,7 +234,7 @@ def test_receive_non_text_message(client):
     body = json.dumps(video_payload).encode()
     sig = _make_signature(body)
 
-    with patch("app.routers.webhook.gemini_service.generate_reply") as mock_gemini:
+    with patch("app.services.order_pipeline.gemini_service.generate_reply") as mock_gemini:
         response = client.post(
             "/webhook",
             content=body,

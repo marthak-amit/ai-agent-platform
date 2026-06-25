@@ -21,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.replay.conftest import _PG_AVAILABLE
-from tests.replay.helpers import send_message
+from tests.replay.helpers import capture_all, send_message
 
 pytestmark = pytest.mark.skipif(
     not _PG_AVAILABLE, reason="local Postgres not reachable"
@@ -115,13 +115,14 @@ async def _seed_kanjivaram(
     return client, kanjivaram
 
 
-async def _fresh_conv(session: AsyncSession, *, phone: str):
+async def _fresh_conv(session: AsyncSession, *, phone: str, client_id: int | None = None):
     """Insert a fresh greeting-stage conversation with no pinned SKU."""
     from app.models.conversation import Conversation
 
     conv = Conversation(
         phone_number=phone,
         channel="whatsapp",
+        client_id=client_id,
         current_stage="greeting",
     )
     session.add(conv)
@@ -186,7 +187,7 @@ async def test_real_name_pins(replay_http, replay_session, monkeypatch):
     client, product = await _seed_kanjivaram(
         replay_session, phone=phone, pnid=pnid
     )
-    await _fresh_conv(replay_session, phone=phone)
+    await _fresh_conv(replay_session, phone=phone, client_id=client.id)
 
     # AI leaks transactional phrasing → triggers the browsing safety guard.
     # The guard must use the NEWLY pinned product (pinned THIS turn by the
@@ -199,12 +200,7 @@ async def test_real_name_pins(replay_http, replay_session, monkeypatch):
         )),
     )
 
-    captured: list[str] = []
-
-    async def _cap(to_phone_number, message_text):
-        captured.append(message_text)
-
-    monkeypatch.setattr("app.services.whatsapp_service.send_text_message", _cap)
+    captured = capture_all(monkeypatch)
 
     resp = await send_message(
         replay_http, phone,
@@ -269,7 +265,7 @@ async def test_real_name_pins_2(replay_http, replay_session, monkeypatch):
     client, kanjivaram, georgette = await _seed_kanjivaram(
         replay_session, phone=phone, pnid=pnid, also_add_georgette=True
     )
-    await _fresh_conv(replay_session, phone=phone)
+    await _fresh_conv(replay_session, phone=phone, client_id=client.id)
 
     monkeypatch.setattr(
         "app.services.gemini_service.generate_reply",
@@ -279,12 +275,7 @@ async def test_real_name_pins_2(replay_http, replay_session, monkeypatch):
         )),
     )
 
-    captured: list[str] = []
-
-    async def _cap(to_phone_number, message_text):
-        captured.append(message_text)
-
-    monkeypatch.setattr("app.services.whatsapp_service.send_text_message", _cap)
+    captured = capture_all(monkeypatch)
 
     resp = await send_message(
         replay_http, phone,
@@ -357,6 +348,7 @@ async def test_absent_still_not_found(replay_http, replay_session, monkeypatch):
     prior_conv = _Conv(
         phone_number=phone,
         channel="whatsapp",
+        client_id=client.id,
         current_stage="product_inquiry",
         pending_product_sku="SR31045",
     )
@@ -371,12 +363,7 @@ async def test_absent_still_not_found(replay_http, replay_session, monkeypatch):
         )),
     )
 
-    captured: list[str] = []
-
-    async def _cap(to_phone_number, message_text):
-        captured.append(message_text)
-
-    monkeypatch.setattr("app.services.whatsapp_service.send_text_message", _cap)
+    captured = capture_all(monkeypatch)
 
     resp = await send_message(
         replay_http, phone, "kurti",
@@ -450,6 +437,7 @@ async def test_pinned_then_yes_starts_order(replay_http, replay_session, monkeyp
     conv = Conversation(
         phone_number=phone,
         channel="whatsapp",
+        client_id=client.id,
         current_stage="product_inquiry",
         pending_product_sku="KS10001",
     )

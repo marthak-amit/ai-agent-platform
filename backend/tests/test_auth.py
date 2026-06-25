@@ -185,6 +185,52 @@ def test_get_me_unauthenticated(client):
     assert response.status_code == 401
 
 
+def test_get_me_never_leaks_raw_tokens(client, mock_db, mock_settings):
+    """GET /auth/me must never include raw whatsapp/instagram access tokens."""
+    from app.models.client import Client, DEFAULT_SYSTEM_PROMPT
+
+    token = auth_service.create_access_token({"sub": "owner@biz.com"})
+    existing = Client(
+        id=1,
+        email="owner@biz.com",
+        hashed_password="x",
+        business_name="My Biz",
+        phone=None,
+        gemini_system_prompt=DEFAULT_SYSTEM_PROMPT,
+        is_active=True,
+        whatsapp_access_token="super-secret-whatsapp-token",
+        instagram_access_token="super-secret-instagram-token",
+        instagram_account_id="178414581234567",
+        hsn_code="5007",
+        briefing_enabled=True,
+        briefing_time="09:00",
+        dashboard_language="en",
+        catalogue_theme_color="#6366F1",
+        accepts_cod=False,
+        accepts_upi=True,
+        accepts_bank_transfer=False,
+        onboarding_step=0,
+        onboarding_completed=False,
+        plan_slug="starter",
+        daily_message_limit=100,
+    )
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = existing
+    mock_db.execute.return_value = mock_result
+
+    response = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    data = response.json()
+    body_text = response.text
+    assert "super-secret-whatsapp-token" not in body_text
+    assert "super-secret-instagram-token" not in body_text
+    assert "whatsapp_access_token" not in data
+    assert "instagram_access_token" not in data
+    assert data["whatsapp_connected"] is True
+    assert data["instagram_connected"] is True
+    assert data["instagram_account_id"] == "178414581234567"
+
+
 def test_logout_returns_200(client, mock_db, mock_settings):
     """POST /auth/logout returns 200 with a valid token."""
     from app.models.client import Client

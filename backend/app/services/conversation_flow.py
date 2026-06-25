@@ -232,6 +232,35 @@ def is_valid_address(text: str) -> bool:
     return True
 
 
+# A valid Indian mobile number: 10 digits, first digit 6-9 (optionally
+# prefixed with a +91/91/0 country code, with spaces/hyphens stripped).
+_MOBILE_DIGITS_RE = re.compile(r"^(?:\+?91|0)?([6-9]\d{9})$")
+
+
+def clean_mobile_number(text: str) -> str:
+    """Strip spaces/hyphens/parens, leaving only the digits (and leading +)."""
+    stripped = text.strip()
+    return re.sub(r"[ \-()]", "", stripped)
+
+
+def is_valid_mobile_number(text: str) -> bool:
+    """
+    Return True only when *text* looks like a genuine 10-digit Indian mobile
+    number, optionally with a +91/91/0 prefix. Rejects garbage input the same
+    way is_valid_address() rejects garbage addresses — reject anything that
+    isn't a clean digit run of the right shape.
+    """
+    cleaned = clean_mobile_number(text)
+    return bool(_MOBILE_DIGITS_RE.match(cleaned))
+
+
+def normalize_mobile_number(text: str) -> str:
+    """Return the bare 10-digit mobile number, stripping any country-code prefix."""
+    cleaned = clean_mobile_number(text)
+    match = _MOBILE_DIGITS_RE.match(cleaned)
+    return match.group(1) if match else cleaned
+
+
 STAGES: dict[str, dict] = {
     "greeting": {
         "description": "Customer just started",
@@ -504,12 +533,74 @@ _SAVED_ADDRESS_NEGATIONS: frozenset[str] = frozenset({
 })
 
 
+# Shared deterministic (Tier 0, no LLM) vocabulary for classifying a reply to
+# the saved-address confirm prompt ("{name}, deliver to: {address}? (yes/change)").
+_NEGATION_WORDS: frozenset[str] = frozenset({"not", "don't", "dont", "no", "nahi", "mat"})
+_NEGATION_PHRASES: tuple[str, ...] = ("do not", "no need")
+
+_ADDRESS_CONFIRM_TOKENS: frozenset[str] = frozenset({
+    "yes", "y", "ok", "okay", "k", "haan", "han", "ha",
+    "confirm", "correct", "same", "right", "theek", "sahi",
+})
+_ADDRESS_CHANGE_TOKENS: frozenset[str] = frozenset({
+    "change", "edit", "new", "different", "update", "badlo", "badal", "naya",
+})
+
+
+def is_negated(text: str) -> bool:
+    """
+    Shared negation guard — True if the message contains an explicit negation
+    word/phrase ("not", "don't", "do not", "no need", "nahi", "mat", ...).
+
+    Used to avoid inverting intent on phrases like "I do not want to change
+    the address", where a naive keyword match on "change" alone would wrongly
+    start a change-address flow.
+    """
+    lower = f" {text.lower().strip()} "
+    if any(f" {w} " in lower for w in _NEGATION_WORDS):
+        return True
+    return any(p in text.lower() for p in _NEGATION_PHRASES)
+
+
+def classify_address_confirmation(text: str) -> str:
+    """
+    Deterministic (Tier 0, no LLM, no address validation) classifier for a
+    reply to the saved-address confirm prompt.
+
+    Returns one of "confirm", "change", "unclear":
+      - "confirm": keep the saved address (explicit yes/ok/... OR a change
+        token that is negated, e.g. "I do not want to change the address").
+      - "change":  customer wants to enter a different address.
+      - "unclear": garbage/unrelated reply (e.g. "Hi") — caller must re-prompt,
+        never run address validation on it.
+    """
+    lower = text.lower().strip()
+    words = re.findall(r"[a-zA-Z']+", lower)
+    word_set = set(words)
+
+    has_change = bool(word_set & _ADDRESS_CHANGE_TOKENS)
+    has_confirm = bool(word_set & _ADDRESS_CONFIRM_TOKENS)
+
+    if has_change and is_negated(text):
+        return "confirm"
+    if has_confirm:
+        return "confirm"
+    if has_change:
+        return "change"
+    return "unclear"
+
+
 def _last_agent_offered_saved_address(conversation_history: list[dict]) -> bool:
     """True if the most recent agent message offered a saved address for confirmation (Deliver to X? yes/change)."""
     for m in reversed(conversation_history):
         if m.get("role") in ("model", "assistant"):
             text = (m.get("content") or "").lower()
-            return "deliver to" in text or ("(yes/change)" in text) or ("yes/change" in text)
+            return (
+                "deliver to" in text
+                or "(yes/change)" in text
+                or "yes/change" in text
+                or "use this address" in text
+            )
     return False
 
 
@@ -1177,11 +1268,14 @@ def extract_order_field(
         #   • negation     → return None; next prompt will ask for new address
         #   • anything else (free-text address) → fall through to length check
         if saved_address and _last_agent_offered_saved_address(history):
-            _reply = text.lower().strip()
-            if _reply in _SAVED_ADDRESS_AFFIRMATIONS:
+            _classification = classify_address_confirmation(text)
+            if _classification == "confirm":
                 return ("delivery_address", saved_address)
-            if _reply in _SAVED_ADDRESS_NEGATIONS:
-                return None  # customer wants to enter a different address
+            # "change" or "unclear" — neither is a valid address. Return None
+            # so the caller re-prompts (asks for a new address, or re-shows
+            # the yes/change prompt) instead of falling through to
+            # is_valid_address() below.
+            return None
         # Customer explicitly asks to reuse the address on file, even when the
         # agent didn't just offer it (e.g. mid-rejection-loop: "use my old address").
         if saved_address and _REUSE_OLD_ADDRESS_RE.search(text):
@@ -1200,6 +1294,15 @@ def extract_order_field(
             return None
         if is_valid_address(text):
             return ("delivery_address", clean_address(text))
+        return None
+
+    # ── MOBILE NUMBER ─────────────────────────────────────────────────────────
+    # Only ever reached on channels where it wasn't already auto-filled
+    # (Instagram) — WhatsApp pre-fills this slot from the sender's number
+    # before slot-filling starts, so get_next_required_slot never lands here.
+    if next_slot == "mobile_number":
+        if is_valid_mobile_number(text):
+            return ("mobile_number", normalize_mobile_number(text))
         return None
 
     # ── PAYMENT METHOD ────────────────────────────────────────────────────────
@@ -1329,6 +1432,17 @@ def get_next_slot_prompt_instruction(
             "Example (Gujarati): 'Delivery address shu chhe?'"
         )
 
+    if next_slot == "mobile_number":
+        return (
+            "CRITICAL — IGNORE CONVERSATION FLOW: A delivery contact number has NOT been recorded yet.\n"
+            "You MUST ask for a 10-digit mobile number. Do NOT mention payment, UPI, confirmation, "
+            "or order status.\n"
+            "Ask ONLY: 'What is your mobile number for delivery?' (or Hindi/Gujarati equivalent).\n"
+            "Example (English): 'What is your mobile number for delivery?'\n"
+            "Example (Hindi): 'Delivery ke liye mobile number kya hai?'\n"
+            "Example (Gujarati): 'Delivery mate mobile number shu chhe?'"
+        )
+
     if next_slot == "payment_method":
         return (
             "CURRENT SLOT: PAYMENT METHOD\n"
@@ -1382,6 +1496,7 @@ _SLOT_TO_FIELD: dict[str, str] = {
     "material": "selected_material",
     "customer_name": "customer_name",
     "delivery_address": "delivery_address",
+    "mobile_number": "mobile_number",
     "payment_method": "payment_method",
 }
 
@@ -1395,8 +1510,15 @@ def get_order_slots(variant_info: dict) -> list[str]:
     stock, not meaningless product-level stock.
 
     Order: (color?) → (size?) → (material?) → quantity → customer_name
-    → delivery_address → payment_method.  Non-variant products keep the
-    simpler: quantity → customer_name → delivery_address → payment_method.
+    → delivery_address → mobile_number → payment_method.  Non-variant products
+    keep the simpler: quantity → customer_name → delivery_address →
+    mobile_number → payment_method.
+
+    mobile_number is channel-conditional in practice: on WhatsApp it is
+    auto-filled from the sender's number before slot-filling begins (see
+    order_pipeline.run_slot_state_machine), so this loop skips straight past
+    it; on Instagram it starts empty and is collected like any other slot,
+    since the IGSID is not a phone number.
 
     Args:
         variant_info: Dict returned by catalogue_service.get_product_variant_info.
@@ -1418,7 +1540,7 @@ def get_order_slots(variant_info: dict) -> list[str]:
         if variant_info.get("needs_material"):
             slots.append("material")
     slots.append("quantity")
-    slots += ["customer_name", "delivery_address", "payment_method"]
+    slots += ["customer_name", "delivery_address", "mobile_number", "payment_method"]
     return slots
 
 

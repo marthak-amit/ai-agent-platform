@@ -58,6 +58,7 @@ async def _prime_conv(session: AsyncSession, *, phone: str, product, stage: str,
     conv = Conversation(
         phone_number=phone,
         channel="whatsapp",
+        client_id=product.client_id,
         current_stage=stage,
         pending_product_sku=product.sku,
         summary_shown=slots.pop("summary_shown", stage == "awaiting_final_confirmation"),
@@ -1702,6 +1703,7 @@ async def test_browsing_offer_no_address(replay_http, replay_session, monkeypatc
     conv = Conversation(
         phone_number=phone,
         channel="whatsapp",
+        client_id=client.id,
         current_stage="product_inquiry",
         pending_product_sku=product.sku,
     )
@@ -1924,6 +1926,7 @@ async def test_happy_path_zero_llm(replay_http, replay_session):
     conv = Conversation(
         phone_number=phone,
         channel="whatsapp",
+        client_id=client.id,
         current_stage="product_inquiry",
         pending_product_sku=product.sku,
     )
@@ -2046,3 +2049,92 @@ async def test_scenario22_zero_quantity_never_advances_or_places_order(replay_ht
     assert stock == 1, f"Stock must be untouched, got {stock}"
 
     print(f"\n[S22] qty=0 correctly rejected — no order, no stage advance, stock unchanged")
+
+
+# ---------------------------------------------------------------------------
+# mobile_number — Phase 3a+: channel-conditional delivery slot.
+#
+# WhatsApp: auto-filled from the sender's WA number, customer never prompted.
+# Instagram has no order pipeline wired up yet (see order_pipeline.py /
+# instagram.py), so the Instagram side of this slot is characterized at the
+# conversation_flow unit level in tests/test_order_flow_scenarios.py instead
+# of through this HTTP replay harness.
+# ---------------------------------------------------------------------------
+
+async def test_mobile_number_wa_autofilled_customer_never_asked(replay_http, replay_session):
+    """
+    WhatsApp: mobile_number must be auto-filled from the sender's WA number
+    once all other slots are present, with no slot question for it ever sent
+    to the customer — confirming the customer is never asked on this channel.
+    """
+    phone = _phone("MOB1")
+    pnid = _pnid("MOB1")
+    client, product = await _seed(
+        replay_session, phone=phone, phone_number_id=pnid,
+        product_sku="MOBSKU", product_name="Cotton Kurti",
+        price=400.0, stock=10, payment_method="COD",
+    )
+
+    # Prime at order_collection with everything filled except payment_method
+    # (and mobile_number, which starts unset) — so the next turn must resolve
+    # mobile_number silently before asking for payment.
+    conv_id = await _prime_conv(
+        replay_session, phone=phone, product=product,
+        stage="order_collection",
+        customer_name="Sneha Joshi",
+        delivery_address="22 Ring Road, Surat, 395002",
+        pending_order_quantity=1,
+    )
+
+    resp = await _msg(replay_http, phone, "COD", pnid=pnid, wamid=f"wamid.mob1.{int(time.time())}")
+    assert resp.status_code == 200
+
+    from app.models.conversation import Conversation
+    conv_row = (await replay_session.execute(
+        select(Conversation).where(Conversation.id == conv_id)
+        .execution_options(populate_existing=True)
+    )).scalar_one()
+
+    assert conv_row.mobile_number == phone, (
+        f"mobile_number must be auto-filled from the WA sender number, "
+        f"got {conv_row.mobile_number!r} (expected {phone!r})"
+    )
+    assert conv_row.payment_method == "COD"
+
+    print(f"\n[MOB1] mobile_number auto-filled={conv_row.mobile_number!r} from sender_phone={phone!r}")
+
+
+async def test_mobile_number_wa_order_carries_mobile_number(replay_http, replay_session):
+    """
+    WhatsApp: the final created Order row carries mobile_number copied from
+    the conversation's auto-filled value — confirming it survives into the
+    order, not just the conversation slot.
+    """
+    phone = _phone("MOB2")
+    pnid = _pnid("MOB2")
+    client, product = await _seed(
+        replay_session, phone=phone, phone_number_id=pnid,
+        product_sku="MOB2SKU", product_name="Linen Saree",
+        price=700.0, stock=6, payment_method="COD",
+    )
+    product_id = product.id
+
+    conv_id = await _prime_conv(
+        replay_session, phone=phone, product=product,
+        stage="awaiting_final_confirmation",
+        customer_name="Rina Mehta",
+        delivery_address="9 Lake View, Pune, 411001",
+        pending_order_quantity=1,
+        payment_method="COD",
+    )
+
+    resp = await _msg(replay_http, phone, "yes", pnid=pnid, wamid=f"wamid.mob2.{int(time.time())}")
+    assert resp.status_code == 200
+
+    orders = await _get_orders(replay_session, conv_id)
+    assert len(orders) == 1
+    assert orders[0].mobile_number == phone, (
+        f"Order.mobile_number must be the WA sender number, got {orders[0].mobile_number!r}"
+    )
+
+    print(f"\n[MOB2] order={orders[0].order_number} mobile_number={orders[0].mobile_number!r}")

@@ -49,6 +49,7 @@ async def _prime_conv(session: AsyncSession, *, phone: str, product, stage: str,
     conv = Conversation(
         phone_number=phone,
         channel="whatsapp",
+        client_id=product.client_id,
         current_stage=stage,
         pending_product_sku=product.sku,
         summary_shown=slots.pop("summary_shown", False),

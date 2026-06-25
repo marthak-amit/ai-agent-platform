@@ -25,7 +25,7 @@ from app.services.conversation_flow import (
     get_next_slot_prompt_instruction,
 )
 from app.services.language_templates import get_template, TEMPLATES, ENGLISH_TEMPLATES
-from app.routers.webhook import _build_slot_question, _log_route
+from app.services.order_pipeline import _build_slot_question, _log_route
 
 
 # ── Stubs ─────────────────────────────────────────────────────────────────────
@@ -473,7 +473,7 @@ class TestOrderStageWall:
         We test _render_order_reply directly rather than the full webhook
         to avoid DB and HTTP dependencies.
         """
-        from app.routers.webhook import _render_order_reply
+        from app.services.order_pipeline import _render_order_reply
         from app.services.order_state_machine import RenderError
 
         conv = FakeConv(

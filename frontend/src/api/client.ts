@@ -267,10 +267,18 @@ export async function testWhatsApp(): Promise<{ success: boolean; message: strin
 export async function updateChannelCredentials(payload: {
   whatsapp_phone_number_id?: string;
   whatsapp_access_token?: string;
-  instagram_access_token?: string;
-  instagram_account_id?: string;
 }) {
   const { data } = await api.patch("/auth/me", payload);
+  return data;
+}
+
+export async function getInstagramConnectUrl(): Promise<{ url: string }> {
+  const { data } = await api.get("/integrations/instagram/connect");
+  return data;
+}
+
+export async function disconnectInstagram(): Promise<{ success: boolean }> {
+  const { data } = await api.post("/integrations/instagram/disconnect");
   return data;
 }
 

@@ -324,6 +324,7 @@ async def get_customer_conversations(
     conv_result = await db.execute(
         select(Conversation).where(
             Conversation.phone_number == c.phone,
+            Conversation.client_id == client.id,
         ).order_by(Conversation.created_at.desc())
     )
     convs = list(conv_result.scalars().all())

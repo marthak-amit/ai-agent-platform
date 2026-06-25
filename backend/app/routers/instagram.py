@@ -265,9 +265,11 @@ async def _handle_dm(
     Returns:
         {"status": "ok"} on success.
     """
+    client = await _get_active_client(db, ig_user_id)
+
     try:
         conv = await conversation_service.get_or_create_conversation(
-            db, sender_igsid, channel="instagram"
+            db, sender_igsid, channel="instagram", client_id=client.id if client else None
         )
     except Exception as exc:
         logger.error("DB error creating conversation for Instagram %s: %s", sender_igsid, exc)
@@ -303,7 +305,11 @@ async def _handle_dm(
         {"role": "model", "content": ai_reply},
     ]
     try:
-        await lead_service.tag_lead(db, sender_igsid, conv.id, all_messages)
+        await lead_service.tag_lead(
+            db, sender_igsid, conv.id, all_messages,
+            client_id=client.id if client else None,
+            channel="instagram",
+        )
     except Exception as exc:
         logger.error("Lead tagging error on Instagram DM: %s", exc)
 
@@ -344,9 +350,11 @@ async def _handle_image_dm(
     sender_igsid = dm.get_sender_id()
     image_url = dm.message.get_image_url() if dm.message else None
 
+    client = await _get_active_client(db, ig_user_id)
+
     try:
         conv = await conversation_service.get_or_create_conversation(
-            db, sender_igsid, channel="instagram"
+            db, sender_igsid, channel="instagram", client_id=client.id if client else None
         )
     except Exception as exc:
         logger.error("DB error creating conversation for Instagram image DM %s: %s", sender_igsid, exc)
@@ -370,7 +378,6 @@ async def _handle_image_dm(
 
     logger.info("Instagram image DM from %s, url=%s", sender_igsid, image_url[:60])
 
-    client = await _get_active_client(db, ig_user_id)
     catalogue_context = await _get_catalogue_context(db, client, "image")
 
     try:
@@ -391,6 +398,8 @@ async def _handle_image_dm(
             sender_igsid,
             conv.id,
             [{"role": "user", "content": "[image]"}, {"role": "model", "content": ai_reply}],
+            client_id=client.id if client else None,
+            channel="instagram",
         )
     except Exception as exc:
         logger.error("Lead tagging error on Instagram image DM: %s", exc)
@@ -429,9 +438,11 @@ async def _handle_audio_dm(
     sender_igsid = dm.get_sender_id()
     audio_url = dm.message.get_audio_url() if dm.message else None
 
+    client = await _get_active_client(db, ig_user_id)
+
     try:
         conv = await conversation_service.get_or_create_conversation(
-            db, sender_igsid, channel="instagram"
+            db, sender_igsid, channel="instagram", client_id=client.id if client else None
         )
     except Exception as exc:
         logger.error("DB error creating conversation for Instagram audio DM %s: %s", sender_igsid, exc)
@@ -466,7 +477,6 @@ async def _handle_audio_dm(
     else:
         logger.warning("Instagram audio DM from %s has no URL.", sender_igsid)
 
-    client = await _get_active_client(db, ig_user_id)
     effective_text = transcribed_text if transcribed_text else "[voice note]"
     catalogue_context = await _get_catalogue_context(db, client, effective_text)
     history = await conversation_service.get_history(db, conv.id)
@@ -493,6 +503,8 @@ async def _handle_audio_dm(
                 {"role": "user", "content": saved_user_content},
                 {"role": "model", "content": ai_reply},
             ],
+            client_id=client.id if client else None,
+            channel="instagram",
         )
     except Exception as exc:
         logger.error("Lead tagging error on Instagram audio DM: %s", exc)
@@ -532,8 +544,10 @@ async def _handle_comment(
 
     logger.info("Comment from %s: %s", commenter_igsid, comment_text)
 
+    client = await _get_active_client(db, ig_user_id)
+
     conv = await conversation_service.get_or_create_conversation(
-        db, commenter_igsid, channel="instagram"
+        db, commenter_igsid, channel="instagram", client_id=client.id if client else None
     )
     history = await conversation_service.get_history(db, conv.id)
     history_dicts = [{"role": m.role, "content": m.content} for m in history]
@@ -556,6 +570,8 @@ async def _handle_comment(
                 {"role": "user", "content": comment_text},
                 {"role": "model", "content": ai_reply},
             ],
+            client_id=client.id if client else None,
+            channel="instagram",
         )
     except Exception as exc:
         logger.error("Lead tagging error on comment: %s", exc)

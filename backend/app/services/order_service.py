@@ -106,6 +106,7 @@ async def create_order(
     quantity: int,
     unit_price: float,
     payment_method: str = "COD",
+    mobile_number: Optional[str] = None,
     conversation_id: Optional[int] = None,
     product_sku: Optional[str] = None,
     variant_color: Optional[str] = None,
@@ -128,6 +129,7 @@ async def create_order(
         quantity: Number of units ordered.
         unit_price: Price per unit in INR.
         payment_method: 'COD' or 'UPI'.
+        mobile_number: Optional delivery contact number (not identity).
         conversation_id: Optional linked conversation ID.
         product_sku: Optional product SKU.
         variant_color: Optional colour variant.
@@ -155,6 +157,7 @@ async def create_order(
         customer_name=customer_name,
         customer_phone=customer_phone,
         delivery_address=delivery_address,
+        mobile_number=mobile_number,
         product_id=product_id,
         product_name=product_name,
         product_sku=product_sku,

@@ -43,6 +43,7 @@ async def get_or_create_conversation(
     phone_number: str,
     channel: str = "whatsapp",
     is_sandbox: bool = False,
+    client_id: int | None = None,
 ) -> Conversation:
     """
     Return an existing conversation for this customer or create a new one.
@@ -52,19 +53,29 @@ async def get_or_create_conversation(
         phone_number: WhatsApp E.164 number or Instagram IGSID.
         channel:      'whatsapp' or 'instagram'.
         is_sandbox:   When True, scopes lookup/creation to sandbox conversations only.
+        client_id:    Owning client's PK, when already resolved by the caller.
+                      Scopes the lookup and is stamped onto newly created rows.
 
     Returns:
         Conversation instance (persisted).
     """
-    result = await db.execute(
+    query = (
         select(Conversation)
         .where(Conversation.phone_number == phone_number)
         .where(Conversation.channel == channel)
         .where(Conversation.is_sandbox == is_sandbox)
     )
+    if client_id is not None:
+        query = query.where(Conversation.client_id == client_id)
+    result = await db.execute(query)
     conv = result.scalar_one_or_none()
     if conv is None:
-        conv = Conversation(phone_number=phone_number, channel=channel, is_sandbox=is_sandbox)
+        conv = Conversation(
+            phone_number=phone_number,
+            channel=channel,
+            is_sandbox=is_sandbox,
+            client_id=client_id,
+        )
         db.add(conv)
         await db.commit()
         await db.refresh(conv)
@@ -75,6 +86,7 @@ async def delete_sandbox_conversation(
     db: AsyncSession,
     phone_number: str,
     channel: str = "sandbox",
+    client_id: int | None = None,
 ) -> None:
     """
     Delete a sandbox conversation and all its messages so the client gets a fresh start.
@@ -83,15 +95,20 @@ async def delete_sandbox_conversation(
         db:           Active async DB session.
         phone_number: The sandbox phone identifier (e.g. 'sandbox_<client_id>').
         channel:      Channel key for sandbox conversations.
+        client_id:    Owning client's PK, when already resolved by the caller.
+                      Scopes the lookup so deletion never crosses tenants.
     """
     from sqlalchemy import delete as sql_delete
 
-    result = await db.execute(
+    query = (
         select(Conversation)
         .where(Conversation.phone_number == phone_number)
         .where(Conversation.channel == channel)
         .where(Conversation.is_sandbox == True)  # noqa: E712
     )
+    if client_id is not None:
+        query = query.where(Conversation.client_id == client_id)
+    result = await db.execute(query)
     conv = result.scalar_one_or_none()
     if conv:
         await db.execute(
@@ -300,8 +317,7 @@ async def get_customer_history(
     Args:
         db:           Active async DB session.
         phone_number: Customer's WhatsApp E.164 number or IGSID.
-        client_id:    Owning client's PK (unused directly but kept for future
-                      multi-tenant filtering).
+        client_id:    Owning client's PK — scopes history to this tenant.
 
     Returns:
         Dict with total_orders (int), last_product (str|None), address (str|None).
@@ -310,6 +326,7 @@ async def get_customer_history(
         select(Conversation)
         .where(
             Conversation.phone_number == phone_number,
+            Conversation.client_id == client_id,
             Conversation.current_stage == "completed",
         )
         .order_by(Conversation.updated_at.desc())

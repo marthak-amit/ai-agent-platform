@@ -157,3 +157,32 @@ async def send_button(
     )
     resp = await client.post("/webhook", content=body, headers=headers)
     return resp
+
+
+def capture_all(monkeypatch) -> list[str]:
+    """
+    Patch send_text_message, send_button_message, and send_list_message so
+    that the body text of every outbound reply (plain text, button prompt, or
+    list prompt) lands in one shared, order-preserving list.
+
+    Returns the list the test should assert against — equivalent to
+    `captured` in tests that previously patched only send_text_message.
+    """
+    captured: list[str] = []
+
+    async def _capture_text(to_phone_number, message_text):
+        captured.append(message_text)
+
+    async def _capture_button(to_phone_number, body_text, buttons, phone_number_id=None):
+        captured.append(body_text)
+        return True
+
+    async def _capture_list(to_phone_number, header_text, body_text, button_text, sections, phone_number_id=None):
+        captured.append(body_text)
+        return True
+
+    monkeypatch.setattr("app.services.whatsapp_service.send_text_message", _capture_text)
+    monkeypatch.setattr("app.services.whatsapp_service.send_button_message", _capture_button)
+    monkeypatch.setattr("app.services.whatsapp_service.send_list_message", _capture_list)
+
+    return captured

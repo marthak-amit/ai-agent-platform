@@ -22,7 +22,10 @@ export interface ClientProfile {
   business_description: string | null;
   whatsapp_number: string | null;
   whatsapp_phone_number_id: string | null;
-  whatsapp_access_token: string | null;
+  whatsapp_connected: boolean;
+  instagram_account_id: string | null;
+  instagram_connected: boolean;
+  api_key: string | null;
 }
 
 export interface ProductVariant {

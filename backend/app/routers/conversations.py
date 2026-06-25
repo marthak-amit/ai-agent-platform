@@ -103,9 +103,14 @@ async def _get_conv_or_404(db: AsyncSession, conv_id: int) -> Conversation:
     return conv
 
 
-async def _get_lead_status(db: AsyncSession, phone_number: str) -> str:
+async def _get_lead_status(
+    db: AsyncSession, phone_number: str, client_id: int | None = None
+) -> str:
     """Return the lead status for phone_number, defaulting to 'cold'."""
-    result = await db.execute(select(Lead).where(Lead.phone_number == phone_number))
+    query = select(Lead).where(Lead.phone_number == phone_number)
+    if client_id is not None:
+        query = query.where(Lead.client_id == client_id)
+    result = await db.execute(query)
     lead = result.scalar_one_or_none()
     return lead.status if lead else "cold"
 
@@ -152,7 +157,7 @@ async def list_conversations(
         )
         msg_count = count_result.scalar() or 0
 
-        lead_status = await _get_lead_status(db, conv.phone_number)
+        lead_status = await _get_lead_status(db, conv.phone_number, conv.client_id)
 
         summaries.append(
             ConversationSummary(
@@ -197,7 +202,7 @@ async def get_conversation(
     )
     messages = msgs_result.scalars().all()
 
-    lead_status = await _get_lead_status(db, conv.phone_number)
+    lead_status = await _get_lead_status(db, conv.phone_number, conv.client_id)
 
     return ConversationDetail(
         id=conv.id,

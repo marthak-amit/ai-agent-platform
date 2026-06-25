@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     whatsapp_phone_number_id: str
     instagram_access_token: str = ""
     instagram_business_account_id: str = ""
+    meta_app_id: str = ""
+    meta_oauth_redirect_uri: str = ""
     razorpay_key_id: str = ""
     razorpay_key_secret: str = ""
     cloudinary_cloud_name: str = ""
@@ -34,6 +36,9 @@ class Settings(BaseSettings):
     secret_key: str = "change-me-in-production"
     admin_secret_key: str = "change-me-admin-secret"
     catalogue_base_url: str = "https://agentlyai.in/shop"
+    # AgentlyAI team's own WhatsApp number (E.164, no '+'), notified on new
+    # marketing-site demo leads. Unset = notification silently skipped.
+    internal_lead_notify_number: str = ""
     min_reply_delay: float = 2.0
     max_reply_delay: float = 4.0
     environment: str = "development"  # set to "production" in Railway env vars

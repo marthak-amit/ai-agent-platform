@@ -86,7 +86,7 @@ async def sandbox_message(
 
     # ── Conversation (sandbox-flagged) ────────────────────────────────────────
     conv = await conversation_service.get_or_create_conversation(
-        db, phone_key, channel=_SANDBOX_CHANNEL, is_sandbox=True
+        db, phone_key, channel=_SANDBOX_CHANNEL, is_sandbox=True, client_id=client.id
     )
 
     history = await conversation_service.get_history(db, conv.id)
@@ -290,6 +290,6 @@ async def sandbox_reset(
     """
     phone_key = _sandbox_phone(client.id)
     await conversation_service.delete_sandbox_conversation(
-        db, phone_key, channel=_SANDBOX_CHANNEL
+        db, phone_key, channel=_SANDBOX_CHANNEL, client_id=client.id
     )
     return {"status": "reset"}

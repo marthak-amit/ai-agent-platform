@@ -31,11 +31,14 @@ def mock_settings(monkeypatch):
         razorpay_key_secret="test-rzp-secret",
         secret_key="test-secret-key",
         admin_secret_key="test-admin-key",
+        meta_app_id="test-meta-app-id",
+        meta_oauth_redirect_uri="https://api.test.example/integrations/instagram/callback",
     )
     get_settings.cache_clear()
     monkeypatch.setattr("app.config.get_settings", lambda: test_settings)
     monkeypatch.setattr("app.routers.webhook.get_settings", lambda: test_settings)
     monkeypatch.setattr("app.routers.instagram.get_settings", lambda: test_settings)
+    monkeypatch.setattr("app.routers.integrations.get_settings", lambda: test_settings)
     monkeypatch.setattr("app.routers.admin.get_settings", lambda: test_settings)
     monkeypatch.setattr("app.services.gemini_service.get_settings", lambda: test_settings)
     monkeypatch.setattr("app.services.whatsapp_service.get_settings", lambda: test_settings)

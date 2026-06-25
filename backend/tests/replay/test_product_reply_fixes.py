@@ -26,7 +26,7 @@ from tests.replay.conftest import (
     seed_client_and_product,
     seed_variant_and_simple,
 )
-from tests.replay.helpers import send_button, send_message
+from tests.replay.helpers import capture_all, send_button, send_message
 
 pytestmark = pytest.mark.skipif(
     not _PG_AVAILABLE, reason="local Postgres not reachable"
@@ -58,6 +58,7 @@ async def _prime_conv(session: AsyncSession, *, phone: str, product, stage: str,
     conv = Conversation(
         phone_number=phone,
         channel="whatsapp",
+        client_id=product.client_id,
         current_stage=stage,
         pending_product_sku=product.sku,
         summary_shown=slots.pop("summary_shown", stage == "awaiting_final_confirmation"),
@@ -135,6 +136,7 @@ async def test_compact_product_reply(replay_http, replay_session, monkeypatch):
     conv = Conversation(
         phone_number=phone,
         channel="whatsapp",
+        client_id=client.id,
         current_stage="product_inquiry",
         pending_product_sku=product.sku,
         summary_shown=False,
@@ -146,6 +148,8 @@ async def test_compact_product_reply(replay_http, replay_session, monkeypatch):
     from app.services import gemini_service
     ai_calls_before = gemini_service.generate_reply.call_count
 
+    captured_list = capture_all(monkeypatch)
+
     resp = await send_message(replay_http, phone, "tell me about this kurta", phone_number_id=pnid)
     assert resp.status_code == 200
 
@@ -153,8 +157,7 @@ async def test_compact_product_reply(replay_http, replay_session, monkeypatch):
         "generate_reply was called — FIX 1 deterministic path did not fire"
     )
 
-    from app.services import whatsapp_service
-    captured = _all_sent_text(whatsapp_service.send_text_message)
+    captured = "\n".join(captured_list)
 
     assert "Cotton Kurta" in captured, "Product name missing from compact reply"
     assert "FIX1SKU" in captured, "SKU missing from compact reply"
@@ -651,6 +654,7 @@ async def test_availability_shows_variants(replay_http, replay_session, monkeypa
     conv = Conversation(
         phone_number=phone,
         channel="whatsapp",
+        client_id=client.id,
         current_stage="product_inquiry",
         pending_product_sku=product.sku,
         summary_shown=False,
@@ -658,9 +662,10 @@ async def test_availability_shows_variants(replay_http, replay_session, monkeypa
     replay_session.add(conv)
     await replay_session.commit()
 
-    from app.services import gemini_service, whatsapp_service
+    from app.services import gemini_service
     ai_calls_before = gemini_service.generate_reply.call_count
-    whatsapp_service.send_text_message.reset_mock()
+
+    captured_list = capture_all(monkeypatch)
 
     # Generic availability query with no product-name keywords → score=0 in old code
     resp = await send_message(replay_http, phone, "is it available?", phone_number_id=pnid)
@@ -670,7 +675,7 @@ async def test_availability_shows_variants(replay_http, replay_session, monkeypa
         "generate_reply was called — _pinned_relevant gate was not removed"
     )
 
-    captured = _all_sent_text(whatsapp_service.send_text_message)
+    captured = "\n".join(captured_list)
     assert "Georgette Party Wear" in captured, "Product name missing"
     assert "AV_SKU" in captured, "SKU missing"
     assert "₹3,200" in captured, "Formatted price missing"

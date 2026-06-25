@@ -34,6 +34,11 @@ class Order(Base):
     customer_phone: Mapped[str] = mapped_column(String, nullable=False, index=True)
     delivery_address: Mapped[str] = mapped_column(Text, nullable=False)
 
+    # Delivery contact number — NOT identity. WhatsApp: same as customer_phone
+    # (auto-filled from sender). Instagram: collected as an order slot since
+    # customer_phone there is the IGSID, not a real phone (migration 0048).
+    mobile_number: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
     # Order details
     product_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("products.id"), nullable=True)
     product_name: Mapped[str] = mapped_column(String, nullable=False)

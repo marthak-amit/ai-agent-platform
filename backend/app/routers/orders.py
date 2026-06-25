@@ -36,6 +36,7 @@ class OrderOut(BaseModel):
     customer_name: str
     customer_phone: str
     delivery_address: str
+    mobile_number: Optional[str]
     product_id: Optional[int]
     product_name: str
     product_sku: Optional[str]
@@ -75,6 +76,7 @@ class OrderOut(BaseModel):
             customer_name=order.customer_name,
             customer_phone=order.customer_phone,
             delivery_address=order.delivery_address,
+            mobile_number=order.mobile_number,
             product_id=order.product_id,
             product_name=order.product_name,
             product_sku=order.product_sku,

@@ -49,9 +49,9 @@ const LANG_OPTIONS = [
   { code: "gu", label: "GU" },
 ];
 
-function AgentStatusDot({ client }: { client: { whatsapp_phone_number_id?: string | null; whatsapp_access_token?: string | null } | null }) {
+function AgentStatusDot({ client }: { client: { whatsapp_phone_number_id?: string | null; whatsapp_connected?: boolean | null } | null }) {
   if (!client) return null;
-  const configured = !!(client.whatsapp_phone_number_id && client.whatsapp_access_token);
+  const configured = !!(client.whatsapp_phone_number_id && client.whatsapp_connected);
   if (configured) {
     return (
       <span className="flex items-center gap-1 text-[10px] text-emerald-600 font-medium">

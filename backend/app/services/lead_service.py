@@ -26,6 +26,8 @@ async def tag_lead(
     phone_number: str,
     conversation_id: int,
     messages: list[dict],
+    client_id: int | None = None,
+    channel: str = "whatsapp",
 ) -> Lead:
     """
     Classify a conversation and upsert the lead record.
@@ -38,6 +40,11 @@ async def tag_lead(
         phone_number:    Customer identifier (E.164 or IGSID).
         conversation_id: FK to the parent Conversation.
         messages:        List of dicts with 'role' and 'content' keys.
+        client_id:       Owning client's PK, when already resolved by the
+                         caller. Scopes the lookup and is stamped onto newly
+                         created rows.
+        channel:         Channel this lead came in on ('whatsapp', 'instagram',
+                         'website'). Stamped onto newly created rows.
 
     Returns:
         Updated or created Lead instance.
@@ -64,13 +71,18 @@ async def tag_lead(
         phone_number, stage, latest_message[:60], status,
     )
 
-    result = await db.execute(select(Lead).where(Lead.phone_number == phone_number))
+    lead_query = select(Lead).where(Lead.phone_number == phone_number)
+    if client_id is not None:
+        lead_query = lead_query.where(Lead.client_id == client_id)
+    result = await db.execute(lead_query)
     lead = result.scalar_one_or_none()
     if lead is None:
         lead = Lead(
             phone_number=phone_number,
             conversation_id=conversation_id,
             status=status,
+            client_id=client_id,
+            channel=channel,
         )
         db.add(lead)
     else:
