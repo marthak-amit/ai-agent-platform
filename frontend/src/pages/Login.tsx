@@ -3,7 +3,8 @@ import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { login, register } from "../api/client";
 import { useAuth } from "../context/AuthContext";
-import { Zap, CheckCircle2 } from "lucide-react";
+import { CheckCircle2 } from "lucide-react";
+import Logo from "../components/Logo";
 
 type Mode = "login" | "register";
 
@@ -65,33 +66,30 @@ export default function Login() {
   return (
     <div className="min-h-screen flex font-sans">
       {/* Left panel — indigo gradient */}
-      <div className="hidden lg:flex flex-col justify-between w-[480px] shrink-0 bg-gradient-to-br from-indigo-600 to-indigo-800 p-12">
+      <div className="hidden lg:flex flex-col justify-between w-[480px] shrink-0 bg-brand-primaryDark p-12">
         <div>
           <div className="flex items-center gap-3 mb-12">
-            <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
-              <Zap size={20} className="text-white" />
-            </div>
-            <span className="font-bold text-white text-xl">AgentlyAI</span>
+            <Logo className="h-10 w-auto brightness-0 invert" />
           </div>
 
           <h2 className="text-3xl font-bold text-white leading-tight mb-4">
             AI-powered sales agent for Indian businesses
           </h2>
-          <p className="text-indigo-200 text-base mb-10">
+          <p className="text-white/80 text-base mb-10">
             Automate your WhatsApp & Instagram customer conversations. Capture leads, answer queries, and grow sales — 24/7.
           </p>
 
           <div className="space-y-4">
             {features.map((f) => (
               <div key={f} className="flex items-center gap-3">
-                <CheckCircle2 size={18} className="text-indigo-300 shrink-0" />
+                <CheckCircle2 size={18} className="text-white/70 shrink-0" />
                 <span className="text-white text-sm">{f}</span>
               </div>
             ))}
           </div>
         </div>
 
-        <p className="text-indigo-300 text-xs">© 2025 AgentlyAI. Made in India 🇮🇳</p>
+        <p className="text-white/70 text-xs">© 2025 SellerTalk24. Made in India 🇮🇳</p>
       </div>
 
       {/* Right panel — white */}
@@ -99,10 +97,7 @@ export default function Login() {
         <div className="w-full max-w-sm">
           {/* Mobile logo */}
           <div className="flex items-center gap-2 mb-8 lg:hidden">
-            <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
-              <Zap size={16} className="text-white" />
-            </div>
-            <span className="font-bold text-gray-900">AgentlyAI</span>
+            <Logo className="h-10 w-auto" />
           </div>
 
           <h1 className="text-2xl font-bold text-gray-900 mb-1">
@@ -110,7 +105,7 @@ export default function Login() {
           </h1>
           <p className="text-sm text-gray-500 mb-8">
             {mode === "login"
-              ? "Sign in to your AgentlyAI dashboard"
+              ? "Sign in to your SellerTalk24 dashboard"
               : "Set up your AI sales agent in minutes"}
           </p>
 
@@ -125,7 +120,7 @@ export default function Login() {
                   value={businessName}
                   onChange={(e) => setBusinessName(e.target.value)}
                   required
-                  className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
+                  className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-primary focus:border-transparent transition-all"
                   placeholder="Raj's Electronics"
                 />
               </div>
@@ -140,7 +135,7 @@ export default function Login() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
-                className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
+                className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-primary focus:border-transparent transition-all"
                 placeholder="you@business.com"
               />
             </div>
@@ -155,7 +150,7 @@ export default function Login() {
                 onChange={(e) => setPassword(e.target.value)}
                 required
                 minLength={8}
-                className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
+                className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-primary focus:border-transparent transition-all"
               />
             </div>
 
@@ -169,7 +164,7 @@ export default function Login() {
                   type="tel"
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
-                  className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
+                  className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-primary focus:border-transparent transition-all"
                   placeholder="+91 98765 43210"
                 />
               </div>
@@ -184,7 +179,7 @@ export default function Login() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full bg-indigo-600 text-white rounded-lg py-2.5 text-sm font-semibold hover:bg-indigo-700 active:scale-95 disabled:opacity-50 transition-all duration-150 mt-1"
+              className="w-full bg-brand-primaryDark text-white rounded-lg py-2.5 text-sm font-semibold hover:bg-brand-primary/90 active:scale-95 disabled:opacity-50 transition-all duration-150 mt-1"
             >
               {loading
                 ? mode === "register" ? t("auth.creating") : t("auth.signing_in")
@@ -198,7 +193,7 @@ export default function Login() {
                 {t("auth.no_account")}{" "}
                 <button
                   onClick={() => switchMode("register")}
-                  className="text-indigo-600 font-medium hover:underline"
+                  className="text-brand-primaryDark font-medium hover:underline"
                 >
                   {t("auth.sign_up")}
                 </button>
@@ -208,7 +203,7 @@ export default function Login() {
                 {t("auth.have_account")}{" "}
                 <button
                   onClick={() => switchMode("login")}
-                  className="text-indigo-600 font-medium hover:underline"
+                  className="text-brand-primaryDark font-medium hover:underline"
                 >
                   {t("auth.sign_in")}
                 </button>
@@ -216,7 +211,7 @@ export default function Login() {
             )}
           </p>
 
-          <p className="text-center text-xs text-gray-300 mt-8">Powered by AgentlyAI</p>
+          <p className="text-center text-xs text-gray-300 mt-8">Powered by SellerTalk24</p>
         </div>
       </div>
     </div>

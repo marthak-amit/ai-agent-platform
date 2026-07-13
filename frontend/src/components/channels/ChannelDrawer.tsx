@@ -62,7 +62,7 @@ export function FieldInput({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
-          className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all pr-10"
+          className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-primary focus:border-transparent transition-all pr-10"
         />
         {isSecretInput && (
           <button
@@ -82,7 +82,7 @@ export function FieldInput({
 export function Step({ n, text }: { n: number; text: string }) {
   return (
     <div className="flex items-start gap-3">
-      <span className="shrink-0 w-6 h-6 rounded-full bg-indigo-100 text-indigo-600 text-xs font-bold flex items-center justify-center mt-0.5">
+      <span className="shrink-0 w-6 h-6 rounded-full bg-brand-primary/10 text-brand-primaryDark text-xs font-bold flex items-center justify-center mt-0.5">
         {n}
       </span>
       <span className="text-sm text-gray-600 leading-relaxed">{text}</span>

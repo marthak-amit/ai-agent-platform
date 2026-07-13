@@ -6,7 +6,7 @@ interface SEOProps {
   path: string;
 }
 
-const SITE_URL = "https://agentlyai.in"; // TODO: replace with the real production domain
+const SITE_URL = "https://sellertalk24.com"; // TODO: replace with the real production domain
 
 export default function SEO({ title, description, path }: SEOProps) {
   const url = `${SITE_URL}${path}`;

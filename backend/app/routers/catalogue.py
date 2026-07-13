@@ -25,11 +25,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.models.client import Client
-from app.routers.auth import get_current_client
+from app.routers.auth import get_current_client, require_permission
 from app.services import catalogue_service
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/catalogue", tags=["catalogue"])
+router = APIRouter(
+    prefix="/catalogue",
+    tags=["catalogue"],
+    dependencies=[Depends(require_permission("catalog_edit"))],
+)
 
 UPLOADS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}

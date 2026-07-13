@@ -5,6 +5,14 @@ Jobs:
   daily_briefing   — fires at 09:00 IST every day; sends WhatsApp morning summaries.
   daily_learning   — fires at 00:30 IST every day; auto-learns FAQs + saves order examples.
   weekly_quality   — fires at 23:30 IST every Sunday; scores agent quality and warns if < 80 %.
+  abandoned_intent_followup — fires every 6h; nudges customers with an open draft order
+                               (no payment yet) who have been idle 6h+, guarded to only
+                               send free-form WhatsApp/Instagram text within Meta's 24h
+                               customer-service window.
+  drain_pending_comment_replies — fires every 5min; sends IG comment private-replies
+                               that were queued because the client's IG account was
+                               over Meta's 200/hour automated-DM cap when the comment
+                               first arrived.
 """
 
 from __future__ import annotations
@@ -244,31 +252,36 @@ async def _weekly_quality_job() -> None:
 
 # ── Abandoned-intent follow-up constants ──────────────────────────────────────
 # Only trigger for real purchase-intent stages — not for casual browsing.
-_FOLLOWUP_ELIGIBLE_STAGES = {"order_collection", "awaiting_final_confirmation"}
-# Send follow-up only when last activity was 24–48 hours ago.
-_FOLLOWUP_MIN_IDLE_HOURS = 24
-_FOLLOWUP_MAX_IDLE_HOURS = 48
+# "payment" is included: an Order row already exists as pending_payment there,
+# customer just hasn't sent "paid" yet — the highest-value nudge target.
+_FOLLOWUP_ELIGIBLE_STAGES = {"order_collection", "awaiting_final_confirmation", "payment"}
+# Nudge once the draft order (no payment yet) has been idle this long.
+_FOLLOWUP_MIN_IDLE_HOURS = 6
+# Meta's free-form customer-service window closes 24h after the customer's
+# last inbound message — never attempt a free-form send past this; flag it
+# for a manual/template follow-up instead.
+_FOLLOWUP_WINDOW_HOURS = 24
 # No repeat follow-up for the same SKU within this many days.
 _FOLLOWUP_COOLDOWN_DAYS = 7
 
 
 async def _abandoned_intent_followup_job() -> None:
     """
-    Scheduled job: send a single free-form follow-up to customers who started an
-    order but went quiet (24–48 hrs idle, real purchase-intent stage).
+    Scheduled job: send a single free-form nudge to customers with an open
+    draft order (no payment yet) who have gone quiet for 6h+.
 
     Conditions (all must be true to send):
-      a) conv.current_stage in order_collection / awaiting_final_confirmation
+      a) conv.current_stage in order_collection / awaiting_final_confirmation / payment
       b) conv.last_followup_sku != conv.pending_product_sku (no same-SKU repeat)
       c) conv.followup_sent_at is None or > 7 days ago (per-customer cooldown)
-      d) Last message activity was 24–48 hours ago
+      d) 6h+ elapsed since the customer's last INBOUND message
       e) pending_product_sku is set (we know what product to mention)
 
-    NOTE: This sends a free-form WhatsApp message. This ONLY works for
-    sandbox/test numbers within an active 24-hour customer-initiated window.
-    TODO: Replace with approved WhatsApp template (cart_reminder_v1 or similar)
-    once submitted to Meta — free-form business-initiated messages outside the
-    24-hour window will be REJECTED by Meta in production.
+    Idle time and the 24h-window guard are both measured from the customer's
+    last inbound message (role='user') — matching Meta's actual customer-
+    service window definition, not the last message of any role. Past 24h
+    idle, the free-form send is skipped and flagged (event=nudge_needs_template)
+    rather than attempting a send Meta will reject.
     """
     from app.db import _get_session_factory
 
@@ -283,12 +296,14 @@ async def _send_abandoned_intent_followups(db) -> None:
 
     from sqlalchemy import select
 
+    from app.models.client import Client
     from app.models.conversation import Conversation
     from app.models.message import Message
+    from app.models.order import Order
 
     now = datetime.now(_tz.utc)
     min_idle = timedelta(hours=_FOLLOWUP_MIN_IDLE_HOURS)
-    max_idle = timedelta(hours=_FOLLOWUP_MAX_IDLE_HOURS)
+    window = timedelta(hours=_FOLLOWUP_WINDOW_HOURS)
     cooldown = timedelta(days=_FOLLOWUP_COOLDOWN_DAYS)
 
     # Load all eligible conversations (stage + has pending SKU)
@@ -314,68 +329,106 @@ async def _send_abandoned_intent_followups(db) -> None:
             if conv.followup_sent_at and (now - conv.followup_sent_at) < cooldown:
                 continue
 
-            # Condition d: check last message timestamp
-            last_msg_result = await db.execute(
+            # Condition d: idle time from the customer's last INBOUND message only.
+            last_inbound_result = await db.execute(
                 select(Message)
-                .where(Message.conversation_id == conv.id)
+                .where(Message.conversation_id == conv.id, Message.role == "user")
                 .order_by(Message.created_at.desc())
                 .limit(1)
             )
-            last_msg = last_msg_result.scalar_one_or_none()
-            if last_msg is None:
+            last_inbound = last_inbound_result.scalar_one_or_none()
+            if last_inbound is None:
                 continue
 
-            last_ts = last_msg.created_at
+            last_ts = last_inbound.created_at
             if last_ts.tzinfo is None:
                 last_ts = last_ts.replace(tzinfo=_tz.utc)
             idle = now - last_ts
-            if idle < min_idle or idle > max_idle:
+            if idle < min_idle:
+                continue
+            if idle > window:
+                # Outside Meta's 24h free-form window — flag for a manual/
+                # template follow-up instead of sending (would be rejected).
+                logger.warning(
+                    "event=nudge_needs_template conv=%s sku=%s idle_hours=%.1f",
+                    conv.id, sku, idle.total_seconds() / 3600,
+                )
+                continue
+
+            client_result = await db.execute(
+                select(Client).where(Client.id == conv.client_id)
+            )
+            client = client_result.scalar_one_or_none()
+            if not client or not client.is_active:
                 continue
 
             # Resolve product name for the message
             product_name = sku  # fallback to SKU if product not found
             try:
-                from app.models.client import Client
                 from app.services.catalogue_service import find_product_by_sku
-
-                # Look up client from conversation (need client_id)
-                # Conversations don't store client_id directly; look up via customer
-                from app.services.customer_service import get_customer as _get_cust
-                # Skip product name lookup if client unknown — send with SKU
-                client_result = await db.execute(
-                    select(Client).where(Client.is_active == True).limit(1)  # noqa: E712
-                )
-                _client = client_result.scalar_one_or_none()
-                if _client:
-                    _prod = await find_product_by_sku(db, _client.id, sku)
-                    if _prod:
-                        product_name = _prod.name
+                _prod = await find_product_by_sku(db, client.id, sku)
+                if _prod:
+                    product_name = _prod.name
             except Exception as exc:
                 logger.warning("Follow-up product name lookup failed: %s", exc)
 
-            # Build the follow-up message
             name = conv.customer_name or "there"
-            # TODO: Replace with approved WhatsApp template (cart_reminder_v1 or similar)
-            # once submitted to Meta — free-form business-initiated messages outside
-            # the 24-hour window will be REJECTED by Meta in production; this free-text
-            # version only works in sandbox/test numbers within active 24-hr windows.
-            followup_text = (
-                f"Hi {name}! 👋 Your {product_name} order is waiting — "
-                f"just pick up where you left off. "
-                f"Reply to continue or ask any questions! 😊"
-            )
 
-            # Send via WhatsApp
-            try:
-                from app.services.whatsapp_service import send_text_message
-                await send_text_message(
-                    to_phone_number=conv.phone_number,
-                    message_text=followup_text,
+            if conv.current_stage == "payment":
+                # An Order row already exists as pending_payment — resend UPI
+                # payment instructions instead of a generic "come back" nudge.
+                order_result = await db.execute(
+                    select(Order)
+                    .where(Order.conversation_id == conv.id, Order.status == "pending_payment")
+                    .order_by(Order.created_at.desc())
+                    .limit(1)
                 )
+                order = order_result.scalar_one_or_none()
+                if not order or not client.upi_id:
+                    continue
+                from app.services.language_templates import format_price, get_template
+                lang = getattr(conv, "last_customer_language", "english") or "english"
+                followup_text = (
+                    f"Hi {name}! ⏰ Just a reminder — your order is waiting for payment.\n\n"
+                    + get_template(
+                        lang, "upi_instructions",
+                        total=format_price(order.total_amount),
+                        order_number=order.order_number,
+                        upi_id=client.upi_id,
+                    )
+                )
+            else:
+                # TODO: Replace with approved WhatsApp template (cart_reminder_v1 or similar)
+                # once submitted to Meta — free-form business-initiated messages outside
+                # the 24-hour window are REJECTED by Meta in production; the window guard
+                # above keeps this send inside that window.
+                followup_text = (
+                    f"Hi {name}! 👋 Your {product_name} order is waiting — "
+                    f"just pick up where you left off. "
+                    f"Reply to continue or ask any questions! 😊"
+                )
+
+            # Send — channel-aware (mirrors followup_service.send_followups)
+            try:
+                if conv.channel == "instagram":
+                    if not client.instagram_account_id:
+                        raise ValueError("No instagram_account_id for client — cannot send Instagram nudge.")
+                    from app.services.instagram_service import send_dm
+                    await send_dm(
+                        ig_user_id=client.instagram_account_id,
+                        recipient_igsid=conv.phone_number,
+                        message_text=followup_text,
+                    )
+                else:
+                    from app.services.whatsapp_service import send_text_message
+                    await send_text_message(
+                        to_phone_number=conv.phone_number,
+                        message_text=followup_text,
+                    )
             except Exception as exc:
                 logger.warning(
-                    "Follow-up send failed for conv=%s phone=%s: %s",
-                    conv.id, conv.phone_number, exc,
+                    "Follow-up send failed for conv=%s phone=%s channel=%s: %s",
+                    conv.id, conv.phone_number, conv.channel, exc,
                 )
                 continue
 
@@ -385,8 +438,8 @@ async def _send_abandoned_intent_followups(db) -> None:
             await db.commit()
             sent_count += 1
             logger.info(
-                "Abandoned-intent follow-up sent: conv=%s sku=%s phone=%s",
-                conv.id, sku, conv.phone_number,
+                "Abandoned-intent follow-up sent: conv=%s sku=%s phone=%s stage=%s",
+                conv.id, sku, conv.phone_number, conv.current_stage,
             )
 
         except Exception as exc:
@@ -394,6 +447,61 @@ async def _send_abandoned_intent_followups(db) -> None:
 
     if sent_count:
         logger.info("Abandoned-intent follow-up job complete — sent %d messages.", sent_count)
+
+
+async def _drain_pending_comment_replies_job() -> None:
+    """Scheduled job: open a DB session and drain queued IG comment replies."""
+    from app.db import _get_session_factory
+
+    factory = _get_session_factory()
+    async with factory() as db:
+        await _drain_pending_comment_replies(db)
+
+
+async def _drain_pending_comment_replies(db) -> None:
+    """
+    Send any ig_comment_replies rows still "pending" — comments whose reply
+    was deferred because the client's IG account was over Meta's 200/hour
+    automated-DM cap at the time. Re-checks the same rate limiter per row so
+    a burst of queued rows still respects the cap rather than dumping all of
+    them at once.
+    """
+    from sqlalchemy import select
+
+    from app.models.client import Client
+    from app.models.ig_comment_reply import IgCommentReply
+    from app.services import ig_comment_service
+
+    result = await db.execute(
+        select(IgCommentReply)
+        .where(IgCommentReply.status == "pending")
+        .order_by(IgCommentReply.created_at.asc())
+    )
+    pending_rows = result.scalars().all()
+    if not pending_rows:
+        return
+
+    drained = 0
+    for row in pending_rows:
+        try:
+            client_result = await db.execute(select(Client).where(Client.id == row.client_id))
+            client = client_result.scalar_one_or_none()
+            if not client or not client.is_active or not client.instagram_account_id:
+                continue
+
+            if await ig_comment_service.is_comment_dm_rate_limited(client.instagram_account_id):
+                # Still over the cap — leave it pending for the next drain cycle.
+                continue
+
+            await ig_comment_service.send_comment_reply(
+                db, client, client.instagram_account_id, row
+            )
+            drained += 1
+        except Exception as exc:
+            logger.error("Comment-reply drain error for row=%s: %s", row.id, exc)
+
+    if drained:
+        logger.info("Comment-reply drain job complete — sent %d queued replies.", drained)
 
 
 def start_scheduler() -> None:
@@ -422,12 +530,19 @@ def start_scheduler() -> None:
         id="abandoned_intent_followup",
         replace_existing=True,
     )
+    scheduler.add_job(
+        _drain_pending_comment_replies_job,
+        CronTrigger(minute="*/5"),
+        id="drain_pending_comment_replies",
+        replace_existing=True,
+    )
     scheduler.start()
     logger.info(
         "Scheduler started — daily briefing at 09:00 IST, "
         "daily learning at 00:30 IST, "
         "weekly quality check at 23:30 IST Sunday, "
-        "abandoned-intent follow-up every 6 hours."
+        "open-order nudge check every 6 hours (6h-idle trigger, 24h window guard), "
+        "comment-reply drain every 5 minutes."
     )
 
 

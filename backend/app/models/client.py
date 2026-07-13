@@ -19,6 +19,20 @@ DEFAULT_SYSTEM_PROMPT = (
 BUSINESS_TYPES = {"textile", "clinic", "realestate", "ecommerce", "other"}
 
 
+def _default_ig_comment_triggers() -> list[str]:
+    """Out-of-box keyword list for the IG comment auto-reply trigger."""
+    return ["price", "order", "want this", "how much", "available", "buy"]
+
+
+def _default_ig_comment_reply_text() -> dict[str, str]:
+    """Out-of-box public comment-reply text, one per template language bucket."""
+    return {
+        "english": "Check your DM 👀",
+        "hindi": "Apna DM check karo 👀",
+        "gujarati": "Tamaru DM check karo 👀",
+    }
+
+
 class Client(Base):
     """
     One row per registered business using the platform.
@@ -64,6 +78,17 @@ class Client(Base):
     whatsapp_access_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     instagram_access_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     instagram_account_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+    # IG comment → private-reply DM auto-trigger settings (migration 0049)
+    ig_comment_autoreply_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
+    # False (default) = only reply to comments matching ig_comment_triggers; True = reply to every comment.
+    ig_comment_reply_all: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
+    ig_comment_triggers: Mapped[Any] = mapped_column(
+        JSON, nullable=False, default=_default_ig_comment_triggers,
+    )
+    ig_comment_reply_text: Mapped[Any] = mapped_column(
+        JSON, nullable=False, default=_default_ig_comment_reply_text,
+    )
 
     # Daily briefing settings
     briefing_enabled: Mapped[bool] = mapped_column(Boolean, default=True)

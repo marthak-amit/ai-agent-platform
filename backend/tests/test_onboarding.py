@@ -139,7 +139,7 @@ def test_get_setup_status_partial():
 # ── router tests ─────────────────────────────────────────────────────────────
 
 
-def test_setup_agent_creates_prompt_and_api_key(client, mock_db, mock_settings):
+def test_setup_agent_creates_prompt_and_api_key(client, mock_db, mock_settings, make_test_user):
     """POST /onboarding/setup-agent returns client_id, api_key, and setup_status."""
     from app.services.auth_service import create_access_token
 
@@ -152,7 +152,7 @@ def test_setup_agent_creates_prompt_and_api_key(client, mock_db, mock_settings):
         api_key=None,
     )
     mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = existing
+    mock_result.scalar_one_or_none.return_value = make_test_user(existing)
     mock_db.execute.return_value = mock_result
     mock_db.refresh = AsyncMock(side_effect=lambda obj: None)
 
@@ -176,14 +176,14 @@ def test_setup_agent_creates_prompt_and_api_key(client, mock_db, mock_settings):
     assert data["setup_status"]["steps_pending"] == []
 
 
-def test_setup_agent_without_products_and_whatsapp(client, mock_db, mock_settings):
+def test_setup_agent_without_products_and_whatsapp(client, mock_db, mock_settings, make_test_user):
     """POST /onboarding/setup-agent with only required fields returns 50% completion."""
     from app.services.auth_service import create_access_token
 
     token = create_access_token({"sub": "owner@biz.com"})
     existing = Client(id=3, email="owner@biz.com", hashed_password="h", is_active=True)
     mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = existing
+    mock_result.scalar_one_or_none.return_value = make_test_user(existing)
     mock_db.execute.return_value = mock_result
     mock_db.refresh = AsyncMock(side_effect=lambda obj: None)
 
@@ -204,14 +204,14 @@ def test_setup_agent_without_products_and_whatsapp(client, mock_db, mock_setting
     assert "whatsapp_connected" in data["setup_status"]["steps_pending"]
 
 
-def test_setup_agent_invalid_business_type(client, mock_db, mock_settings):
+def test_setup_agent_invalid_business_type(client, mock_db, mock_settings, make_test_user):
     """POST /onboarding/setup-agent returns 422 for an unknown business_type."""
     from app.services.auth_service import create_access_token
 
     token = create_access_token({"sub": "owner@biz.com"})
     existing = Client(id=1, email="owner@biz.com", hashed_password="h", is_active=True)
     mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = existing
+    mock_result.scalar_one_or_none.return_value = make_test_user(existing)
     mock_db.execute.return_value = mock_result
 
     response = client.post(
@@ -227,7 +227,7 @@ def test_setup_agent_invalid_business_type(client, mock_db, mock_settings):
     assert response.status_code == 422
 
 
-def test_setup_agent_preserves_existing_api_key(client, mock_db, mock_settings):
+def test_setup_agent_preserves_existing_api_key(client, mock_db, mock_settings, make_test_user):
     """POST /onboarding/setup-agent does not regenerate an already-set api_key."""
     from app.services.auth_service import create_access_token
 
@@ -241,7 +241,7 @@ def test_setup_agent_preserves_existing_api_key(client, mock_db, mock_settings):
         api_key=existing_key,
     )
     mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = existing
+    mock_result.scalar_one_or_none.return_value = make_test_user(existing)
     mock_db.execute.return_value = mock_result
     mock_db.refresh = AsyncMock(side_effect=lambda obj: None)
 
@@ -272,14 +272,14 @@ def test_setup_agent_requires_auth(client):
     assert response.status_code == 401
 
 
-def test_onboarding_status_fresh_client(client, mock_db, mock_settings):
+def test_onboarding_status_fresh_client(client, mock_db, mock_settings, make_test_user):
     """GET /onboarding/status returns 25% for a client with no onboarding data."""
     from app.services.auth_service import create_access_token
 
     token = create_access_token({"sub": "owner@biz.com"})
     existing = Client(id=1, email="owner@biz.com", hashed_password="h", is_active=True)
     mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = existing
+    mock_result.scalar_one_or_none.return_value = make_test_user(existing)
     mock_db.execute.return_value = mock_result
 
     response = client.get("/onboarding/status", headers={"Authorization": f"Bearer {token}"})

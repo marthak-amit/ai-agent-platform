@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.routers.auth import get_current_client
+from app.routers.auth import get_current_client, require_permission
 from app.services import order_service, whatsapp_service
 
 logger = logging.getLogger(__name__)
@@ -133,6 +133,7 @@ class NotifyCustomerRequest(BaseModel):
 @router.get("/stats", response_model=OrderStatsOut)
 async def get_stats(
     client=Depends(get_current_client),
+    _perm=Depends(require_permission("order_view")),
     db: AsyncSession = Depends(get_db),
 ) -> OrderStatsOut:
     """
@@ -149,6 +150,7 @@ async def get_stats(
 @router.get("/export/csv")
 async def export_csv(
     client=Depends(get_current_client),
+    _perm=Depends(require_permission("order_view")),
     db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
     """
@@ -176,6 +178,7 @@ async def list_orders(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     client=Depends(get_current_client),
+    _perm=Depends(require_permission("order_view")),
     db: AsyncSession = Depends(get_db),
 ) -> list[OrderOut]:
     """
@@ -206,6 +209,7 @@ async def list_orders(
 async def get_order(
     order_id: int,
     client=Depends(get_current_client),
+    _perm=Depends(require_permission("order_view")),
     db: AsyncSession = Depends(get_db),
 ) -> OrderOut:
     """
@@ -226,6 +230,7 @@ async def update_status(
     order_id: int,
     body: UpdateStatusRequest,
     client=Depends(get_current_client),
+    _perm=Depends(require_permission("mark_packed")),
     db: AsyncSession = Depends(get_db),
 ) -> OrderOut:
     """
@@ -264,6 +269,7 @@ async def notify_customer(
     order_id: int,
     body: NotifyCustomerRequest,
     client=Depends(get_current_client),
+    _perm=Depends(require_permission("manual_utility_send")),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """

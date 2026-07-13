@@ -1,6 +1,35 @@
+export type PermissionKey =
+  | "catalog_edit"
+  | "comment_settings"
+  | "nudge_settings"
+  | "order_view"
+  | "manual_reply"
+  | "mark_packed"
+  | "manual_utility_send"
+  | "analytics_view";
+
+export interface CurrentUser {
+  id: number;
+  email: string;
+  role: "owner" | "manager" | "staff" | string;
+  permissions: PermissionKey[];
+  is_owner: boolean;
+}
+
+export interface TeamMember {
+  id: number;
+  email: string;
+  role: string;
+  permissions: PermissionKey[];
+  is_active: boolean;
+  is_pending: boolean;
+  created_at: string;
+}
+
 export interface ClientProfile {
   id: number;
   email: string;
+  current_user: CurrentUser;
   business_name: string;
   phone: string | null;
   gemini_system_prompt: string;

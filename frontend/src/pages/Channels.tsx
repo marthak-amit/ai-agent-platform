@@ -3,7 +3,16 @@ import { useTranslation } from "react-i18next";
 import Layout from "../components/Layout";
 import AgentCanvas, { type ChannelCardConfig } from "../components/channels/AgentCanvas";
 import ChannelDrawer, { CopyButton, CopyField, FieldInput, Step } from "../components/channels/ChannelDrawer";
-import { disconnectInstagram, getInstagramConnectUrl, getProfile, testWhatsApp, updateChannelCredentials } from "../api/client";
+import {
+  disconnectInstagram,
+  getCommentReplyStats,
+  getInstagramConnectUrl,
+  getProfile,
+  testWhatsApp,
+  updateChannelCredentials,
+  updateProfile,
+  type CommentReplyStats,
+} from "../api/client";
 import { useAuth } from "../context/AuthContext";
 import { X } from "lucide-react";
 
@@ -15,7 +24,17 @@ interface Profile {
   instagram_account_id?: string;
   instagram_connected?: boolean;
   api_key?: string;
+  ig_comment_autoreply_enabled?: boolean;
+  ig_comment_reply_all?: boolean;
+  ig_comment_triggers?: string[];
+  ig_comment_reply_text?: Record<string, string>;
 }
+
+const REPLY_TEXT_LANGS: { key: string; label: string }[] = [
+  { key: "english", label: "English" },
+  { key: "hindi", label: "Hindi" },
+  { key: "gujarati", label: "Gujarati" },
+];
 
 function WidgetPreviewModal({ apiKey, onClose }: { apiKey: string; onClose: () => void }) {
   return (
@@ -29,14 +48,14 @@ function WidgetPreviewModal({ apiKey, onClose }: { apiKey: string; onClose: () =
         </div>
         <div className="bg-gray-50 rounded-xl border border-gray-200 p-4 min-h-48 relative">
           <p className="text-xs text-gray-400 text-center pt-6">Your chat widget will appear as a button in the bottom-right corner of your website.</p>
-          <div className="absolute bottom-4 right-4 w-12 h-12 rounded-full bg-indigo-600 flex items-center justify-center shadow-lg cursor-pointer">
+          <div className="absolute bottom-4 right-4 w-12 h-12 rounded-full bg-brand-primary flex items-center justify-center shadow-lg cursor-pointer">
             <svg className="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24">
               <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z" />
             </svg>
           </div>
         </div>
         <p className="text-xs text-gray-400 mt-3">API key: <span className="font-mono">{apiKey || "not generated yet"}</span></p>
-        <button onClick={onClose} className="mt-4 w-full py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 transition-colors">
+        <button onClick={onClose} className="mt-4 w-full py-2.5 rounded-lg bg-brand-primaryDark text-white text-sm font-semibold hover:bg-brand-primary/90 transition-colors">
           Close
         </button>
       </div>
@@ -65,7 +84,7 @@ const InstagramIcon = (
 );
 
 const WebsiteIcon = (
-  <div className="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center">
+  <div className="w-10 h-10 rounded-xl bg-brand-primary flex items-center justify-center">
     <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24">
       <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z" />
     </svg>
@@ -92,17 +111,38 @@ export default function Channels() {
   const [igDisconnecting, setIgDisconnecting] = useState(false);
   const [igStatus, setIgStatus] = useState<string | null>(null);
 
+  const [commentAutoreplyEnabled, setCommentAutoreplyEnabled] = useState(false);
+  const [commentReplyAll, setCommentReplyAll] = useState(false);
+  const [commentTriggers, setCommentTriggers] = useState<string[]>([]);
+  const [newTrigger, setNewTrigger] = useState("");
+  const [commentReplyText, setCommentReplyText] = useState<Record<string, string>>({});
+  const [replyTextLang, setReplyTextLang] = useState("english");
+  const [commentSettingsSaving, setCommentSettingsSaving] = useState(false);
+  const [commentSettingsSaved, setCommentSettingsSaved] = useState(false);
+  const [commentStats, setCommentStats] = useState<CommentReplyStats | null>(null);
+
   const [showWidgetPreview, setShowWidgetPreview] = useState(false);
 
   const verifyToken = useRef(
     Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
   ).current;
 
+  function applyProfile(p: Profile) {
+    setProfile(p);
+    setCommentAutoreplyEnabled(!!p.ig_comment_autoreply_enabled);
+    setCommentReplyAll(!!p.ig_comment_reply_all);
+    setCommentTriggers(p.ig_comment_triggers ?? []);
+    setCommentReplyText(p.ig_comment_reply_text ?? {});
+  }
+
   useEffect(() => {
     getProfile().then((p: Profile) => {
-      setProfile(p);
+      applyProfile(p);
       setWaPhoneId(p.whatsapp_phone_number_id ?? "");
       setLoadingProfile(false);
+      if (p.instagram_connected) {
+        getCommentReplyStats().then(setCommentStats).catch(() => {});
+      }
     });
 
     // The OAuth callback redirects back here with ?ig_status=connected|cancelled|error|no_ig_account
@@ -115,7 +155,7 @@ export default function Channels() {
       const rest = params.toString();
       window.history.replaceState({}, "", window.location.pathname + (rest ? `?${rest}` : ""));
       if (status === "connected") {
-        getProfile().then((p: Profile) => setProfile(p));
+        getProfile().then((p: Profile) => applyProfile(p));
       }
     }
   }, []);
@@ -126,7 +166,10 @@ export default function Channels() {
 
   async function refreshChannelStatus() {
     const p = await getProfile();
-    setProfile(p);
+    applyProfile(p);
+    if (p.instagram_connected) {
+      getCommentReplyStats().then(setCommentStats).catch(() => {});
+    }
   }
 
   async function saveWhatsApp() {
@@ -172,6 +215,33 @@ export default function Channels() {
       await refreshChannelStatus();
     } finally {
       setIgDisconnecting(false);
+    }
+  }
+
+  function addCommentTrigger() {
+    const value = newTrigger.trim();
+    if (!value || commentTriggers.includes(value)) return;
+    setCommentTriggers([...commentTriggers, value]);
+    setNewTrigger("");
+  }
+
+  function removeCommentTrigger(idx: number) {
+    setCommentTriggers(commentTriggers.filter((_, i) => i !== idx));
+  }
+
+  async function saveCommentSettings() {
+    setCommentSettingsSaving(true);
+    try {
+      await updateProfile({
+        ig_comment_autoreply_enabled: commentAutoreplyEnabled,
+        ig_comment_reply_all: commentReplyAll,
+        ig_comment_triggers: commentTriggers,
+        ig_comment_reply_text: commentReplyText,
+      });
+      setCommentSettingsSaved(true);
+      setTimeout(() => setCommentSettingsSaved(false), 2000);
+    } finally {
+      setCommentSettingsSaving(false);
     }
   }
 
@@ -240,11 +310,11 @@ export default function Channels() {
 
           <div className="flex gap-3">
             <button onClick={saveWhatsApp} disabled={waSaving || !waPhoneId || !waToken}
-              className="flex-1 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+              className="flex-1 py-2.5 rounded-lg bg-brand-primaryDark text-white text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
               {waSaving ? t("channels.saving") : waSaved ? "✓ Saved" : t("channels.save")}
             </button>
             <button onClick={runWhatsAppTest} disabled={waTesting || !waConnected}
-              className="flex-1 py-2.5 rounded-lg border border-indigo-200 text-indigo-700 text-sm font-semibold hover:bg-indigo-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+              className="flex-1 py-2.5 rounded-lg border border-brand-primary/20 text-brand-primaryDark text-sm font-semibold hover:bg-brand-primary/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
               {waTesting ? t("channels.testing") : t("channels.test")}
             </button>
           </div>
@@ -281,6 +351,116 @@ export default function Channels() {
                 <Step n={2} text="Customer DMs will be answered automatically." />
               </div>
               <CopyField label="Instagram Account ID" value={profile.instagram_account_id ?? ""} />
+
+              <div className="border border-gray-100 rounded-xl p-4 flex flex-col gap-4 bg-gray-50">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-gray-800">Comment Auto-Reply</p>
+                    <p className="text-xs text-gray-400 mt-0.5">Nudge commenters into a DM automatically.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setCommentAutoreplyEnabled((v) => !v)}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors shrink-0 ${commentAutoreplyEnabled ? "bg-brand-primary" : "bg-gray-300"}`}
+                  >
+                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${commentAutoreplyEnabled ? "translate-x-6" : "translate-x-1"}`} />
+                  </button>
+                </div>
+
+                {commentAutoreplyEnabled && (
+                  <>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setCommentReplyAll(false)}
+                        className={`flex-1 py-2 rounded-lg text-xs font-semibold border transition-colors ${!commentReplyAll ? "bg-brand-primary text-white border-brand-primary" : "border-gray-200 text-gray-500"}`}
+                      >
+                        Keyword-matched
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCommentReplyAll(true)}
+                        className={`flex-1 py-2 rounded-lg text-xs font-semibold border transition-colors ${commentReplyAll ? "bg-brand-primary text-white border-brand-primary" : "border-gray-200 text-gray-500"}`}
+                      >
+                        Reply to all comments
+                      </button>
+                    </div>
+
+                    {!commentReplyAll && (
+                      <div>
+                        <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">Trigger keywords</label>
+                        <div className="flex flex-wrap gap-2 mb-2">
+                          {commentTriggers.map((kw, idx) => (
+                            <span key={kw} className="inline-flex items-center gap-1 bg-white border border-gray-200 rounded-full pl-3 pr-1.5 py-1 text-xs text-gray-700">
+                              {kw}
+                              <button type="button" onClick={() => removeCommentTrigger(idx)} className="w-4 h-4 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-400">
+                                <X size={11} />
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                        <div className="flex gap-2">
+                          <input
+                            value={newTrigger}
+                            onChange={(e) => setNewTrigger(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addCommentTrigger(); } }}
+                            placeholder="e.g. price"
+                            className="flex-1 border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
+                          />
+                          <button type="button" onClick={addCommentTrigger}
+                            className="px-3 py-1.5 rounded-lg border border-brand-primary/20 text-brand-primaryDark text-xs font-semibold hover:bg-brand-primary/10 transition-colors">
+                            Add
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    <div>
+                      <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">Public reply text</label>
+                      <div className="flex gap-1.5 mb-2">
+                        {REPLY_TEXT_LANGS.map((lang) => (
+                          <button
+                            key={lang.key}
+                            type="button"
+                            onClick={() => setReplyTextLang(lang.key)}
+                            className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${replyTextLang === lang.key ? "bg-brand-primary text-white" : "bg-white border border-gray-200 text-gray-500"}`}
+                          >
+                            {lang.label}
+                          </button>
+                        ))}
+                      </div>
+                      <input
+                        value={commentReplyText[replyTextLang] ?? ""}
+                        onChange={(e) => setCommentReplyText({ ...commentReplyText, [replyTextLang]: e.target.value })}
+                        placeholder="Check your DM 👀"
+                        className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
+                      />
+                      <p className="text-xs text-gray-400 mt-2">
+                        Preview: someone comments “{!commentReplyAll && commentTriggers[0] ? commentTriggers[0] : "how much?"}” → you reply “{commentReplyText[replyTextLang] || "Check your DM 👀"}” → they get a DM automatically.
+                      </p>
+                    </div>
+
+                    {commentStats && (
+                      <div className="grid grid-cols-2 gap-3 pt-1">
+                        <div className="bg-white border border-gray-100 rounded-lg px-3 py-2">
+                          <p className="text-[11px] uppercase tracking-wide text-gray-400">Today</p>
+                          <p className="text-lg font-bold text-gray-900">{commentStats.today_sent}</p>
+                        </div>
+                        <div className="bg-white border border-gray-100 rounded-lg px-3 py-2">
+                          <p className="text-[11px] uppercase tracking-wide text-gray-400">Comment → order</p>
+                          <p className="text-lg font-bold text-gray-900">{Math.round(commentStats.conversion_rate * 100)}%</p>
+                        </div>
+                      </div>
+                    )}
+
+                    <button onClick={saveCommentSettings} disabled={commentSettingsSaving}
+                      className="w-full py-2.5 rounded-lg bg-brand-primaryDark text-white text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                      {commentSettingsSaving ? "Saving…" : commentSettingsSaved ? "✓ Saved" : "Save comment settings"}
+                    </button>
+                  </>
+                )}
+              </div>
+
               <button onClick={handleDisconnectInstagram} disabled={igDisconnecting}
                 className="w-full py-2.5 rounded-lg border border-red-200 text-red-600 text-sm font-semibold hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
                 {igDisconnecting ? "Disconnecting…" : "Disconnect Instagram"}
@@ -295,7 +475,7 @@ export default function Channels() {
                 <Step n={4} text="You'll be redirected back here automatically" />
               </div>
               <button onClick={connectInstagram} disabled={igConnecting}
-                className="w-full py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                className="w-full py-2.5 rounded-lg bg-brand-primaryDark text-white text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
                 {igConnecting ? "Redirecting…" : "Connect Instagram"}
               </button>
             </>
@@ -318,7 +498,7 @@ export default function Channels() {
             </div>
           </div>
           <button onClick={() => setShowWidgetPreview(true)}
-            className="w-full py-2.5 rounded-lg border border-indigo-200 text-indigo-700 text-sm font-semibold hover:bg-indigo-50 transition-colors">
+            className="w-full py-2.5 rounded-lg border border-brand-primary/20 text-brand-primaryDark text-sm font-semibold hover:bg-brand-primary/10 transition-colors">
             Preview Widget
           </button>
         </div>

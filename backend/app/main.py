@@ -18,7 +18,7 @@ from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.routers import admin, analytics, auth, briefing, campaigns, catalogue, catalogue_public, channels, conversations, customers, followup, instagram, integrations, knowledge, leads, onboarding, orders, payment, plans, sandbox, usage, webhook, widget
+from app.routers import admin, analytics, auth, briefing, campaigns, catalogue, catalogue_public, channels, conversations, customers, followup, instagram, integrations, knowledge, leads, onboarding, orders, payment, plans, sandbox, team, usage, webhook, widget
 from app.scheduler import start_scheduler, stop_scheduler
 
 _UPLOADS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
@@ -209,6 +209,7 @@ app.include_router(instagram.router)
 app.include_router(integrations.router)
 app.include_router(payment.router)
 app.include_router(auth.router)
+app.include_router(team.router)
 app.include_router(onboarding.router)
 app.include_router(catalogue.router)
 app.include_router(plans.router)

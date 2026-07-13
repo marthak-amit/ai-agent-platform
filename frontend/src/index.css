@@ -1,3 +1,25 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  --color-primary: #25D366;
+  --color-primary-dark: #0F8B4C;
+  --color-secondary: #1A2E44;
+  --color-bg: #F7F9F8;
+  --color-bg-dark: #1F2937;
+  --color-accent: #F2536B;
+  --color-warning: #F5A623;
+}
+
+@keyframes shimmer {
+  100% { transform: translateX(100%); }
+}
+
+.scrollbar-hide {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}

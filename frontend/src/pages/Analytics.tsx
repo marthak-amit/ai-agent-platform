@@ -120,9 +120,9 @@ export default function Analytics() {
 
   const funnelStages = [
     { label: t("analytics.total_inquiries"), value: funnel.total_inquiries, color: "bg-gray-300" },
-    { label: t("analytics.qualified_leads"), value: funnel.qualified_leads, color: "bg-indigo-300" },
-    { label: t("analytics.hot_leads"), value: funnel.hot_leads, color: "bg-indigo-500" },
-    { label: t("analytics.orders_placed"), value: funnel.orders_placed, color: "bg-indigo-700" },
+    { label: t("analytics.qualified_leads"), value: funnel.qualified_leads, color: "bg-brand-primary/40" },
+    { label: t("analytics.hot_leads"), value: funnel.hot_leads, color: "bg-brand-primary/50" },
+    { label: t("analytics.orders_placed"), value: funnel.orders_placed, color: "bg-brand-primaryDark" },
   ];
   const funnelMax = funnelStages[0].value || 1;
 
@@ -137,8 +137,8 @@ export default function Analytics() {
       label: t("analytics.conversations_month"),
       value: overview.total_conversations,
       icon: MessageSquare,
-      from: "from-indigo-500",
-      to: "to-indigo-700",
+      from: "from-brand-primary",
+      to: "to-brand-primaryDark",
     },
     {
       label: t("analytics.messages_today"),
@@ -216,7 +216,7 @@ export default function Analytics() {
                   <XAxis dataKey="date" tickFormatter={dayLabel} tick={{ fontSize: 12 }} axisLine={false} tickLine={false} />
                   <YAxis allowDecimals={false} tick={{ fontSize: 12 }} axisLine={false} tickLine={false} />
                   <Tooltip formatter={(v) => [v, "messages"]} labelFormatter={(l) => dayLabel(String(l))} />
-                  <Bar dataKey="count" fill="#6366f1" radius={[6, 6, 0, 0]} />
+                  <Bar dataKey="count" fill="#25D366" radius={[6, 6, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             )}
@@ -295,9 +295,9 @@ export default function Analytics() {
                     <XAxis dataKey="hour" tick={{ fontSize: 10 }} interval={3} axisLine={false} tickLine={false} />
                     <YAxis allowDecimals={false} tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
                     <Tooltip formatter={(v) => [v, "messages"]} />
-                    <Bar dataKey="count" radius={[3, 3, 0, 0]} fill="#6366f1">
+                    <Bar dataKey="count" radius={[3, 3, 0, 0]} fill="#25D366">
                       {hourlyData.map((entry, i) => (
-                        <Cell key={i} fill={entry.isPeak ? "#f59e0b" : "#6366f1"} />
+                        <Cell key={i} fill={entry.isPeak ? "#f59e0b" : "#25D366"} />
                       ))}
                     </Bar>
                   </BarChart>

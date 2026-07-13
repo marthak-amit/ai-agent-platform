@@ -8,6 +8,8 @@ export interface PricingPlan {
   cadence?: string;
   limit: string;
   channels: string;
+  badges: string[];
+  features: string[];
   highlighted?: boolean;
 }
 
@@ -21,32 +23,44 @@ export default function PricingCard({ plan, children }: PricingCardProps) {
     <motion.div
       className={`relative flex flex-col rounded-3xl p-6 shadow-sm ${
         plan.highlighted
-          ? "bg-white ring-2 ring-indigo-600"
+          ? "bg-white ring-2 ring-brand-primary"
           : "bg-white ring-1 ring-gray-900/5"
       }`}
-      whileHover={{ y: -4, boxShadow: "0 16px 32px -12px rgba(79, 70, 229, 0.18)" }}
+      whileHover={{ y: -4, boxShadow: "0 16px 32px -12px rgba(15, 139, 76, 0.18)" }}
       transition={{ duration: 0.15, ease: "easeOut" }}
     >
       {plan.highlighted && (
         <motion.span
           className="pointer-events-none absolute inset-0 rounded-2xl"
-          style={{ boxShadow: "0 0 0 2px rgba(79, 70, 229, 0.4)" }}
+          style={{ boxShadow: "0 0 0 2px rgba(37, 211, 102, 0.4)" }}
           animate={{
             boxShadow: [
-              "0 0 0 2px rgba(79, 70, 229, 0.25)",
-              "0 0 16px 2px rgba(79, 70, 229, 0.35)",
-              "0 0 0 2px rgba(79, 70, 229, 0.25)",
+              "0 0 0 2px rgba(37, 211, 102, 0.25)",
+              "0 0 16px 2px rgba(37, 211, 102, 0.35)",
+              "0 0 0 2px rgba(37, 211, 102, 0.25)",
             ],
           }}
           transition={{ duration: 2.5, repeat: Infinity, ease: "easeInOut" }}
         />
       )}
       {plan.highlighted && (
-        <span className="mb-3 inline-block w-fit rounded-full bg-indigo-100 px-3 py-1 text-xs font-semibold text-indigo-700">
+        <span className="mb-3 inline-block w-fit rounded-full bg-brand-primary/10 px-3 py-1 text-xs font-semibold text-brand-primaryDark">
           Most popular
         </span>
       )}
-      <h3 className="text-lg font-semibold text-gray-900">{plan.name}</h3>
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-lg font-semibold text-gray-900">{plan.name}</h3>
+        <div className="flex gap-1">
+          {plan.badges.map((badge) => (
+            <span
+              key={badge}
+              className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-semibold text-gray-600"
+            >
+              {badge}
+            </span>
+          ))}
+        </div>
+      </div>
       <p className="mt-2 flex items-baseline gap-1 overflow-hidden">
         <AnimatePresence mode="wait" initial={false}>
           <motion.span
@@ -65,6 +79,9 @@ export default function PricingCard({ plan, children }: PricingCardProps) {
       <ul className="mt-4 space-y-2 text-sm text-gray-600">
         <li>{plan.limit}</li>
         <li>{plan.channels}</li>
+        {plan.features.map((feature) => (
+          <li key={feature}>{feature}</li>
+        ))}
       </ul>
       {children}
       <CTAButton to="/demo" className="mt-6 w-full">

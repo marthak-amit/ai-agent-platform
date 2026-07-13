@@ -66,21 +66,25 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     return jwt.encode(to_encode, settings.secret_key, algorithm=ALGORITHM)
 
 
-async def get_current_client(token: str, db: AsyncSession):
+async def get_current_user(token: str, db: AsyncSession):
     """
-    Decode a JWT token and return the corresponding Client from the DB.
+    Decode a JWT token and return the corresponding User from the DB.
 
     Args:
         token: Raw JWT string (without 'Bearer ' prefix).
         db:    Active async DB session.
 
     Returns:
-        Client instance if the token is valid and account is active.
+        User instance (with `.client` eagerly loaded) if the token is a valid
+        access token and both the user and its client are active.
 
     Raises:
-        ValueError: If the token is invalid, expired, or the client does not exist.
+        ValueError: If the token is invalid, expired, an invite token (not an
+            access token), or the user/client does not exist or is inactive.
     """
-    from app.models.client import Client
+    from sqlalchemy.orm import selectinload
+
+    from app.models.user import User
 
     settings = get_settings()
     try:
@@ -88,11 +92,38 @@ async def get_current_client(token: str, db: AsyncSession):
         email: str = payload.get("sub")
         if email is None:
             raise ValueError("Token missing subject.")
+        if payload.get("purpose") == "invite":
+            raise ValueError("Invite tokens cannot be used to authenticate.")
     except JWTError as exc:
         raise ValueError(f"Invalid token: {exc}") from exc
 
-    result = await db.execute(select(Client).where(Client.email == email))
-    client = result.scalar_one_or_none()
-    if client is None or not client.is_active:
-        raise ValueError("Client not found or inactive.")
-    return client
+    result = await db.execute(
+        select(User).options(selectinload(User.client)).where(User.email == email)
+    )
+    user = result.scalar_one_or_none()
+    if user is None or not user.is_active or user.client is None or not user.client.is_active:
+        raise ValueError("User not found or inactive.")
+    return user
+
+
+async def get_current_client(token: str, db: AsyncSession):
+    """
+    Decode a JWT token and return the Client business record for that user.
+
+    Kept as a thin wrapper over get_current_user so the ~70 existing routes
+    that depend on receiving a Client (not a User) are unaffected by the
+    introduction of per-user login.
+
+    Args:
+        token: Raw JWT string (without 'Bearer ' prefix).
+        db:    Active async DB session.
+
+    Returns:
+        Client instance if the token is valid and the user/client are active.
+
+    Raises:
+        ValueError: If the token is invalid, expired, or the user/client does
+            not exist or is inactive.
+    """
+    user = await get_current_user(token, db)
+    return user.client

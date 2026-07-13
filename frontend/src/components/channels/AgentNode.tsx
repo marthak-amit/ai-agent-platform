@@ -43,11 +43,11 @@ const AgentNode = forwardRef<HTMLDivElement, AgentNodeProps>(({ name }, ref) => 
         )}
       </div>
 
-      <div className="w-12 h-12 rounded-2xl bg-indigo-600 flex items-center justify-center shadow-sm mb-3">
+      <div className="w-12 h-12 rounded-2xl bg-brand-primary flex items-center justify-center shadow-sm mb-3">
         <Bot size={24} className="text-white" />
       </div>
       <h2 className="font-bold text-gray-900 text-sm leading-snug break-words">{name}</h2>
-      <span className="mt-1.5 text-[11px] font-medium text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full">
+      <span className="mt-1.5 text-[11px] font-medium text-brand-primaryDark bg-brand-primary/5 px-2 py-0.5 rounded-full">
         AI Agent
       </span>
     </div>

@@ -123,7 +123,7 @@ def test_format_catalogue_context_multiple_products():
 
 # ── router tests ──────────────────────────────────────────────────────────────
 
-def test_add_product_returns_201(client, mock_db, mock_settings):
+def test_add_product_returns_201(client, mock_db, mock_settings, make_test_user):
     """POST /catalogue/products creates a product and returns 201."""
     from app.services.auth_service import create_access_token
 
@@ -138,7 +138,7 @@ def test_add_product_returns_201(client, mock_db, mock_settings):
 
     # First execute call: JWT client lookup; second: product refresh
     auth_result = MagicMock()
-    auth_result.scalar_one_or_none.return_value = existing_client
+    auth_result.scalar_one_or_none.return_value = make_test_user(existing_client)
     mock_db.execute.return_value = auth_result
     mock_db.refresh = AsyncMock(side_effect=lambda obj: None)
 
@@ -167,7 +167,7 @@ def test_add_product_requires_auth(client):
     assert response.status_code == 401
 
 
-def test_list_products_returns_200(client, mock_db, mock_settings):
+def test_list_products_returns_200(client, mock_db, mock_settings, make_test_user):
     """GET /catalogue/products returns the client's product list."""
     from app.services.auth_service import create_access_token
     from app.models.client import Client
@@ -175,7 +175,7 @@ def test_list_products_returns_200(client, mock_db, mock_settings):
     token = create_access_token({"sub": "owner@biz.com"})
     existing_client = Client(id=1, email="owner@biz.com", hashed_password="h", is_active=True)
     auth_result = MagicMock()
-    auth_result.scalar_one_or_none.return_value = existing_client
+    auth_result.scalar_one_or_none.return_value = make_test_user(existing_client)
     mock_db.execute.return_value = auth_result
 
     products = [
@@ -196,7 +196,7 @@ def test_list_products_returns_200(client, mock_db, mock_settings):
     assert len(response.json()) == 2
 
 
-def test_update_product_not_found_returns_404(client, mock_db, mock_settings):
+def test_update_product_not_found_returns_404(client, mock_db, mock_settings, make_test_user):
     """PUT /catalogue/products/{id} returns 404 when product not found."""
     from app.services.auth_service import create_access_token
     from app.models.client import Client
@@ -204,7 +204,7 @@ def test_update_product_not_found_returns_404(client, mock_db, mock_settings):
     token = create_access_token({"sub": "owner@biz.com"})
     existing_client = Client(id=1, email="owner@biz.com", hashed_password="h", is_active=True)
     auth_result = MagicMock()
-    auth_result.scalar_one_or_none.return_value = existing_client
+    auth_result.scalar_one_or_none.return_value = make_test_user(existing_client)
     mock_db.execute.return_value = auth_result
 
     with __import__("unittest.mock", fromlist=["patch"]).patch(
@@ -220,7 +220,7 @@ def test_update_product_not_found_returns_404(client, mock_db, mock_settings):
     assert response.status_code == 404
 
 
-def test_delete_product_returns_204(client, mock_db, mock_settings):
+def test_delete_product_returns_204(client, mock_db, mock_settings, make_test_user):
     """DELETE /catalogue/products/{id} returns 204 on success."""
     from app.services.auth_service import create_access_token
     from app.models.client import Client
@@ -228,7 +228,7 @@ def test_delete_product_returns_204(client, mock_db, mock_settings):
     token = create_access_token({"sub": "owner@biz.com"})
     existing_client = Client(id=1, email="owner@biz.com", hashed_password="h", is_active=True)
     auth_result = MagicMock()
-    auth_result.scalar_one_or_none.return_value = existing_client
+    auth_result.scalar_one_or_none.return_value = make_test_user(existing_client)
     mock_db.execute.return_value = auth_result
 
     product = _make_product(id=5, client_id=1)
@@ -248,7 +248,7 @@ def test_delete_product_returns_204(client, mock_db, mock_settings):
     assert response.status_code == 204
 
 
-def test_delete_product_not_found_returns_404(client, mock_db, mock_settings):
+def test_delete_product_not_found_returns_404(client, mock_db, mock_settings, make_test_user):
     """DELETE /catalogue/products/{id} returns 404 when product not found."""
     from app.services.auth_service import create_access_token
     from app.models.client import Client
@@ -256,7 +256,7 @@ def test_delete_product_not_found_returns_404(client, mock_db, mock_settings):
     token = create_access_token({"sub": "owner@biz.com"})
     existing_client = Client(id=1, email="owner@biz.com", hashed_password="h", is_active=True)
     auth_result = MagicMock()
-    auth_result.scalar_one_or_none.return_value = existing_client
+    auth_result.scalar_one_or_none.return_value = make_test_user(existing_client)
     mock_db.execute.return_value = auth_result
 
     with __import__("unittest.mock", fromlist=["patch"]).patch(

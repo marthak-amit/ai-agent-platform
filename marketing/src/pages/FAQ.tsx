@@ -6,9 +6,9 @@ import { StaggerGroup, StaggerItem } from "../components/motion/StaggerGroup";
 
 const faqs = [
   {
-    question: "What is AgentlyAI?",
+    question: "What is SellerTalk24?",
     answer:
-      "AgentlyAI is an AI sales agent for fashion retailers in India. It runs inside WhatsApp and Instagram, helping customers browse your catalogue, pick variants like size and color, and place orders — all in chat.",
+      "SellerTalk24 is an AI sales agent for fashion retailers in India. It runs inside WhatsApp and Instagram, helping customers browse your catalogue, pick variants like size and color, and place orders — all in chat.",
   },
   {
     question: "Which channels does it support?",
@@ -22,7 +22,7 @@ const faqs = [
   },
   {
     question: "What languages does it support?",
-    answer: "AgentlyAI can converse in English, Hindi, and Hinglish.",
+    answer: "SellerTalk24 can converse in English, Hindi, and Hinglish.",
   },
   {
     question: "What payment methods are supported?",
@@ -39,7 +39,7 @@ const faqs = [
       "Plan upgrades are currently activated manually by our team during onboarding rather than self-serve billing — book a demo and we'll get you set up on the right plan.",
   },
   {
-    question: "Who is AgentlyAI for?",
+    question: "Who is SellerTalk24 for?",
     answer:
       "Fashion and apparel retailers in India selling over WhatsApp and Instagram — from independent boutiques to multi-store fashion brands.",
   },
@@ -51,8 +51,8 @@ export default function FAQ() {
   return (
     <>
       <SEO
-        title="FAQ — AgentlyAI"
-        description="Answers to common questions about AgentlyAI: channels, setup, languages, payments, security, and plans."
+        title="FAQ — SellerTalk24"
+        description="Answers to common questions about SellerTalk24: channels, setup, languages, payments, security, and plans."
         path="/faq"
       />
       <section className="mx-auto max-w-3xl px-4 py-16 sm:px-6 lg:px-8">

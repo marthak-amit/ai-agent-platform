@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.models.client import Client
-from app.routers.auth import get_current_client
+from app.routers.auth import get_owner_client as get_current_client
 from app.services import (
     catalogue_service,
     conversation_service,

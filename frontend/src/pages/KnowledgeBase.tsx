@@ -137,7 +137,7 @@ function EntryModal({ initial, onClose, onSaved }: EntryModalProps) {
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Question / Keywords</label>
             <input
-              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
               placeholder="e.g. delivery time kitna lagta hai"
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
@@ -151,7 +151,7 @@ function EntryModal({ initial, onClose, onSaved }: EntryModalProps) {
             <label className="block text-xs font-medium text-gray-600 mb-1">Answer</label>
             <textarea
               rows={4}
-              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-none"
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary resize-none"
               placeholder="e.g. We deliver pan-India in 3-5 business days..."
               value={answer}
               onChange={(e) => setAnswer(e.target.value)}
@@ -162,7 +162,7 @@ function EntryModal({ initial, onClose, onSaved }: EntryModalProps) {
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">Category</label>
               <select
-                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
                 value={category}
                 onChange={(e) => setCategory(e.target.value)}
               >
@@ -175,7 +175,7 @@ function EntryModal({ initial, onClose, onSaved }: EntryModalProps) {
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">Language</label>
               <select
-                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
                 value={language}
                 onChange={(e) => setLanguage(e.target.value)}
               >
@@ -197,7 +197,7 @@ function EntryModal({ initial, onClose, onSaved }: EntryModalProps) {
           <button
             onClick={handleSave}
             disabled={saving}
-            className="px-5 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+            className="px-5 py-2 bg-brand-primaryDark text-white text-sm rounded-lg hover:bg-brand-primary/90 disabled:opacity-50 transition-colors"
           >
             {saving ? "Saving…" : "Save Entry"}
           </button>
@@ -249,7 +249,7 @@ function UploadSection({ onUploaded }: { onUploaded: () => void }) {
         onDragOver={(e) => e.preventDefault()}
         onDrop={handleDrop}
         onClick={() => inputRef.current?.click()}
-        className="border-2 border-dashed border-gray-200 rounded-xl p-8 text-center cursor-pointer hover:border-indigo-300 hover:bg-indigo-50/30 transition-colors"
+        className="border-2 border-dashed border-gray-200 rounded-xl p-8 text-center cursor-pointer hover:border-brand-primary/40 hover:bg-brand-primary/10/30 transition-colors"
       >
         <Upload size={24} className="mx-auto text-gray-300 mb-2" />
         <p className="text-sm text-gray-500">
@@ -319,7 +319,7 @@ function EntryCard({ entry, onEdit, onDelete, onToggle }: EntryCardProps) {
           onClick={() => onToggle(entry.id)}
           title={entry.is_active ? "Disable entry" : "Enable entry"}
           className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors ${
-            entry.is_active ? "bg-indigo-600" : "bg-gray-200"
+            entry.is_active ? "bg-brand-primary" : "bg-gray-200"
           }`}
         >
           <span
@@ -346,7 +346,7 @@ function EntryCard({ entry, onEdit, onDelete, onToggle }: EntryCardProps) {
         <div className="flex items-center gap-1">
           <button
             onClick={() => onEdit(entry)}
-            className="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+            className="p-1.5 text-gray-400 hover:text-brand-primaryDark hover:bg-brand-primary/10 rounded-lg transition-colors"
             title="Edit"
           >
             <Edit2 size={14} />
@@ -439,7 +439,7 @@ export default function KnowledgeBase() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-              <Brain size={24} className="text-indigo-600" />
+              <Brain size={24} className="text-brand-primaryDark" />
               Knowledge Base
             </h1>
             <p className="text-sm text-gray-500 mt-0.5">
@@ -448,7 +448,7 @@ export default function KnowledgeBase() {
           </div>
           <button
             onClick={() => setModalEntry(null)}
-            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm rounded-xl hover:bg-indigo-700 transition-colors shadow-sm"
+            className="flex items-center gap-2 px-4 py-2 bg-brand-primaryDark text-white text-sm rounded-xl hover:bg-brand-primary/90 transition-colors shadow-sm"
           >
             <Plus size={16} />
             Add Entry
@@ -459,8 +459,8 @@ export default function KnowledgeBase() {
         {stats && (
           <div className="grid grid-cols-3 gap-4">
             <div className="bg-white rounded-2xl border border-gray-200 px-5 py-4 flex items-center gap-4">
-              <div className="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center">
-                <BookOpen size={20} className="text-indigo-600" />
+              <div className="w-10 h-10 bg-brand-primary/5 rounded-xl flex items-center justify-center">
+                <BookOpen size={20} className="text-brand-primaryDark" />
               </div>
               <div>
                 <p className="text-2xl font-bold text-gray-900">{stats.total}</p>
@@ -499,7 +499,7 @@ export default function KnowledgeBase() {
                 onClick={() => setFilterSrc(s)}
                 className={`px-2.5 py-1 rounded-lg font-medium transition-colors ${
                   filterSrc === s
-                    ? "bg-indigo-600 text-white"
+                    ? "bg-brand-primaryDark text-white"
                     : "text-gray-500 hover:bg-gray-100"
                 }`}
               >
@@ -519,7 +519,7 @@ export default function KnowledgeBase() {
                 onClick={() => setFilterCat(c)}
                 className={`px-2.5 py-1 rounded-lg font-medium capitalize transition-colors ${
                   filterCat === c
-                    ? "bg-indigo-600 text-white"
+                    ? "bg-brand-primaryDark text-white"
                     : "text-gray-500 hover:bg-gray-100"
                 }`}
               >

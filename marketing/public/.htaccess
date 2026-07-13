@@ -1,0 +1,17 @@
+# Hostinger shared hosting — static SSG output from `npm run build` (dist/)
+# Upload the *contents* of dist/ (including this file) to public_html/.
+
+RewriteEngine On
+RewriteBase /
+
+# Serve pretty URLs (e.g. /features, /demo) from the prerendered .html files
+# vite-react-ssg emits (features.html, demo.html, ...), without a redirect.
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteCond %{DOCUMENT_ROOT}/$1.html -f
+RewriteRule ^(.*)$ $1.html [L]
+
+# Any path with no matching prerendered page (including trailing slashes,
+# e.g. /features/) falls back to index.html so the app hydrates and the
+# client-side "*" route can render the NotFound page.
+ErrorDocument 404 /index.html

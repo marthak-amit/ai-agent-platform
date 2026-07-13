@@ -76,7 +76,7 @@ function relativeTime(iso: string | null): string {
 
 function avatarColor(phone: string): string {
   const colors = [
-    "bg-indigo-500", "bg-purple-500", "bg-pink-500", "bg-rose-500",
+    "bg-brand-primary/50", "bg-purple-500", "bg-pink-500", "bg-rose-500",
     "bg-orange-500", "bg-amber-500", "bg-emerald-500", "bg-teal-500",
     "bg-cyan-500", "bg-blue-500",
   ];
@@ -93,7 +93,7 @@ function initials(customer: Customer): string {
 
 const STATUS_STYLES: Record<string, string> = {
   new: "bg-blue-100 text-blue-700",
-  confirmed: "bg-indigo-100 text-indigo-700",
+  confirmed: "bg-brand-primary/10 text-brand-primaryDark",
   paid: "bg-green-100 text-green-700",
   dispatched: "bg-purple-100 text-purple-700",
   delivered: "bg-emerald-100 text-emerald-700",
@@ -165,7 +165,7 @@ function SendMessageModal({
           </button>
         </div>
         <textarea
-          className="w-full border border-gray-200 rounded-lg p-3 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          className="w-full border border-gray-200 rounded-lg p-3 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-brand-primary"
           rows={4}
           placeholder="Type your WhatsApp message..."
           value={message}
@@ -181,7 +181,7 @@ function SendMessageModal({
           <button
             onClick={handleSend}
             disabled={sending || sent || !message.trim()}
-            className="flex-1 px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:opacity-50"
+            className="flex-1 px-4 py-2 rounded-lg bg-brand-primaryDark text-white text-sm font-medium hover:bg-brand-primary/90 disabled:opacity-50"
           >
             {sent ? "Sent ✓" : sending ? "Sending..." : "Send WhatsApp"}
           </button>
@@ -265,7 +265,7 @@ function CustomerDetailModal({
           <div className="flex items-center gap-2">
             <button
               onClick={() => setShowMessage(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand-primaryDark text-white text-sm font-medium hover:bg-brand-primary/90"
             >
               <MessageSquare size={14} />
               Message
@@ -321,7 +321,7 @@ function CustomerDetailModal({
                   {customer.tags.split(",").filter(Boolean).map((tag) => (
                     <span
                       key={tag}
-                      className="px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 text-xs font-medium"
+                      className="px-2 py-0.5 rounded-full bg-brand-primary/10 text-brand-primaryDark text-xs font-medium"
                     >
                       {tag.trim()}
                     </span>
@@ -352,7 +352,7 @@ function CustomerDetailModal({
             <div>
               <p className="text-xs text-gray-500 mb-1">Name</p>
               <input
-                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
                 value={editName}
                 onChange={(e) => setEditName(e.target.value)}
                 placeholder="Customer name"
@@ -363,7 +363,7 @@ function CustomerDetailModal({
             <div>
               <p className="text-xs text-gray-500 mb-1">Notes</p>
               <textarea
-                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-brand-primary"
                 rows={3}
                 value={editNotes}
                 onChange={(e) => setEditNotes(e.target.value)}
@@ -372,7 +372,7 @@ function CustomerDetailModal({
               <button
                 onClick={handleSaveNotes}
                 disabled={savingNotes}
-                className="mt-1.5 w-full py-1.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:opacity-50"
+                className="mt-1.5 w-full py-1.5 rounded-lg bg-brand-primaryDark text-white text-sm font-medium hover:bg-brand-primary/90 disabled:opacity-50"
               >
                 {savingNotes ? "Saving..." : "Save"}
               </button>
@@ -389,7 +389,7 @@ function CustomerDetailModal({
                   onClick={() => setTab(t)}
                   className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors capitalize ${
                     tab === t
-                      ? "border-indigo-600 text-indigo-600"
+                      ? "border-brand-primary text-brand-primaryDark"
                       : "border-transparent text-gray-500 hover:text-gray-700"
                   }`}
                 >
@@ -401,7 +401,7 @@ function CustomerDetailModal({
             <div className="flex-1 overflow-y-auto p-5">
               {loading ? (
                 <div className="flex items-center justify-center h-32">
-                  <div className="w-6 h-6 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+                  <div className="w-6 h-6 border-2 border-brand-primary border-t-transparent rounded-full animate-spin" />
                 </div>
               ) : tab === "orders" ? (
                 orders.length === 0 ? (
@@ -518,7 +518,7 @@ export default function Customers() {
         {/* Stats row */}
         {stats && (
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <StatCard label="Total Customers" value={stats.total_customers} icon={Users} color="bg-indigo-500" />
+            <StatCard label="Total Customers" value={stats.total_customers} icon={Users} color="bg-brand-primary/50" />
             <StatCard label="Active This Month" value={stats.active_this_month} icon={Clock} color="bg-emerald-500" />
             <StatCard label="VIP Customers" value={stats.vip_customers} icon={Crown} color="bg-amber-500" />
             <StatCard
@@ -536,7 +536,7 @@ export default function Customers() {
           <div className="relative flex-1 min-w-[200px] max-w-xs">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
             <input
-              className="w-full pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="w-full pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
               placeholder="Search name or phone..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
@@ -551,7 +551,7 @@ export default function Customers() {
                 onClick={() => setFilter(f)}
                 className={`px-3 py-1.5 rounded-lg text-sm font-medium capitalize transition-colors ${
                   filter === f
-                    ? "bg-indigo-600 text-white"
+                    ? "bg-brand-primaryDark text-white"
                     : "bg-white border border-gray-200 text-gray-600 hover:bg-gray-50"
                 }`}
               >
@@ -563,7 +563,7 @@ export default function Customers() {
           {/* Sort */}
           <div className="relative ml-auto">
             <select
-              className="appearance-none pl-3 pr-8 py-2 border border-gray-200 rounded-lg text-sm text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="appearance-none pl-3 pr-8 py-2 border border-gray-200 rounded-lg text-sm text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-brand-primary"
               value={sort}
               onChange={(e) => setSort(e.target.value)}
             >
@@ -579,7 +579,7 @@ export default function Customers() {
         <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
           {loading ? (
             <div className="flex items-center justify-center h-48">
-              <div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+              <div className="w-8 h-8 border-2 border-brand-primary border-t-transparent rounded-full animate-spin" />
             </div>
           ) : customers.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-48 text-gray-400">
@@ -605,7 +605,7 @@ export default function Customers() {
                     <tr
                       key={c.id}
                       onClick={() => setSelected(c)}
-                      className="border-b border-gray-50 last:border-0 hover:bg-indigo-50/30 cursor-pointer transition-colors"
+                      className="border-b border-gray-50 last:border-0 hover:bg-brand-primary/10/30 cursor-pointer transition-colors"
                     >
                       {/* Customer */}
                       <td className="px-5 py-3.5">
@@ -631,7 +631,7 @@ export default function Customers() {
                       {/* Orders */}
                       <td className="px-4 py-3.5 text-center">
                         <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold ${
-                          c.total_orders > 0 ? "bg-indigo-100 text-indigo-700" : "bg-gray-100 text-gray-500"
+                          c.total_orders > 0 ? "bg-brand-primary/10 text-brand-primaryDark" : "bg-gray-100 text-gray-500"
                         }`}>
                           <ShoppingCart size={11} />
                           {c.total_orders}
@@ -668,7 +668,7 @@ export default function Customers() {
                           <button
                             onClick={(e) => { e.stopPropagation(); setShowMessage(c); }}
                             title="Send message"
-                            className="p-1.5 rounded-lg text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
+                            className="p-1.5 rounded-lg text-gray-400 hover:text-brand-primaryDark hover:bg-brand-primary/10 transition-colors"
                           >
                             <MessageSquare size={15} />
                           </button>

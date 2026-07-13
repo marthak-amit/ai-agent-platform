@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { motion } from "framer-motion";
 import {
   addProduct,
   adjustStock,
@@ -12,7 +13,7 @@ import {
 } from "../api/client";
 import Layout from "../components/Layout";
 import type { Product, ProductVariant, StockLog } from "../types";
-import { Search, Plus, X, Package, AlertTriangle } from "lucide-react";
+import { Search, Plus, X, Package, AlertTriangle, Boxes, CheckCircle2, IndianRupee, Pencil, PackagePlus, Pause, Play, Trash2 } from "lucide-react";
 import { ColorDots, SizePills } from "../utils/variants";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -186,7 +187,7 @@ function ImageDropZone({ preview, onFile }: { preview: string; onFile: (f: File)
       onDragLeave={() => setDragging(false)}
       onDrop={handleDrop}
       className={`relative w-full rounded-xl border-2 border-dashed flex items-center justify-center cursor-pointer transition-all overflow-hidden
-        ${dragging ? "border-indigo-500 bg-indigo-50" : "border-gray-200 bg-gray-50 hover:bg-gray-100"}`}
+        ${dragging ? "border-brand-primary bg-brand-primary/5" : "border-gray-200 bg-gray-50 hover:bg-gray-100"}`}
       style={{ height: 160 }}
     >
       {preview ? (
@@ -199,7 +200,7 @@ function ImageDropZone({ preview, onFile }: { preview: string; onFile: (f: File)
       ) : (
         <div className="text-center text-sm text-gray-400 select-none px-4">
           <div className="text-3xl mb-2">📷</div>
-          <div>Drop image or <span className="text-indigo-600 font-medium">click to upload</span></div>
+          <div>Drop image or <span className="text-brand-primaryDark font-medium">click to upload</span></div>
           <div className="text-xs text-gray-300 mt-1">JPEG, PNG, WebP · max 5 MB</div>
         </div>
       )}
@@ -297,7 +298,7 @@ function VariantBuilder({ vs, setVs }: {
         <button
           type="button"
           onClick={() => setVs((prev) => ({ ...prev, hasVariants: !prev.hasVariants }))}
-          className={`relative w-11 h-6 rounded-full transition-colors ${vs.hasVariants ? "bg-indigo-600" : "bg-gray-300"}`}
+          className={`relative w-11 h-6 rounded-full transition-colors ${vs.hasVariants ? "bg-brand-primary" : "bg-gray-300"}`}
         >
           <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${vs.hasVariants ? "translate-x-5" : ""}`} />
         </button>
@@ -315,7 +316,7 @@ function VariantBuilder({ vs, setVs }: {
                   type="checkbox"
                   checked={vs.useColors}
                   onChange={(e) => setVs((prev) => ({ ...prev, useColors: e.target.checked }))}
-                  className="rounded accent-indigo-600"
+                  className="rounded accent-brand-primary"
                 />
                 <span className="text-sm text-gray-700">Colors / Shades</span>
               </label>
@@ -324,7 +325,7 @@ function VariantBuilder({ vs, setVs }: {
                   type="checkbox"
                   checked={vs.useSizes}
                   onChange={(e) => setVs((prev) => ({ ...prev, useSizes: e.target.checked }))}
-                  className="rounded accent-indigo-600"
+                  className="rounded accent-brand-primary"
                 />
                 <span className="text-sm text-gray-700">Sizes</span>
               </label>
@@ -344,7 +345,7 @@ function VariantBuilder({ vs, setVs }: {
                     type="button"
                     title={cp.name}
                     onClick={() => toggleColor(cp.name)}
-                    className={`w-7 h-7 rounded-full transition-all relative ${cp.border ? "border border-gray-300" : ""} ${vs.colors.includes(cp.name) ? "ring-2 ring-offset-1 ring-indigo-500 scale-110" : "hover:scale-110"}`}
+                    className={`w-7 h-7 rounded-full transition-all relative ${cp.border ? "border border-gray-300" : ""} ${vs.colors.includes(cp.name) ? "ring-2 ring-offset-1 ring-brand-primary scale-110" : "hover:scale-110"}`}
                     style={{ backgroundColor: cp.hex }}
                   />
                 ))}
@@ -358,7 +359,7 @@ function VariantBuilder({ vs, setVs }: {
                   value={vs.customColorName}
                   onChange={(e) => setVs((prev) => ({ ...prev, customColorName: e.target.value }))}
                   onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addCustomColor(); }}}
-                  className="flex-1 border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="flex-1 border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
                 />
                 <input
                   type="color"
@@ -369,7 +370,7 @@ function VariantBuilder({ vs, setVs }: {
                 <button
                   type="button"
                   onClick={addCustomColor}
-                  className="px-3 py-1.5 bg-indigo-50 text-indigo-600 rounded-lg text-sm font-medium hover:bg-indigo-100"
+                  className="px-3 py-1.5 bg-brand-primary/5 text-brand-primaryDark rounded-lg text-sm font-medium hover:bg-brand-primary/10"
                 >
                   + Add
                 </button>
@@ -409,7 +410,7 @@ function VariantBuilder({ vs, setVs }: {
                       key={s}
                       type="button"
                       onClick={() => toggleSize(s)}
-                      className={`px-3 py-1 rounded-lg text-xs font-medium border transition-all ${vs.sizes.includes(s) ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-gray-600 border-gray-200 hover:border-indigo-300"}`}
+                      className={`px-3 py-1 rounded-lg text-xs font-medium border transition-all ${vs.sizes.includes(s) ? "bg-brand-primaryDark text-white border-brand-primary" : "bg-white text-gray-600 border-gray-200 hover:border-brand-primary/40"}`}
                     >
                       {s}
                     </button>
@@ -422,7 +423,7 @@ function VariantBuilder({ vs, setVs }: {
                       key={s}
                       type="button"
                       onClick={() => toggleSize(s)}
-                      className={`px-3 py-1 rounded-lg text-xs font-medium border transition-all ${vs.sizes.includes(s) ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-gray-600 border-gray-200 hover:border-indigo-300"}`}
+                      className={`px-3 py-1 rounded-lg text-xs font-medium border transition-all ${vs.sizes.includes(s) ? "bg-brand-primaryDark text-white border-brand-primary" : "bg-white text-gray-600 border-gray-200 hover:border-brand-primary/40"}`}
                     >
                       {s}
                     </button>
@@ -438,12 +439,12 @@ function VariantBuilder({ vs, setVs }: {
                   value={vs.customSize}
                   onChange={(e) => setVs((prev) => ({ ...prev, customSize: e.target.value }))}
                   onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addCustomSize(); }}}
-                  className="flex-1 border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="flex-1 border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
                 />
                 <button
                   type="button"
                   onClick={addCustomSize}
-                  className="px-3 py-1.5 bg-indigo-50 text-indigo-600 rounded-lg text-sm font-medium hover:bg-indigo-100"
+                  className="px-3 py-1.5 bg-brand-primary/5 text-brand-primaryDark rounded-lg text-sm font-medium hover:bg-brand-primary/10"
                 >
                   + Add
                 </button>
@@ -477,7 +478,7 @@ function VariantBuilder({ vs, setVs }: {
                   value={vs.fillAll}
                   onChange={(e) => setVs((prev) => ({ ...prev, fillAll: e.target.value }))}
                   placeholder="qty"
-                  className="w-16 border border-gray-200 rounded-lg px-2 py-1 text-sm text-center focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="w-16 border border-gray-200 rounded-lg px-2 py-1 text-sm text-center focus:outline-none focus:ring-2 focus:ring-brand-primary"
                 />
                 <button
                   type="button"
@@ -519,7 +520,7 @@ function VariantBuilder({ vs, setVs }: {
                                   min="0"
                                   value={val}
                                   onChange={(e) => setStock(k, e.target.value)}
-                                  className={`w-12 border rounded text-center text-xs py-1 focus:outline-none focus:ring-1 focus:ring-indigo-500 ${!val || val === "0" ? "border-gray-200 bg-gray-50 text-gray-400" : "border-indigo-200 bg-white text-gray-900"}`}
+                                  className={`w-12 border rounded text-center text-xs py-1 focus:outline-none focus:ring-1 focus:ring-brand-primary ${!val || val === "0" ? "border-gray-200 bg-gray-50 text-gray-400" : "border-brand-primary/20 bg-white text-gray-900"}`}
                                 />
                               </td>
                             );
@@ -547,7 +548,7 @@ function VariantBuilder({ vs, setVs }: {
                           value={vs.stockMatrix[k] || ""}
                           onChange={(e) => setStock(k, e.target.value)}
                           placeholder="0"
-                          className="w-20 border border-gray-200 rounded-lg px-2 py-1 text-sm text-center focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                          className="w-20 border border-gray-200 rounded-lg px-2 py-1 text-sm text-center focus:outline-none focus:ring-2 focus:ring-brand-primary"
                         />
                         <span className="text-xs text-gray-400">pieces</span>
                       </div>
@@ -569,7 +570,7 @@ function VariantBuilder({ vs, setVs }: {
                           value={vs.stockMatrix[k] || ""}
                           onChange={(e) => setStock(k, e.target.value)}
                           placeholder="0"
-                          className="w-20 border border-gray-200 rounded-lg px-2 py-1 text-sm text-center focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                          className="w-20 border border-gray-200 rounded-lg px-2 py-1 text-sm text-center focus:outline-none focus:ring-2 focus:ring-brand-primary"
                         />
                         <span className="text-xs text-gray-400">pieces</span>
                       </div>
@@ -589,7 +590,7 @@ function VariantBuilder({ vs, setVs }: {
                 <button
                   type="button"
                   onClick={() => setVs((prev) => ({ ...prev, useDiffPrice: !prev.useDiffPrice }))}
-                  className={`relative w-9 h-5 rounded-full transition-colors ${vs.useDiffPrice ? "bg-indigo-600" : "bg-gray-300"}`}
+                  className={`relative w-9 h-5 rounded-full transition-colors ${vs.useDiffPrice ? "bg-brand-primary" : "bg-gray-300"}`}
                 >
                   <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${vs.useDiffPrice ? "translate-x-4" : ""}`} />
                 </button>
@@ -610,7 +611,7 @@ function VariantBuilder({ vs, setVs }: {
                             value={vs.priceMatrix[k] || ""}
                             onChange={(e) => setPrice(k, e.target.value)}
                             placeholder="same as base"
-                            className="w-28 border border-gray-200 rounded-lg pl-5 pr-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                            className="w-28 border border-gray-200 rounded-lg pl-5 pr-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-brand-primary"
                           />
                         </div>
                       </div>
@@ -656,30 +657,29 @@ function ProductCard({
   const placeholder = PLACEHOLDER_MAP[p.category ?? ""] ?? { emoji: "📦", bg: "#F3F4F6" };
 
   return (
-    <div className={`bg-white rounded-xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow duration-200 overflow-hidden flex flex-col ${!p.is_active ? "opacity-60" : ""}`}>
-      <div className="h-40 flex items-center justify-center overflow-hidden shrink-0" style={imgSrc ? {} : { backgroundColor: placeholder.bg }}>
+    <div className={`group bg-white rounded-2xl border border-gray-100 shadow-sm hover:shadow-lg hover:border-gray-200 transition-all duration-200 overflow-hidden flex flex-col ${!p.is_active ? "opacity-60" : ""}`}>
+      <div className="relative h-40 flex items-center justify-center overflow-hidden shrink-0" style={imgSrc ? {} : { backgroundColor: placeholder.bg }}>
         {imgSrc ? (
-          <img src={imgSrc} alt={p.name} className="w-full h-full object-cover" />
+          <img src={imgSrc} alt={p.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
         ) : (
           <span className="text-5xl">{placeholder.emoji}</span>
         )}
+        {!p.is_active && (
+          <span className="absolute top-2.5 right-2.5 text-[10px] font-semibold px-2 py-1 rounded-full bg-white/95 text-gray-500 shadow-sm">Inactive</span>
+        )}
       </div>
 
-      <div className="p-4 flex flex-col gap-2.5 flex-1">
-        <div className="flex items-center gap-2 flex-wrap">
-          {p.sku && <SkuPill sku={p.sku} />}
-          {!p.is_active && (
-            <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">Inactive</span>
+      <div className="p-4 flex flex-col gap-2 flex-1">
+        <div className="flex items-center justify-between gap-2">
+          {p.sku ? <SkuPill sku={p.sku} /> : <span />}
+          {p.category && (
+            <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wide shrink-0">{p.category}</span>
           )}
         </div>
 
-        <h3 className="font-semibold text-gray-900 text-sm leading-snug">{toTitleCase(p.name)}</h3>
+        <h3 className="font-semibold text-gray-900 text-sm leading-snug line-clamp-2">{toTitleCase(p.name)}</h3>
 
-        {p.category && (
-          <span className="text-xs text-gray-400">{p.category}</span>
-        )}
-
-        <div className="text-xl font-bold text-indigo-600">
+        <div className="text-xl font-bold text-brand-primaryDark tracking-tight">
           ₹{p.price.toLocaleString("en-IN")}
         </div>
 
@@ -692,20 +692,27 @@ function ProductCard({
 
         <StockBadge product={p} />
 
-        <div className="flex items-center gap-1.5 mt-auto pt-2 border-t border-gray-50">
-          <button onClick={onEdit} className="flex-1 text-xs text-gray-600 border border-gray-200 rounded-lg py-1.5 hover:border-indigo-300 hover:text-indigo-600 transition-all">Edit</button>
-          <button onClick={onStock} className="flex-1 text-xs text-gray-600 border border-gray-200 rounded-lg py-1.5 hover:border-green-300 hover:text-green-600 transition-all">Stock</button>
+        <div className="flex items-center gap-1.5 mt-auto pt-3 border-t border-gray-50">
+          <button onClick={onEdit} title="Edit" className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium text-gray-600 border border-gray-200 rounded-xl py-2 hover:border-brand-primary/40 hover:text-brand-primaryDark hover:bg-brand-primary/5 transition-all">
+            <Pencil size={12} /> Edit
+          </button>
+          <button onClick={onStock} title="Adjust stock" className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium text-gray-600 border border-gray-200 rounded-xl py-2 hover:border-emerald-300 hover:text-emerald-600 hover:bg-emerald-50 transition-all">
+            <PackagePlus size={12} /> Stock
+          </button>
           <button
             onClick={onToggle}
-            className={`flex-1 text-xs border rounded-lg py-1.5 transition-all ${
+            title={p.is_active ? "Pause" : "Activate"}
+            className={`w-8 h-8 shrink-0 flex items-center justify-center border rounded-xl transition-all ${
               p.is_active
-                ? "text-gray-600 border-gray-200 hover:border-amber-300 hover:text-amber-600"
-                : "text-indigo-600 border-indigo-200 hover:bg-indigo-50"
+                ? "text-gray-500 border-gray-200 hover:border-amber-300 hover:text-amber-600 hover:bg-amber-50"
+                : "text-brand-primaryDark border-brand-primary/20 bg-brand-primary/5 hover:bg-brand-primary/10"
             }`}
           >
-            {p.is_active ? "Pause" : "Activate"}
+            {p.is_active ? <Pause size={13} /> : <Play size={13} />}
           </button>
-          <button onClick={onDelete} className="text-xs text-gray-300 border border-gray-100 rounded-lg px-2.5 py-1.5 hover:text-red-500 hover:border-red-200 transition-all">🗑</button>
+          <button onClick={onDelete} title="Delete" className="w-8 h-8 shrink-0 flex items-center justify-center text-gray-300 border border-gray-100 rounded-xl hover:text-red-500 hover:border-red-200 hover:bg-red-50 transition-all">
+            <Trash2 size={13} />
+          </button>
         </div>
       </div>
     </div>
@@ -990,25 +997,28 @@ export default function Catalogue() {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">{t("catalogue.title")}</h1>
+          <h1 className="text-2xl font-bold text-gray-900 tracking-tight">{t("catalogue.title")}</h1>
           <p className="text-sm text-gray-400 mt-0.5">{products.length} products</p>
         </div>
-        <button
+        <motion.button
           onClick={openAdd}
-          className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2.5 rounded-lg text-sm font-semibold hover:bg-indigo-700 active:scale-95 transition-all shadow-sm"
+          whileTap={{ scale: 0.97 }}
+          className="flex items-center gap-2 bg-brand-primaryDark text-white px-4 py-2.5 rounded-xl text-sm font-semibold hover:opacity-90 transition-all shadow-sm"
         >
           <Plus size={16} /> Add Product
-        </button>
+        </motion.button>
       </div>
 
       {/* Low stock banner */}
       {lowStockCount > 0 && (
-        <div className="mb-5 flex items-center justify-between bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
-          <div className="flex items-center gap-2 text-amber-700 text-sm font-medium">
-            <AlertTriangle size={16} />
+        <div className="mb-5 flex items-center justify-between bg-amber-50 border border-amber-100 rounded-2xl px-4 py-3.5">
+          <div className="flex items-center gap-3 text-amber-700 text-sm font-medium">
+            <span className="w-8 h-8 rounded-xl bg-amber-100 flex items-center justify-center shrink-0">
+              <AlertTriangle size={15} />
+            </span>
             {lowStockCount} product{lowStockCount > 1 ? "s" : ""} running low on stock
           </div>
-          <button onClick={() => { setLowStockFilter(true); setStatusFilter("all"); }} className="text-amber-600 text-sm font-medium hover:underline">
+          <button onClick={() => { setLowStockFilter(true); setStatusFilter("all"); }} className="text-amber-700 text-sm font-semibold hover:underline shrink-0">
             View →
           </button>
         </div>
@@ -1017,12 +1027,17 @@ export default function Catalogue() {
       {/* Stats row */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-5">
         {[
-          { label: t("catalogue.total_products"), value: products.length, color: "text-gray-900" },
-          { label: t("catalogue.active"), value: activeCount, color: "text-green-600" },
-          { label: t("catalogue.low_stock"), value: lowStockCount, color: "text-amber-600" },
-          { label: "Inventory Value", value: `₹${totalValue.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`, color: "text-indigo-600" },
+          { label: t("catalogue.total_products"), value: products.length, color: "text-gray-900", icon: Boxes, tint: "#6366F114" },
+          { label: t("catalogue.active"), value: activeCount, color: "text-emerald-600", icon: CheckCircle2, tint: "#10B98114" },
+          { label: t("catalogue.low_stock"), value: lowStockCount, color: "text-amber-600", icon: AlertTriangle, tint: "#F59E0B14" },
+          { label: "Inventory Value", value: `₹${totalValue.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`, color: "text-brand-primaryDark", icon: IndianRupee, tint: "#0F8B4C14" },
         ].map((s) => (
-          <div key={s.label} className="bg-white rounded-xl border border-gray-100 shadow-sm px-5 py-4">
+          <div key={s.label} className="bg-white rounded-2xl border border-gray-100 shadow-sm px-5 py-4 hover:shadow-md transition-shadow">
+            <div className="flex items-center justify-between mb-2">
+              <span className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ backgroundColor: s.tint }}>
+                <s.icon size={15} className={s.color} />
+              </span>
+            </div>
             <div className={`text-2xl font-bold ${s.color}`}>{s.value}</div>
             <div className="text-xs text-gray-400 mt-0.5 uppercase tracking-wide">{s.label}</div>
           </div>
@@ -1030,33 +1045,33 @@ export default function Catalogue() {
       </div>
 
       {/* Filter bar */}
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm px-4 py-3 mb-5 flex flex-wrap gap-3 items-center">
+      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm px-4 py-3 mb-5 flex flex-wrap gap-3 items-center">
         <div className="relative flex-1 min-w-[160px]">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <Search size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
           <input
             type="text"
             placeholder="Search products…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full pl-8 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-400 bg-gray-50"
+            className="w-full pl-9 pr-3 py-2.5 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-primary bg-gray-50 focus:bg-white transition-colors"
           />
         </div>
 
         <select
           value={catFilter}
           onChange={(e) => setCatFilter(e.target.value)}
-          className="text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400 bg-white"
+          className="text-sm border border-gray-200 rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand-primary bg-white"
         >
           <option value="">All categories</option>
           {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
 
-        <div className="flex rounded-lg border border-gray-200 overflow-hidden text-sm">
+        <div className="flex rounded-xl border border-gray-200 overflow-hidden text-sm bg-gray-50 p-0.5">
           {(["all", "active", "inactive"] as const).map((s) => (
             <button
               key={s}
               onClick={() => setStatusFilter(s)}
-              className={`px-3 py-2 capitalize transition-colors ${statusFilter === s ? "bg-indigo-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}
+              className={`px-3 py-1.5 rounded-lg capitalize font-medium transition-colors ${statusFilter === s ? "bg-brand-primaryDark text-white shadow-sm" : "text-gray-600 hover:bg-white"}`}
             >
               {s}
             </button>
@@ -1065,8 +1080,8 @@ export default function Catalogue() {
 
         <button
           onClick={() => setLowStockFilter((v) => !v)}
-          className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-sm transition-all ${
-            lowStockFilter ? "bg-amber-100 border-amber-300 text-amber-700" : "bg-white border-gray-200 text-gray-600 hover:bg-gray-50"
+          className={`flex items-center gap-1.5 px-3 py-2.5 rounded-xl border text-sm font-medium transition-all ${
+            lowStockFilter ? "bg-amber-50 border-amber-200 text-amber-700" : "bg-white border-gray-200 text-gray-600 hover:bg-gray-50"
           }`}
         >
           <AlertTriangle size={13} /> Low stock
@@ -1075,7 +1090,7 @@ export default function Catalogue() {
         {(search || catFilter || statusFilter !== "all" || lowStockFilter) && (
           <button
             onClick={() => { setSearch(""); setCatFilter(""); setStatusFilter("all"); setLowStockFilter(false); }}
-            className="text-sm text-gray-400 hover:text-gray-600 ml-auto"
+            className="text-sm text-gray-400 hover:text-gray-600 ml-auto font-medium"
           >
             Clear filters
           </button>
@@ -1086,19 +1101,32 @@ export default function Catalogue() {
       {loading ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {[...Array(6)].map((_, i) => (
-            <div key={i} className="bg-white rounded-xl border border-gray-100 h-72 animate-pulse" />
+            <div key={i} className="relative overflow-hidden bg-white rounded-2xl border border-gray-100 h-72 before:absolute before:inset-0 before:-translate-x-full before:animate-[shimmer_1.6s_infinite] before:bg-gradient-to-r before:from-transparent before:via-gray-100 before:to-transparent" />
           ))}
         </div>
       ) : error ? (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-600">{error}</div>
+        <div className="bg-red-50 border border-red-200 rounded-2xl p-4 text-sm text-red-600">{error}</div>
       ) : visible.length === 0 ? (
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm px-5 py-16 text-center">
-          <Package size={48} className="text-gray-200 mx-auto mb-3" />
-          <p className="text-gray-400 text-sm">
-            {products.length === 0
-              ? "No products yet. Add your first product to help the AI answer customer queries."
-              : "No products match the current filters."}
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm px-5 py-16 text-center">
+          <div className="w-16 h-16 rounded-2xl bg-gray-50 flex items-center justify-center mx-auto mb-4">
+            <Package size={28} className="text-gray-300" />
+          </div>
+          <p className="text-gray-500 text-sm font-medium mb-1">
+            {products.length === 0 ? "No products yet" : "No products match the current filters"}
           </p>
+          <p className="text-gray-400 text-xs mb-5">
+            {products.length === 0
+              ? "Add your first product to help the AI answer customer queries."
+              : "Try adjusting or clearing your filters."}
+          </p>
+          {products.length === 0 && (
+            <button
+              onClick={openAdd}
+              className="inline-flex items-center gap-2 bg-brand-primaryDark text-white px-4 py-2.5 rounded-xl text-sm font-semibold hover:opacity-90 transition-all"
+            >
+              <Plus size={15} /> Add Product
+            </button>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -1144,13 +1172,13 @@ export default function Catalogue() {
                 <div>
                   <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">Product Name <span className="text-red-400">*</span></label>
                   <input required type="text" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="e.g. Banarasi Silk Saree"
-                    className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent" />
+                    className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-primary focus:border-transparent" />
                 </div>
 
                 <div>
                   <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">Category</label>
                   <select value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}
-                    className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white">
+                    className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary bg-white">
                     <option value="">Select category…</option>
                     {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
                   </select>
@@ -1160,7 +1188,7 @@ export default function Catalogue() {
                 <div>
                   <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">Description</label>
                   <textarea rows={2} value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} placeholder="Optional product description"
-                    className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none" />
+                    className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary resize-none" />
                 </div>
 
                 <div>
@@ -1168,7 +1196,7 @@ export default function Catalogue() {
                   <div className="relative">
                     <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">₹</span>
                     <input required type="number" min="0" step="0.01" value={form.price} onChange={(e) => setForm((f) => ({ ...f, price: e.target.value }))} placeholder="0"
-                      className="w-full border border-gray-200 rounded-lg pl-7 pr-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                      className="w-full border border-gray-200 rounded-lg pl-7 pr-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary" />
                   </div>
                 </div>
 
@@ -1178,12 +1206,12 @@ export default function Catalogue() {
                     <div>
                       <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">Stock Qty</label>
                       <input type="number" min="0" value={form.stock} onChange={(e) => setForm((f) => ({ ...f, stock: e.target.value }))} placeholder="Optional"
-                        className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                        className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary" />
                     </div>
                     <div>
                       <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">Low Stock Alert</label>
                       <input type="number" min="0" value={form.low_stock_alert} onChange={(e) => setForm((f) => ({ ...f, low_stock_alert: e.target.value }))}
-                        className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                        className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary" />
                     </div>
                   </div>
                 )}
@@ -1198,7 +1226,7 @@ export default function Catalogue() {
                     value={form.delivery_days}
                     onChange={(e) => setForm((f) => ({ ...f, delivery_days: e.target.value }))}
                     placeholder="Leave empty to use business default"
-                    className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
                   />
                   <p className="text-xs text-gray-400 mt-1">e.g. 2 for ready stock, 15 for custom orders. Overrides business default for this product only.</p>
                 </div>
@@ -1212,7 +1240,7 @@ export default function Catalogue() {
                     <div className="text-xs text-gray-400">Inactive products are hidden from AI</div>
                   </div>
                   <button type="button" onClick={() => setForm((f) => ({ ...f, is_active: !f.is_active }))}
-                    className={`relative w-11 h-6 rounded-full transition-colors ${form.is_active ? "bg-indigo-600" : "bg-gray-300"}`}>
+                    className={`relative w-11 h-6 rounded-full transition-colors ${form.is_active ? "bg-brand-primary" : "bg-gray-300"}`}>
                     <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${form.is_active ? "translate-x-5" : ""}`} />
                   </button>
                 </div>
@@ -1250,7 +1278,7 @@ export default function Catalogue() {
                 <button
                   type="submit"
                   disabled={saving}
-                  className="w-full bg-indigo-600 text-white py-3 rounded-lg text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                  className="w-full bg-brand-primaryDark text-white py-3 rounded-lg text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors"
                 >
                   {saving ? "Saving…" : modal === "add" ? "Add Product" : "Save Changes"}
                 </button>
@@ -1291,7 +1319,7 @@ export default function Catalogue() {
                             type="number" min="0"
                             value={variantStockInputs[v.id] ?? String(v.stock)}
                             onChange={(e) => setVariantStockInputs((prev) => ({ ...prev, [v.id]: e.target.value }))}
-                            className="w-16 border border-gray-200 rounded-lg px-2 py-1.5 text-sm text-center focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                            className="w-16 border border-gray-200 rounded-lg px-2 py-1.5 text-sm text-center focus:outline-none focus:ring-2 focus:ring-brand-primary"
                           />
                         </div>
                       </div>
@@ -1318,7 +1346,7 @@ export default function Catalogue() {
                   </div>
 
                   <input type="number" min="1" value={stockAmt} onChange={(e) => setStockAmt(e.target.value)}
-                    className="w-full border border-gray-200 rounded-xl px-4 py-3 text-center text-2xl font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-3" />
+                    className="w-full border border-gray-200 rounded-xl px-4 py-3 text-center text-2xl font-bold focus:outline-none focus:ring-2 focus:ring-brand-primary mb-3" />
 
                   {selected.stock !== null && stockAmt && (
                     <div className="text-center text-sm text-gray-500 mb-4">
@@ -1329,7 +1357,7 @@ export default function Catalogue() {
               )}
 
               <select value={stockReason} onChange={(e) => setStockReason(e.target.value)}
-                className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm mt-4 focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white">
+                className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm mt-4 focus:outline-none focus:ring-2 focus:ring-brand-primary bg-white">
                 {STOCK_REASONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
               </select>
             </div>
@@ -1338,7 +1366,7 @@ export default function Catalogue() {
               <button
                 onClick={handleAdjust}
                 disabled={adjusting || (!selected.has_variants && (!stockAmt || parseInt(stockAmt, 10) <= 0))}
-                className="w-full bg-indigo-600 text-white py-3 rounded-xl text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                className="w-full bg-brand-primaryDark text-white py-3 rounded-xl text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors"
               >
                 {adjusting ? "Saving…" : "Confirm Adjustment"}
               </button>

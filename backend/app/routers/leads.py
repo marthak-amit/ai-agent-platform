@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.db import get_db
 from app.models.lead import Lead
-from app.routers.auth import get_current_client
+from app.routers.auth import get_owner_client as get_current_client
 from app.services import whatsapp_service
 
 logger = logging.getLogger(__name__)

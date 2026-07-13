@@ -17,7 +17,7 @@ const steps = [
   },
   {
     title: "AI engages & shows products",
-    description: "AgentlyAI replies instantly, understands what they're looking for, and shares matching products from your catalogue.",
+    description: "SellerTalk24 replies instantly, understands what they're looking for, and shares matching products from your catalogue.",
   },
   {
     title: "Customer picks size/color & confirms",
@@ -35,7 +35,7 @@ const capabilities = [
   { title: "Full in-chat order collection", description: "Address, quantity, and order details collected without leaving the chat." },
   { title: "COD / UPI / bank transfer", description: "Accept the payment methods your customers already trust." },
   { title: "Order status & dispatch alerts", description: "Customers get automatic updates as their order moves and ships." },
-  { title: "Returning customer recognition", description: "AgentlyAI remembers past conversations so regulars don't repeat themselves." },
+  { title: "Returning customer recognition", description: "SellerTalk24 remembers past conversations so regulars don't repeat themselves." },
   { title: "Human takeover when needed", description: "Hand off to a real person any time the conversation needs a human touch." },
   { title: "Daily owner briefing email", description: "A daily summary of orders, leads, and conversations in your inbox." },
   { title: "Follow-up & re-engagement", description: "Automatic follow-ups bring browsing customers back to complete their order." },
@@ -43,9 +43,34 @@ const capabilities = [
 ];
 
 const monthlyPlans: PricingPlan[] = [
-  { name: "Starter", price: "₹999", cadence: "/mo", limit: "Up to 100 messages/day", channels: "WhatsApp" },
-  { name: "Growth", price: "₹1,999", cadence: "/mo", limit: "Up to 300 messages/day", channels: "WhatsApp + Instagram", highlighted: true },
-  { name: "Pro", price: "₹3,999", cadence: "/mo", limit: "Up to 700 messages/day", channels: "WhatsApp + Instagram + Website widget" },
+  {
+    name: "Starter",
+    price: "₹1,499",
+    cadence: "/mo",
+    limit: "~800 conversations/mo",
+    channels: "Instagram",
+    badges: ["IG"],
+    features: ["Order flow (cart → address → confirm)"],
+  },
+  {
+    name: "Growth",
+    price: "₹3,499",
+    cadence: "/mo",
+    limit: "~2,000 conversations/mo",
+    channels: "WhatsApp + Instagram",
+    badges: ["WA", "IG"],
+    features: ["Order flow (cart → address → confirm)", "Broadcast / marketing templates"],
+    highlighted: true,
+  },
+  {
+    name: "Pro",
+    price: "₹6,999",
+    cadence: "/mo",
+    limit: "~6,000 conversations/mo",
+    channels: "WhatsApp + Instagram + Website widget",
+    badges: ["WA", "IG"],
+    features: ["Order flow (cart → address → confirm)", "Broadcast / marketing templates", "Priority support"],
+  },
 ];
 
 const yearlyPlans: PricingPlan[] = monthlyPlans.map((plan) => ({
@@ -62,17 +87,17 @@ export default function Home() {
   return (
     <>
       <SEO
-        title="AgentlyAI — Turn WhatsApp & Instagram Chats Into Orders for Fashion Brands"
-        description="AgentlyAI is an AI sales agent for Indian fashion retailers that browses, sells, and collects orders directly inside WhatsApp and Instagram chats."
+        title="SellerTalk24 — Turn WhatsApp & Instagram Chats Into Orders for Fashion Brands"
+        description="SellerTalk24 is an AI sales agent for Indian fashion retailers that browses, sells, and collects orders directly inside WhatsApp and Instagram chats."
         path="/"
       />
 
       {/* Hero */}
-      <section className="relative overflow-hidden bg-gradient-to-b from-indigo-50 to-white">
+      <section className="relative overflow-hidden bg-gradient-to-b from-brand-primary/5 to-white">
         {!reduceMotion && (
           <motion.div
             aria-hidden="true"
-            className="pointer-events-none absolute -top-32 left-1/2 h-[32rem] w-[32rem] -translate-x-1/2 rounded-full bg-gradient-to-br from-indigo-400/20 via-violet-400/15 to-transparent blur-3xl"
+            className="pointer-events-none absolute -top-32 left-1/2 h-[32rem] w-[32rem] -translate-x-1/2 rounded-full bg-brand-primary/20 blur-3xl"
             animate={{ scale: [1, 1.08, 1], rotate: [0, 8, 0] }}
             transition={{ duration: 18, repeat: Infinity, ease: "easeInOut" }}
             style={{ willChange: "transform" }}
@@ -88,7 +113,7 @@ export default function Home() {
             }}
           >
             <motion.span
-              className="inline-flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700 ring-1 ring-inset ring-indigo-200"
+              className="inline-flex items-center gap-2 rounded-full bg-brand-primary/10 px-3 py-1 text-xs font-semibold text-brand-primaryDark ring-1 ring-inset ring-brand-primary/20"
               variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0 } }}
               transition={{ duration: 0.5, ease: "easeOut" }}
             >
@@ -100,8 +125,8 @@ export default function Home() {
               transition={{ duration: 0.5, ease: "easeOut" }}
             >
               Turn WhatsApp &amp; Instagram chats into{" "}
-              <span className="bg-gradient-to-r from-indigo-600 to-violet-600 bg-clip-text text-transparent">
-                orders
+              <span className="bg-gradient-to-r from-brand-primary to-brand-primaryDark bg-clip-text text-transparent">
+                Orders
               </span>
             </motion.h1>
             <motion.p
@@ -109,7 +134,7 @@ export default function Home() {
               variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0 } }}
               transition={{ duration: 0.5, ease: "easeOut" }}
             >
-              AgentlyAI is an AI sales agent built for Indian fashion retailers. It browses your
+              SellerTalk24 is an AI sales agent built for Indian fashion retailers. It browses your
               catalogue, helps customers pick size and color, and collects the full order — right
               inside the chat your customers already use.
             </motion.p>
@@ -142,14 +167,14 @@ export default function Home() {
       {/* How it works */}
       <section className="mx-auto max-w-7xl px-4 py-20 sm:px-6 lg:px-8">
         <Reveal as="div" className="text-center">
-          <span className="text-xs font-semibold uppercase tracking-widest text-indigo-600">Process</span>
+          <span className="text-xs font-semibold uppercase tracking-widest text-brand-primaryDark">Process</span>
           <h2 className="mt-2 text-3xl font-bold tracking-tight text-gray-900">How it works</h2>
         </Reveal>
         <div className="relative mt-12">
           {!reduceMotion && (
             <motion.div
               aria-hidden="true"
-              className="absolute left-[12.5%] right-[12.5%] top-5 hidden h-0.5 origin-left bg-gradient-to-r from-indigo-300 via-violet-300 to-indigo-300 md:block"
+              className="absolute left-[12.5%] right-[12.5%] top-5 hidden h-0.5 origin-left bg-brand-primary/40 md:block"
               initial={{ scaleX: 0 }}
               whileInView={{ scaleX: 1 }}
               viewport={{ once: true, margin: "-80px" }}
@@ -159,7 +184,7 @@ export default function Home() {
           <StaggerGroup className="grid gap-8 sm:grid-cols-2 lg:grid-cols-4">
             {steps.map((step, i) => (
               <StaggerItem key={step.title} className="relative text-center">
-                <div className="relative z-10 mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-indigo-600 to-violet-600 text-sm font-bold text-white shadow-sm shadow-indigo-600/30">
+                <div className="relative z-10 mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-brand-primaryDark text-sm font-bold text-white shadow-sm shadow-brand-primary/30">
                   {i + 1}
                 </div>
                 <h3 className="mt-4 text-base font-semibold text-gray-900">{step.title}</h3>
@@ -174,8 +199,8 @@ export default function Home() {
       <section className="bg-gray-50 py-20">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <Reveal as="div" className="text-center">
-            <span className="text-xs font-semibold uppercase tracking-widest text-indigo-600">Capabilities</span>
-            <h2 className="mt-2 text-3xl font-bold tracking-tight text-gray-900">What AgentlyAI does</h2>
+            <span className="text-xs font-semibold uppercase tracking-widest text-brand-primaryDark">Capabilities</span>
+            <h2 className="mt-2 text-3xl font-bold tracking-tight text-gray-900">What SellerTalk24 does</h2>
           </Reveal>
           <StaggerGroup className="mt-12 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
             {capabilities.map((cap) => (
@@ -190,13 +215,13 @@ export default function Home() {
       {/* Channels */}
       <section className="mx-auto max-w-7xl px-4 py-20 sm:px-6 lg:px-8">
         <Reveal as="div" className="text-center">
-          <span className="text-xs font-semibold uppercase tracking-widest text-indigo-600">Channels</span>
-          <h2 className="mt-2 text-3xl font-bold tracking-tight text-gray-900">Where AgentlyAI works</h2>
+          <span className="text-xs font-semibold uppercase tracking-widest text-brand-primaryDark">Channels</span>
+          <h2 className="mt-2 text-3xl font-bold tracking-tight text-gray-900">Where SellerTalk24 works</h2>
         </Reveal>
         <StaggerGroup className="mt-12 grid gap-6 sm:grid-cols-3">
           <StaggerItem>
             <motion.div
-              className="rounded-3xl bg-[#25D366]/5 p-6 text-center ring-1 ring-inset ring-[#25D366]/20"
+              className="rounded-3xl bg-brand-primary/5 p-6 text-center ring-1 ring-inset ring-brand-primary/20"
               whileHover={{ y: -4, boxShadow: "0 16px 32px -12px rgba(37, 211, 102, 0.25)" }}
               transition={{ duration: 0.15, ease: "easeOut" }}
             >
@@ -212,8 +237,8 @@ export default function Home() {
           </StaggerItem>
           <StaggerItem>
             <motion.div
-              className="rounded-3xl bg-gradient-to-br from-fuchsia-50 to-amber-50 p-6 text-center ring-1 ring-inset ring-fuchsia-300/30"
-              whileHover={{ y: -4, boxShadow: "0 16px 32px -12px rgba(217, 70, 239, 0.2)" }}
+              className="rounded-3xl bg-gradient-to-br from-brand-accent/5 to-amber-50 p-6 text-center ring-1 ring-inset ring-brand-accent/30"
+              whileHover={{ y: -4, boxShadow: "0 16px 32px -12px rgba(242, 83, 107, 0.2)" }}
               transition={{ duration: 0.15, ease: "easeOut" }}
             >
               <motion.p
@@ -229,7 +254,7 @@ export default function Home() {
           <StaggerItem>
             <motion.div
               className="rounded-3xl bg-white p-6 text-center ring-1 ring-inset ring-gray-900/5"
-              whileHover={{ y: -4, boxShadow: "0 16px 32px -12px rgba(79, 70, 229, 0.18)" }}
+              whileHover={{ y: -4, boxShadow: "0 16px 32px -12px rgba(15, 139, 76, 0.18)" }}
               transition={{ duration: 0.15, ease: "easeOut" }}
             >
               <motion.p
@@ -246,11 +271,11 @@ export default function Home() {
       </section>
 
       {/* Industry focus */}
-      <section className="bg-gradient-to-br from-indigo-50 via-white to-violet-50 py-20">
+      <section className="bg-gradient-to-br from-brand-primary/5 via-white to-brand-primary/5 py-20">
         <Reveal as="div" className="mx-auto max-w-7xl px-4 text-center sm:px-6 lg:px-8">
           <h2 className="text-3xl font-bold tracking-tight text-gray-900">Built for Indian fashion retail</h2>
           <p className="mx-auto mt-4 max-w-2xl text-gray-600">
-            Sarees, kurtis, lehengas, and everything in between — AgentlyAI understands fashion
+            Sarees, kurtis, lehengas, and everything in between — SellerTalk24 understands fashion
             catalogues with variants like color, size, and fabric, and is built for India-first
             payments like UPI and COD.
           </p>
@@ -260,7 +285,7 @@ export default function Home() {
       {/* Pricing */}
       <section className="mx-auto max-w-7xl px-4 py-20 sm:px-6 lg:px-8">
         <Reveal as="div" className="text-center">
-          <span className="text-xs font-semibold uppercase tracking-widest text-indigo-600">Pricing</span>
+          <span className="text-xs font-semibold uppercase tracking-widest text-brand-primaryDark">Pricing</span>
           <h2 className="mt-2 text-3xl font-bold tracking-tight text-gray-900">Simple, transparent pricing</h2>
         </Reveal>
         <Reveal as="p" className="mx-auto mt-3 max-w-xl text-center text-sm text-gray-600" delay={0.05}>
@@ -277,18 +302,18 @@ export default function Home() {
           ))}
         </StaggerGroup>
         <p className="mt-6 text-center text-sm">
-          Need higher volume? <a href="/demo" className="font-semibold text-indigo-600">Talk to us about Enterprise.</a>
+          Need higher volume? <a href="/demo" className="font-semibold text-brand-primaryDark">Talk to us about Enterprise.</a>
         </p>
       </section>
 
       {/* Final CTA */}
-      <section className="relative overflow-hidden bg-gradient-to-br from-gray-900 via-gray-900 to-indigo-950 py-20">
+      <section className="relative overflow-hidden bg-gradient-to-br from-gray-900 via-gray-900 to-brand-secondary py-20">
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(99,102,241,0.25),_transparent_60%)]"
+          className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(37,211,102,0.25),_transparent_60%)]"
         />
         <Reveal as="div" className="relative mx-auto max-w-4xl px-4 text-center sm:px-6 lg:px-8">
-          <h2 className="text-3xl font-bold tracking-tight text-white">See AgentlyAI on your own catalogue</h2>
+          <h2 className="text-3xl font-bold tracking-tight text-white">See SellerTalk24 on your own catalogue</h2>
           <p className="mt-4 text-gray-300">
             Book a short demo and we'll show you exactly how it works with your products.
           </p>

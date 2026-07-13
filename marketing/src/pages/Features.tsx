@@ -40,13 +40,13 @@ export default function Features() {
   return (
     <>
       <SEO
-        title="Features — AgentlyAI"
-        description="Everything AgentlyAI's AI sales agent does for fashion retailers: selling, operations, growth, and control."
+        title="Features — SellerTalk24"
+        description="Everything SellerTalk24's AI sales agent does for fashion retailers: selling, operations, growth, and control."
         path="/features"
       />
       <section className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
         <div className="text-center">
-          <h1 className="text-4xl font-bold text-gray-900">Everything AgentlyAI does</h1>
+          <h1 className="text-4xl font-bold text-gray-900">Everything SellerTalk24 does</h1>
           <p className="mx-auto mt-4 max-w-xl text-gray-600">
             Built specifically for how fashion retail actually sells in India.
           </p>

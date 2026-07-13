@@ -11,7 +11,7 @@ const conversation: Bubble[] = [
   { from: "customer", text: "Show me the maroon one" },
   { from: "agent", text: "Maroon Banarasi Silk Saree — ₹4,200. Available in Free Size. Shall I add it to your order?" },
   { from: "customer", text: "Yes, confirm with UPI" },
-  { from: "agent", text: "Order placed ✅ Pay ₹4,200 via UPI: scan the QR or pay to agentlyai@upi. Dispatch in 3-5 days 🚚" },
+  { from: "agent", text: "Order placed ✅ Pay ₹4,200 via UPI: scan the QR or pay to sellertalk24. Dispatch in 3-5 days 🚚" },
 ];
 
 export default function ChatMockup() {
@@ -30,7 +30,7 @@ export default function ChatMockup() {
       <div className="mb-3 flex items-center gap-2 rounded-2xl bg-[#075e54] px-3 py-2 text-white">
         <span className="inline-block h-8 w-8 shrink-0 rounded-full bg-white/20" aria-hidden="true" />
         <div>
-          <p className="text-sm font-semibold">Meera Fashions</p>
+          <p className="text-sm font-semibold">Riya Fashions</p>
           <p className="text-xs text-white/80">AI assistant · online</p>
         </div>
       </div>

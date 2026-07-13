@@ -11,11 +11,11 @@ interface StatCardProps {
 }
 
 const COLOR_MAP = {
-  indigo: { bg: "bg-indigo-100", text: "text-indigo-600" },
-  green:  { bg: "bg-green-100",  text: "text-green-600"  },
-  yellow: { bg: "bg-amber-100",  text: "text-amber-600"  },
-  red:    { bg: "bg-red-100",    text: "text-red-600"    },
-  blue:   { bg: "bg-blue-100",   text: "text-blue-600"   },
+  indigo: { bg: "bg-brand-primary/10", text: "text-brand-primaryDark" },
+  green:  { bg: "bg-brand-primary/10", text: "text-brand-primaryDark" },
+  yellow: { bg: "bg-amber-100",        text: "text-amber-600"         },
+  red:    { bg: "bg-red-100",          text: "text-red-600"           },
+  blue:   { bg: "bg-blue-100",         text: "text-blue-600"          },
 };
 
 export default function StatCard({ label, value, color = "indigo", icon: Icon, trend, sub, tooltip }: StatCardProps) {

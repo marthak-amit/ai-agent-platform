@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.routers.auth import get_current_client
+from app.routers.auth import get_owner_client as get_current_client
 from app.models.client import Client
 from app.services import briefing_service
 

@@ -7,9 +7,34 @@ import Reveal from "../components/motion/Reveal";
 import { StaggerGroup, StaggerItem } from "../components/motion/StaggerGroup";
 
 const monthlyPlans: PricingPlan[] = [
-  { name: "Starter", price: "₹999", cadence: "/mo", limit: "Up to 100 messages/day", channels: "WhatsApp" },
-  { name: "Growth", price: "₹1,999", cadence: "/mo", limit: "Up to 300 messages/day", channels: "WhatsApp + Instagram", highlighted: true },
-  { name: "Pro", price: "₹3,999", cadence: "/mo", limit: "Up to 700 messages/day", channels: "WhatsApp + Instagram + Website widget" },
+  {
+    name: "Starter",
+    price: "₹1,499",
+    cadence: "/mo",
+    limit: "~800 conversations/mo",
+    channels: "Instagram",
+    badges: ["IG"],
+    features: ["Order flow (cart → address → confirm)"],
+  },
+  {
+    name: "Growth",
+    price: "₹3,499",
+    cadence: "/mo",
+    limit: "~2,000 conversations/mo",
+    channels: "WhatsApp + Instagram",
+    badges: ["WA", "IG"],
+    features: ["Order flow (cart → address → confirm)", "Broadcast / marketing templates"],
+    highlighted: true,
+  },
+  {
+    name: "Pro",
+    price: "₹6,999",
+    cadence: "/mo",
+    limit: "~6,000 conversations/mo",
+    channels: "WhatsApp + Instagram + Website widget",
+    badges: ["WA", "IG"],
+    features: ["Order flow (cart → address → confirm)", "Broadcast / marketing templates", "Priority support"],
+  },
 ];
 
 const yearlyPlans: PricingPlan[] = monthlyPlans.map((plan) => ({
@@ -25,8 +50,8 @@ export default function Pricing() {
   return (
     <>
       <SEO
-        title="Pricing — AgentlyAI"
-        description="Simple, transparent pricing for AgentlyAI's WhatsApp & Instagram AI sales agent for fashion retailers in India."
+        title="Pricing — SellerTalk24"
+        description="Simple, transparent pricing for SellerTalk24's WhatsApp & Instagram AI sales agent for fashion retailers in India."
         path="/pricing"
       />
       <section className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">

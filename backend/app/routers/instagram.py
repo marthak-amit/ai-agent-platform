@@ -6,43 +6,50 @@ Handles:
 - POST /instagram  : incoming DMs and post comments
 
 Message types handled:
-- Text DMs: routed to Gemini for a conversational reply.
-- Image DMs: image downloaded from the Instagram CDN URL (included directly
-  in the payload, unlike WhatsApp which sends a media_id). vision_service
-  matches the image against the client's catalogue.
-- Story replies with images: same as image DMs — they arrive through the
-  messaging[] array with type="image".
-- Post comments: public reply (brief ack) + full AI reply via DM.
+- Text/image/audio DMs: routed into the same channel-neutral order pipeline
+  WhatsApp uses (handle_inbound_message) — slot machine, abuse protection,
+  address-confirm gate, vision-based product matching, voice transcription,
+  all apply identically to Instagram. See app/routers/_instagram_adapter.py
+  for the reply send path.
+- Post comments: comment → private-reply DM auto-trigger. A comment matching
+  the client's configured keywords (or any comment, if reply-all is on) posts
+  a brief public ack, then is fed into the SAME handle_inbound_message pipeline
+  DMs use — the comment is just a new entry point, not a separate flow. The
+  reply is sent via Meta's Private Reply API (send_private_reply), which can
+  message a commenter with no prior DM thread; regular send_dm cannot.
 
-Comment flow: when a user comments on a post the agent posts a brief public
-reply on the comment AND sends a full AI-generated reply via DM.
+Comment flow: see _handle_comment() for keyword-matching, dedup, and the
+200/hour rate-limit queue.
 """
 
-import asyncio
 import hashlib
 import hmac
 import logging
-import random
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db import get_db
 from app.models.client import Client
+from app.models.ig_comment_reply import IgCommentReply
+from app.models.message import Message as MessageModel
+from app.routers._instagram_adapter import send_pipeline_result
+from app.routers.auth import get_current_client
 from app.schemas.instagram import InstagramMessaging, InstagramWebhookPayload
+from app.schemas.webhook import AudioContent, ImageContent, TextContent, WhatsAppMessage
 from app.services import (
-    catalogue_service,
     conversation_service,
-    gemini_service,
+    ig_comment_service,
     instagram_service,
-    lead_service,
     plan_service,
     vision_service,
-    voice_service,
 )
+from app.services.order_pipeline import InboundContext, handle_inbound_message
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/instagram", tags=["instagram"])
@@ -136,46 +143,14 @@ async def _get_active_client_plan(db: AsyncSession) -> str:
     """
     Return the plan_slug of the first active client, defaulting to 'starter'.
 
-    Used to gate Instagram processing before any payload parsing.
+    Used to gate Instagram processing before any payload parsing — so no
+    instagram_account_id is available yet; falls back to the first active
+    client like _get_active_client(db, None) already does.
+
     Kept as a standalone async helper so tests can patch it independently.
     """
-    client = await _get_active_client(db, ig_user_id)
+    client = await _get_active_client(db, None)
     return (client.plan_slug if client else None) or "starter"
-
-
-async def _get_catalogue_context(db: AsyncSession, client, user_text: str) -> str | None:
-    """
-    Build catalogue context for Gemini/vision from a customer message.
-
-    SKU-first: if the message contains a product code, look up that exact
-    product. Otherwise keyword-search the full catalogue and return the top 5.
-
-    Args:
-        db:        Active async DB session.
-        client:    Active Client ORM instance, or None.
-        user_text: The customer's message (used as search query).
-
-    Returns:
-        Formatted catalogue string, or None if no client or no relevant products.
-    """
-    if client is None:
-        return None
-
-    skus = catalogue_service.extract_skus_from_text(user_text)
-    if skus:
-        sku_products = []
-        for sku in skus:
-            p = await catalogue_service.find_product_by_sku(db, client.id, sku)
-            if p:
-                sku_products.append(p)
-        if sku_products:
-            return catalogue_service.format_catalogue_context(sku_products)
-
-    products = await catalogue_service.list_products(db, client.id)
-    relevant = catalogue_service.search_products(products, user_text)
-    if not relevant:
-        return None
-    return catalogue_service.format_catalogue_context(relevant)
 
 
 @router.post("", status_code=status.HTTP_200_OK)
@@ -189,8 +164,9 @@ async def receive_instagram_event(
     Validates X-Hub-Signature-256 before processing anything.
     Requires growth or pro plan — starter plan returns plan_restricted.
 
-    DM flow (text):  user sends DM → Gemini reply → send DM back.
-    DM flow (image): download image from CDN URL → vision_service → send DM back.
+    DM flow (text/image/audio): routed into handle_inbound_message() — the
+                                 same order-pipeline orchestrator WhatsApp
+                                 uses — and replied to via the IG adapter.
     Comment flow:    user comments → Gemini reply → public comment reply + DM.
 
     Always returns HTTP 200 to prevent Meta from retrying.
@@ -231,14 +207,8 @@ async def receive_instagram_event(
     ig_user_id = payload.get_ig_user_id()
 
     dm = payload.get_first_dm()
-    if dm:
-        msg_type = dm.get_message_type()
-        if msg_type == "image":
-            return await _handle_image_dm(db, ig_user_id, dm)
-        if msg_type == "audio":
-            return await _handle_audio_dm(db, ig_user_id, dm)
-        if dm.get_text():
-            return await _handle_dm(db, ig_user_id, dm.get_sender_id(), dm.get_text())
+    if dm and dm.message is not None:
+        return await _handle_dm(db, ig_user_id, dm)
 
     comment = payload.get_first_comment()
     if comment:
@@ -250,21 +220,32 @@ async def receive_instagram_event(
 async def _handle_dm(
     db: AsyncSession,
     ig_user_id: str,
-    sender_igsid: str,
-    user_text: str,
+    dm: InstagramMessaging,
 ) -> dict:
     """
-    Process an incoming Instagram text DM and reply with an AI response.
+    Process an incoming Instagram DM (text, image, or audio) through the
+    same channel-neutral order pipeline WhatsApp uses.
+
+    Builds a WhatsAppMessage-shaped InboundContext (text/image/audio are all
+    expressed via the same schema WhatsApp's webhook router already builds —
+    see app/schemas/webhook.py) so handle_inbound_message() needs no IG-aware
+    branching at all: slot machine, abuse protection, the address-confirm
+    gate, vision-based product matching, and voice transcription all apply
+    identically to Instagram.
 
     Args:
-        db:           DB session.
-        ig_user_id:   Instagram Business Account ID.
-        sender_igsid: Sender's IGSID.
-        user_text:    Message text.
+        db:         DB session.
+        ig_user_id: Instagram Business Account ID.
+        dm:         The parsed InstagramMessaging event.
 
     Returns:
-        {"status": "ok"} on success.
+        {"status": result.status} on success — {"status": "ok"} on any
+        early DB/dedup failure, to prevent Meta from retrying.
     """
+    sender_igsid = dm.get_sender_id()
+    msg_type = dm.get_message_type()
+    mid = dm.message.mid if dm.message else None
+
     client = await _get_active_client(db, ig_user_id)
 
     try:
@@ -275,246 +256,67 @@ async def _handle_dm(
         logger.error("DB error creating conversation for Instagram %s: %s", sender_igsid, exc)
         return {"status": "ok"}
 
-    # Human takeover: save message silently, skip AI entirely.
-    if conv.ai_enabled is False:
-        await conversation_service.save_message(db, conv.id, "user", user_text)
-        logger.info(
-            "AI paused for Instagram %s — human takeover active, message saved silently.",
-            sender_igsid,
+    # Meta retries webhooks on timeout — skip if already processed (mirrors
+    # webhook.py's wamid dedup; IG's mid serves the same purpose).
+    if mid:
+        dup_result = await db.execute(
+            select(MessageModel).where(MessageModel.wamid == mid).limit(1)
         )
-        return {"status": "ok"}
+        if dup_result.scalar_one_or_none() is not None:
+            logger.info("Duplicate Instagram message %s — skipping.", mid)
+            return {"status": "ok"}
 
-    settings = get_settings()
-    delay = random.uniform(settings.min_reply_delay, settings.max_reply_delay)
-    await asyncio.sleep(delay)
-
-    history = await conversation_service.get_history(db, conv.id)
-    history_dicts = [{"role": m.role, "content": m.content} for m in history]
-
-    try:
-        ai_reply = await gemini_service.generate_reply(user_text, history=history_dicts)
-    except Exception as exc:
-        logger.error("Gemini error on Instagram DM: %s", exc)
-        return {"status": "ok"}
-
-    await conversation_service.save_message(db, conv.id, "user", user_text)
-    await conversation_service.save_message(db, conv.id, "model", ai_reply)
-
-    all_messages = history_dicts + [
-        {"role": "user", "content": user_text},
-        {"role": "model", "content": ai_reply},
-    ]
-    try:
-        await lead_service.tag_lead(
-            db, sender_igsid, conv.id, all_messages,
-            client_id=client.id if client else None,
-            channel="instagram",
+    if msg_type == "text":
+        message = WhatsAppMessage(
+            id=mid or "", **{"from": sender_igsid}, timestamp="0", type="text",
+            text=TextContent(body=dm.get_text() or ""),
         )
-    except Exception as exc:
-        logger.error("Lead tagging error on Instagram DM: %s", exc)
-
-    try:
-        await instagram_service.send_dm(ig_user_id, sender_igsid, ai_reply)
-    except Exception as exc:
-        logger.error("Instagram DM send error: %s", exc)
-
-    return {"status": "ok"}
-
-
-async def _handle_image_dm(
-    db: AsyncSession,
-    ig_user_id: str,
-    dm: InstagramMessaging,
-) -> dict:
-    """
-    Process an Instagram DM that contains an image attachment.
-
-    Applies to:
-    - Direct image DMs (customer sends a product photo asking for price/availability).
-    - Story replies where the customer attaches an image.
-
-    Flow:
-    1. Download the image from the CDN URL embedded in the payload.
-    2. Load the client's catalogue context.
-    3. Run vision_service.analyze_product_image() to identify the product.
-    4. Save messages and reply via DM.
-
-    Args:
-        db:         DB session.
-        ig_user_id: Instagram Business Account ID.
-        dm:         The parsed InstagramMessaging event (type == "image").
-
-    Returns:
-        {"status": "ok"} on success.
-    """
-    sender_igsid = dm.get_sender_id()
-    image_url = dm.message.get_image_url() if dm.message else None
-
-    client = await _get_active_client(db, ig_user_id)
-
-    try:
-        conv = await conversation_service.get_or_create_conversation(
-            db, sender_igsid, channel="instagram", client_id=client.id if client else None
+        user_text = dm.get_text() or ""
+    elif msg_type == "image":
+        image_url = dm.message.get_image_url() if dm.message else None
+        message = WhatsAppMessage(
+            id=mid or "", **{"from": sender_igsid}, timestamp="0", type="image",
+            image=ImageContent(id=image_url or ""),
         )
-    except Exception as exc:
-        logger.error("DB error creating conversation for Instagram image DM %s: %s", sender_igsid, exc)
-        return {"status": "ok"}
-
-    if conv.ai_enabled is False:
-        await conversation_service.save_message(db, conv.id, "user", "[image]")
-        logger.info("AI paused for Instagram %s — image saved silently.", sender_igsid)
-        return {"status": "ok"}
-
-    if not image_url:
-        logger.warning("Instagram image DM from %s has no URL in payload.", sender_igsid)
-        await conversation_service.save_message(db, conv.id, "user", "[image]")
-        fallback = "Image receive hua lekin process nahi ho paya. Please try again."
-        await conversation_service.save_message(db, conv.id, "model", fallback)
+        user_text = "[image]"
+    elif msg_type == "audio":
+        # Ack send stays inline (not via PipelineResult) so the customer isn't
+        # left waiting in silence during transcription — same exception
+        # webhook.py documents for WhatsApp's audio ack.
         try:
-            await instagram_service.send_dm(ig_user_id, sender_igsid, fallback)
+            await instagram_service.send_dm(ig_user_id, sender_igsid, "🎤 Voice note suna. Ek second...")
         except Exception as exc:
-            logger.error("Instagram DM send error (image fallback): %s", exc)
-        return {"status": "ok"}
-
-    logger.info("Instagram image DM from %s, url=%s", sender_igsid, image_url[:60])
-
-    catalogue_context = await _get_catalogue_context(db, client, "image")
-
-    try:
-        image_bytes = await vision_service.download_instagram_media(image_url)
-        ai_reply = await vision_service.analyze_product_image(
-            image_bytes, catalogue_context or ""
+            logger.warning("Ack DM failed for Instagram audio: %s", exc)
+        audio_url = dm.message.get_audio_url() if dm.message else None
+        message = WhatsAppMessage(
+            id=mid or "", **{"from": sender_igsid}, timestamp="0", type="audio",
+            audio=AudioContent(id=audio_url or "", mime_type="audio/mp4"),
         )
-    except Exception as exc:
-        logger.error("Vision service error on Instagram image DM: %s", exc)
-        ai_reply = "Aapki image receive ho gayi! Kuch technical issue ke wajah se process nahi ho paya. Kripya dobara try karein."
-
-    await conversation_service.save_message(db, conv.id, "user", "[image]")
-    await conversation_service.save_message(db, conv.id, "model", ai_reply)
-
-    try:
-        await lead_service.tag_lead(
-            db,
-            sender_igsid,
-            conv.id,
-            [{"role": "user", "content": "[image]"}, {"role": "model", "content": ai_reply}],
-            client_id=client.id if client else None,
-            channel="instagram",
-        )
-    except Exception as exc:
-        logger.error("Lead tagging error on Instagram image DM: %s", exc)
-
-    try:
-        await instagram_service.send_dm(ig_user_id, sender_igsid, ai_reply)
-    except Exception as exc:
-        logger.error("Instagram DM send error (image reply): %s", exc)
-
-    return {"status": "ok"}
-
-
-async def _handle_audio_dm(
-    db: AsyncSession,
-    ig_user_id: str,
-    dm: InstagramMessaging,
-) -> dict:
-    """
-    Process an Instagram DM that contains an audio/voice attachment.
-
-    Flow:
-    1. Send an acknowledgement DM so the customer isn't left waiting.
-    2. Download the audio bytes from the CDN URL in the attachment payload.
-    3. Transcribe with Groq Whisper.
-    4. Generate an AI reply using the transcription as user text.
-    5. Save messages (user with original_type='audio') and reply via DM.
-
-    Args:
-        db:         DB session.
-        ig_user_id: Instagram Business Account ID.
-        dm:         The parsed InstagramMessaging event (type == "audio").
-
-    Returns:
-        {"status": "ok"} on success.
-    """
-    sender_igsid = dm.get_sender_id()
-    audio_url = dm.message.get_audio_url() if dm.message else None
-
-    client = await _get_active_client(db, ig_user_id)
-
-    try:
-        conv = await conversation_service.get_or_create_conversation(
-            db, sender_igsid, channel="instagram", client_id=client.id if client else None
-        )
-    except Exception as exc:
-        logger.error("DB error creating conversation for Instagram audio DM %s: %s", sender_igsid, exc)
-        return {"status": "ok"}
-
-    if conv.ai_enabled is False:
-        await conversation_service.save_message(db, conv.id, "user", "[voice note]", original_type="audio")
-        logger.info("AI paused for Instagram %s — audio saved silently.", sender_igsid)
-        return {"status": "ok"}
-
-    # Acknowledge receipt before the slow transcription step
-    try:
-        await instagram_service.send_dm(ig_user_id, sender_igsid, "🎤 Voice note suna. Ek second...")
-    except Exception as exc:
-        logger.warning("Ack DM failed for Instagram audio: %s", exc)
-
-    transcribed_text = ""
-    if audio_url:
-        try:
-            import httpx
-            settings = get_settings()
-            async with httpx.AsyncClient(timeout=30) as http:
-                resp = await http.get(
-                    audio_url,
-                    headers={"Authorization": f"Bearer {settings.instagram_access_token}"},
-                )
-                resp.raise_for_status()
-                audio_bytes = resp.content
-            transcribed_text = await voice_service.transcribe_voice_note(audio_bytes, "audio.mp4")
-        except Exception as exc:
-            logger.error("Instagram audio download/transcription error: %s", exc)
+        user_text = "[voice note]"
     else:
-        logger.warning("Instagram audio DM from %s has no URL.", sender_igsid)
-
-    effective_text = transcribed_text if transcribed_text else "[voice note]"
-    catalogue_context = await _get_catalogue_context(db, client, effective_text)
-    history = await conversation_service.get_history(db, conv.id)
-    history_dicts = [{"role": m.role, "content": m.content} for m in history]
-
-    try:
-        ai_reply = await gemini_service.generate_reply(effective_text, history=history_dicts)
-    except Exception as exc:
-        logger.error("Gemini error on Instagram audio DM: %s", exc)
+        logger.info("Skipping unsupported Instagram message type '%s'.", msg_type)
         return {"status": "ok"}
 
-    saved_user_content = transcribed_text if transcribed_text else "[voice note]"
-    await conversation_service.save_message(db, conv.id, "user", saved_user_content, original_type="audio")
-    if transcribed_text:
-        ai_reply = f"_{transcribed_text}_\n\n{ai_reply}"
-    await conversation_service.save_message(db, conv.id, "model", ai_reply)
+    ctx = InboundContext(
+        db=db,
+        client=client,
+        conv=conv,
+        sender_phone=sender_igsid,
+        message=message,
+        user_text=user_text,
+        wamid=mid,
+        btn_nonce_parsed=None,
+        download_media=vision_service.download_instagram_media,
+        is_whatsapp=False,
+    )
+    result = await handle_inbound_message(ctx)
 
     try:
-        await lead_service.tag_lead(
-            db,
-            sender_igsid,
-            conv.id,
-            history_dicts + [
-                {"role": "user", "content": saved_user_content},
-                {"role": "model", "content": ai_reply},
-            ],
-            client_id=client.id if client else None,
-            channel="instagram",
-        )
+        await send_pipeline_result(result, ig_user_id=ig_user_id, recipient_igsid=sender_igsid)
     except Exception as exc:
-        logger.error("Lead tagging error on Instagram audio DM: %s", exc)
+        logger.error("Instagram send error: %s", exc)
 
-    try:
-        await instagram_service.send_dm(ig_user_id, sender_igsid, ai_reply)
-    except Exception as exc:
-        logger.error("Instagram DM send error (audio reply): %s", exc)
-
-    return {"status": "ok"}
+    return {"status": result.status}
 
 
 async def _handle_comment(
@@ -523,12 +325,21 @@ async def _handle_comment(
     comment,
 ) -> dict:
     """
-    Process an Instagram comment: post a public reply and send full details via DM.
+    Process an Instagram comment through the comment → private-reply DM
+    auto-trigger.
 
-    Two-step reply strategy:
-    - Public reply (visible under the post): brief acknowledgement so the thread
-      looks active to other viewers.
-    - DM (private): full AI-generated response with product details, pricing, etc.
+    Gating, in order (each is a "skip and log" no-op, not an error):
+    - comment_id already processed (Meta webhook retry) → skip.
+    - client.ig_comment_autoreply_enabled is False → skip (feature is opt-in).
+    - not reply-all AND comment text matches none of the client's configured
+      trigger keywords → skip.
+
+    On match: an ig_comment_replies row is inserted (status="pending") before
+    anything else — this is the durable record dedup checks against, so a
+    retry arriving mid-processing already sees it and stops. If the client's
+    IG account is under Meta's 200/hour automated-DM cap, the reply is sent
+    immediately via _send_comment_reply(); otherwise the row stays "pending"
+    and the scheduler's drain job (app/scheduler.py) sends it later.
 
     Args:
         db:         DB session.
@@ -536,58 +347,84 @@ async def _handle_comment(
         comment:    CommentChange object with field and value.
 
     Returns:
-        {"status": "ok"} on success.
+        {"status": "ok"} in all non-error cases (including every skip above),
+        matching this router's "always 200 to Meta" contract.
     """
     commenter_igsid = comment.value.from_.id
     comment_text = comment.value.text
     comment_id = comment.value.id
+    media_id = (comment.value.media or {}).get("id") if comment.value.media else None
 
     logger.info("Comment from %s: %s", commenter_igsid, comment_text)
 
     client = await _get_active_client(db, ig_user_id)
-
-    conv = await conversation_service.get_or_create_conversation(
-        db, commenter_igsid, channel="instagram", client_id=client.id if client else None
-    )
-    history = await conversation_service.get_history(db, conv.id)
-    history_dicts = [{"role": m.role, "content": m.content} for m in history]
-
-    try:
-        ai_reply = await gemini_service.generate_reply(comment_text, history=history_dicts)
-    except Exception as exc:
-        logger.error("Gemini error on comment: %s", exc)
+    if client is None:
+        logger.warning("No active client for comment %s — skipping.", comment_id)
         return {"status": "ok"}
 
-    await conversation_service.save_message(db, conv.id, "user", comment_text)
-    await conversation_service.save_message(db, conv.id, "model", ai_reply)
+    dup_result = await db.execute(
+        select(IgCommentReply).where(IgCommentReply.comment_id == comment_id).limit(1)
+    )
+    if dup_result.scalar_one_or_none() is not None:
+        logger.info("Duplicate Instagram comment %s — skipping.", comment_id)
+        return {"status": "ok"}
 
-    try:
-        await lead_service.tag_lead(
-            db,
-            commenter_igsid,
-            conv.id,
-            history_dicts + [
-                {"role": "user", "content": comment_text},
-                {"role": "model", "content": ai_reply},
-            ],
-            client_id=client.id if client else None,
-            channel="instagram",
+    if not client.ig_comment_autoreply_enabled:
+        logger.info(
+            "Comment auto-reply disabled for client=%s — skipping comment %s.",
+            client.id, comment_id,
         )
-    except Exception as exc:
-        logger.error("Lead tagging error on comment: %s", exc)
+        return {"status": "ok"}
 
-    # Public reply on the comment thread — brief so the post stays clean.
-    # The full AI response goes to DM below.
-    try:
-        public_ack = "Thanks for your comment! Sending you the details in DM. 😊"
-        await instagram_service.reply_to_comment(ig_user_id, comment_id, public_ack)
-    except Exception as exc:
-        logger.error("Instagram public comment reply failed: %s", exc)
+    if not client.ig_comment_reply_all and not ig_comment_service.matches_trigger(
+        comment_text, client.ig_comment_triggers
+    ):
+        logger.info(
+            "Comment %s matched no trigger keyword for client=%s — skipping.",
+            comment_id, client.id,
+        )
+        return {"status": "ok"}
 
-    # Full AI reply via DM — not length-limited, contains pricing/product details.
-    try:
-        await instagram_service.send_dm(ig_user_id, commenter_igsid, ai_reply)
-    except Exception as exc:
-        logger.error("Instagram DM reply to commenter failed: %s", exc)
+    log_row = IgCommentReply(
+        client_id=client.id,
+        comment_id=comment_id,
+        commenter_igsid=commenter_igsid,
+        media_id=media_id,
+        comment_text=comment_text,
+        status="pending",
+    )
+    db.add(log_row)
+    await db.commit()
+    await db.refresh(log_row)
 
+    if await ig_comment_service.is_comment_dm_rate_limited(ig_user_id):
+        logger.warning(
+            "event=comment_reply_rate_limited client=%s comment=%s — queued for drain job.",
+            client.id, comment_id,
+        )
+        return {"status": "ok"}
+
+    await ig_comment_service.send_comment_reply(db, client, ig_user_id, log_row)
     return {"status": "ok"}
+
+
+class CommentReplyStatsOut(BaseModel):
+    """Dashboard stats for the IG comment auto-reply feature."""
+
+    today_sent: int
+    total_comment_conversations: int
+    converted_conversations: int
+    conversion_rate: float
+
+
+@router.get("/comment-stats", response_model=CommentReplyStatsOut)
+async def get_comment_stats(
+    current_client: Annotated[Client, Depends(get_current_client)],
+    db: AsyncSession = Depends(get_db),
+) -> CommentReplyStatsOut:
+    """
+    Return today's comment-reply count and comment→DM→order conversion for
+    the dashboard's Comment Auto-Reply settings section.
+    """
+    stats = await ig_comment_service.get_comment_reply_stats(db, current_client.id)
+    return CommentReplyStatsOut(**stats)

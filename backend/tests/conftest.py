@@ -40,6 +40,7 @@ def mock_settings(monkeypatch):
     monkeypatch.setattr("app.routers.instagram.get_settings", lambda: test_settings)
     monkeypatch.setattr("app.routers.integrations.get_settings", lambda: test_settings)
     monkeypatch.setattr("app.routers.admin.get_settings", lambda: test_settings)
+    monkeypatch.setattr("app.routers.team.get_settings", lambda: test_settings)
     monkeypatch.setattr("app.services.gemini_service.get_settings", lambda: test_settings)
     monkeypatch.setattr("app.services.whatsapp_service.get_settings", lambda: test_settings)
     monkeypatch.setattr("app.services.instagram_service.get_settings", lambda: test_settings)
@@ -58,6 +59,36 @@ def mock_db():
     session.refresh = AsyncMock()
     session.add = MagicMock()
     return session
+
+
+@pytest.fixture
+def make_test_user():
+    """
+    Factory fixture: wrap a Client in an in-memory User for auth-lookup mocks.
+
+    Since login/get_current_client now resolve through the users table (not
+    clients directly), any test that mocks the auth dependency's DB query
+    must return a User (with `.client` set), not a bare Client — a Client
+    instance has no `.client` attribute and no `.is_owner`/`.has_permission`.
+    Use like: `mock_result.scalar_one_or_none.return_value = make_test_user(existing_client)`.
+    """
+
+    def _make(client, role: str = "owner", permissions: list[str] | None = None, user_id: int = 1):
+        from app.models.user import User
+
+        user = User(
+            id=user_id,
+            client_id=client.id,
+            email=client.email,
+            hashed_password=client.hashed_password,
+            role=role,
+            permissions=permissions if permissions is not None else [],
+            is_active=True,
+        )
+        user.client = client
+        return user
+
+    return _make
 
 
 @pytest.fixture

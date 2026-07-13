@@ -219,7 +219,7 @@ async def test_get_stats_percentage_rounds_to_one_decimal():
 
 # ── usage router tests ────────────────────────────────────────────────────────
 
-def test_get_usage_stats_returns_200(client, mock_db, mock_settings):
+def test_get_usage_stats_returns_200(client, mock_db, mock_settings, make_test_user):
     """GET /usage/stats returns stats for the authenticated client."""
     from app.services.auth_service import create_access_token
 
@@ -229,7 +229,7 @@ def test_get_usage_stats_returns_200(client, mock_db, mock_settings):
         is_active=True, daily_message_limit=100,
     )
     auth_result = MagicMock()
-    auth_result.scalar_one_or_none.return_value = existing_client
+    auth_result.scalar_one_or_none.return_value = make_test_user(existing_client)
     mock_db.execute.return_value = auth_result
 
     fake_stats = {

@@ -16,13 +16,19 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
+from app.models.client import Client
 from app.models.conversation import Conversation
 from app.models.lead import Lead
 from app.models.message import Message
 from app.models.order import Order
+from app.routers.auth import get_current_client, require_permission
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/analytics", tags=["analytics"])
+router = APIRouter(
+    prefix="/analytics",
+    tags=["analytics"],
+    dependencies=[Depends(get_current_client), Depends(require_permission("analytics_view"))],
+)
 
 # ── keyword topics for simple topic extraction ────────────────────────────────
 
@@ -62,9 +68,12 @@ def _today_utc() -> datetime:
 
 
 @router.get("/overview")
-async def get_overview(db: AsyncSession = Depends(get_db)) -> dict:
+async def get_overview(
+    current_client: Client = Depends(get_current_client),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
     """
-    Return aggregated platform metrics.
+    Return aggregated metrics for the authenticated client.
 
     Includes message volume, lead breakdown, channel split, peak hours,
     average response time, and conversation counts.
@@ -84,6 +93,7 @@ async def get_overview(db: AsyncSession = Depends(get_db)) -> dict:
             Message.role == "user",
             Message.created_at >= seven_days_ago,
             Conversation.is_sandbox == False,  # noqa: E712
+            Conversation.client_id == current_client.id,
         )
         .group_by(func.date(Message.created_at))
         .order_by(func.date(Message.created_at))
@@ -96,7 +106,9 @@ async def get_overview(db: AsyncSession = Depends(get_db)) -> dict:
 
     # ── leads breakdown ───────────────────────────────────────────────────────
     lead_rows = await db.execute(
-        select(Lead.status, func.count(Lead.id).label("cnt")).group_by(Lead.status)
+        select(Lead.status, func.count(Lead.id).label("cnt"))
+        .where(Lead.client_id == current_client.id)
+        .group_by(Lead.status)
     )
     lead_map: dict[str, int] = {r.status: r.cnt for r in lead_rows}
     total_leads = sum(lead_map.values())
@@ -114,7 +126,11 @@ async def get_overview(db: AsyncSession = Depends(get_db)) -> dict:
     chan_rows = await db.execute(
         select(Conversation.channel, func.count(Message.id).label("cnt"))
         .join(Message, Message.conversation_id == Conversation.id)
-        .where(Message.role == "user", Conversation.is_sandbox == False)  # noqa: E712
+        .where(
+            Message.role == "user",
+            Conversation.is_sandbox == False,  # noqa: E712
+            Conversation.client_id == current_client.id,
+        )
         .group_by(Conversation.channel)
     )
     top_channels: dict[str, int] = {}
@@ -131,7 +147,11 @@ async def get_overview(db: AsyncSession = Depends(get_db)) -> dict:
             func.count(Message.id).label("cnt"),
         )
         .join(Conversation, Conversation.id == Message.conversation_id)
-        .where(Message.role == "user", Conversation.is_sandbox == False)  # noqa: E712
+        .where(
+            Message.role == "user",
+            Conversation.is_sandbox == False,  # noqa: E712
+            Conversation.client_id == current_client.id,
+        )
         .group_by(func.extract("hour", Message.created_at))
     )
     hour_map: dict[int, int] = {int(r.hr): r.cnt for r in hour_rows}
@@ -143,7 +163,10 @@ async def get_overview(db: AsyncSession = Depends(get_db)) -> dict:
     all_msgs = await db.execute(
         select(Message.conversation_id, Message.role, Message.created_at)
         .join(Conversation, Conversation.id == Message.conversation_id)
-        .where(Conversation.is_sandbox == False)  # noqa: E712
+        .where(
+            Conversation.is_sandbox == False,  # noqa: E712
+            Conversation.client_id == current_client.id,
+        )
         .order_by(Message.conversation_id, Message.created_at)
     )
     msg_list = list(all_msgs)
@@ -160,7 +183,10 @@ async def get_overview(db: AsyncSession = Depends(get_db)) -> dict:
 
     # ── conversation counts ───────────────────────────────────────────────────
     total_conv_row = await db.execute(
-        select(func.count(Conversation.id)).where(Conversation.is_sandbox == False)  # noqa: E712
+        select(func.count(Conversation.id)).where(
+            Conversation.is_sandbox == False,  # noqa: E712
+            Conversation.client_id == current_client.id,
+        )
     )
     total_conversations = total_conv_row.scalar_one()
 
@@ -168,6 +194,7 @@ async def get_overview(db: AsyncSession = Depends(get_db)) -> dict:
         select(func.count(Conversation.id)).where(
             Conversation.created_at >= today,
             Conversation.is_sandbox == False,  # noqa: E712
+            Conversation.client_id == current_client.id,
         )
     )
     new_conversations_today = new_today_row.scalar_one()
@@ -179,6 +206,7 @@ async def get_overview(db: AsyncSession = Depends(get_db)) -> dict:
             Message.role == "user",
             Message.created_at >= month_start,
             Conversation.is_sandbox == False,  # noqa: E712
+            Conversation.client_id == current_client.id,
         )
     )
     messages_this_month = month_msgs_row.scalar_one()
@@ -197,9 +225,12 @@ async def get_overview(db: AsyncSession = Depends(get_db)) -> dict:
 
 
 @router.get("/revenue-chart")
-async def get_revenue_chart(db: AsyncSession = Depends(get_db)) -> list[dict]:
+async def get_revenue_chart(
+    current_client: Client = Depends(get_current_client),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
     """
-    Return per-day revenue totals for the last 7 days (all clients, UTC dates).
+    Return per-day revenue totals for the authenticated client, last 7 days (UTC dates).
 
     Each entry: {"date": "YYYY-MM-DD", "revenue": float}.
     """
@@ -214,6 +245,7 @@ async def get_revenue_chart(db: AsyncSession = Depends(get_db)) -> list[dict]:
         .where(
             Order.created_at >= seven_days_ago,
             Order.status.notin_(["cancelled"]),
+            Order.client_id == current_client.id,
         )
         .group_by(func.date(Order.created_at))
         .order_by(func.date(Order.created_at))
@@ -228,7 +260,10 @@ async def get_revenue_chart(db: AsyncSession = Depends(get_db)) -> list[dict]:
 
 
 @router.get("/leads-funnel")
-async def get_leads_funnel(db: AsyncSession = Depends(get_db)) -> dict:
+async def get_leads_funnel(
+    current_client: Client = Depends(get_current_client),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
     """
     Return a simplified sales funnel from total inquiries to placed orders.
 
@@ -240,12 +275,17 @@ async def get_leads_funnel(db: AsyncSession = Depends(get_db)) -> dict:
     - conversion_rate    = orders_placed / total_inquiries * 100
     """
     total_conv_row = await db.execute(
-        select(func.count(Conversation.id)).where(Conversation.is_sandbox == False)  # noqa: E712
+        select(func.count(Conversation.id)).where(
+            Conversation.is_sandbox == False,  # noqa: E712
+            Conversation.client_id == current_client.id,
+        )
     )
     total_inquiries: int = total_conv_row.scalar_one()
 
     lead_rows = await db.execute(
-        select(Lead.status, func.count(Lead.id).label("cnt")).group_by(Lead.status)
+        select(Lead.status, func.count(Lead.id).label("cnt"))
+        .where(Lead.client_id == current_client.id)
+        .group_by(Lead.status)
     )
     lead_map: dict[str, int] = {r.status: r.cnt for r in lead_rows}
     hot = lead_map.get("hot", 0)
@@ -266,9 +306,13 @@ async def get_leads_funnel(db: AsyncSession = Depends(get_db)) -> dict:
 
 
 @router.get("/top-questions")
-async def get_top_questions(db: AsyncSession = Depends(get_db)) -> list[dict]:
+async def get_top_questions(
+    current_client: Client = Depends(get_current_client),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
     """
-    Analyse the last 100 customer messages and return the top 10 topic groups.
+    Analyse the authenticated client's last 100 customer messages and return
+    the top 10 topic groups.
 
     Topics are identified by keyword matching against common commerce intents.
     Messages that match no known topic are counted under 'other inquiry'.
@@ -276,7 +320,11 @@ async def get_top_questions(db: AsyncSession = Depends(get_db)) -> list[dict]:
     rows = await db.execute(
         select(Message.content)
         .join(Conversation, Conversation.id == Message.conversation_id)
-        .where(Message.role == "user", Conversation.is_sandbox == False)  # noqa: E712
+        .where(
+            Message.role == "user",
+            Conversation.is_sandbox == False,  # noqa: E712
+            Conversation.client_id == current_client.id,
+        )
         .order_by(Message.created_at.desc())
         .limit(100)
     )

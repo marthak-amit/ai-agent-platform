@@ -56,9 +56,38 @@ export async function updateProfile(patch: {
   banner_url?: string;
   accepts_cod?: boolean;
   upi_id?: string;
+  ig_comment_autoreply_enabled?: boolean;
+  ig_comment_reply_all?: boolean;
+  ig_comment_triggers?: string[];
+  ig_comment_reply_text?: Record<string, string>;
 }) {
   const { data } = await api.patch("/auth/me", patch);
   return data;
+}
+
+// --- Team (Owner-only) ---
+
+export async function getTeam() {
+  const { data } = await api.get("/team");
+  return data as import("../types").TeamMember[];
+}
+
+export async function inviteTeamMember(email: string, role: "manager" | "staff") {
+  const { data } = await api.post("/team/invite", { email, role });
+  return data as { invite_link: string };
+}
+
+export async function updateTeamMember(
+  userId: number,
+  patch: { role?: string; permissions?: string[]; is_active?: boolean },
+) {
+  const { data } = await api.patch(`/team/${userId}`, patch);
+  return data as import("../types").TeamMember;
+}
+
+export async function acceptInvite(token: string, password: string) {
+  const { data } = await api.post("/team/accept-invite", { token, password });
+  return data as { access_token: string; token_type: string };
 }
 
 // --- Onboarding ---
@@ -279,6 +308,18 @@ export async function getInstagramConnectUrl(): Promise<{ url: string }> {
 
 export async function disconnectInstagram(): Promise<{ success: boolean }> {
   const { data } = await api.post("/integrations/instagram/disconnect");
+  return data;
+}
+
+export interface CommentReplyStats {
+  today_sent: number;
+  total_comment_conversations: number;
+  converted_conversations: number;
+  conversion_rate: number;
+}
+
+export async function getCommentReplyStats(): Promise<CommentReplyStats> {
+  const { data } = await api.get("/instagram/comment-stats");
   return data;
 }
 

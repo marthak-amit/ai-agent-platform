@@ -50,8 +50,8 @@ const ChannelCard = forwardRef<HTMLDivElement, ChannelCardProps>(
             onClick={connected ? onManage : onConnect}
             className={`flex-1 py-2 rounded-lg text-xs font-semibold transition-colors ${
               connected
-                ? "border border-indigo-200 text-indigo-700 hover:bg-indigo-50"
-                : "bg-indigo-600 text-white hover:bg-indigo-700"
+                ? "border border-brand-primary/20 text-brand-primaryDark hover:bg-brand-primary/10"
+                : "bg-brand-primaryDark text-white hover:bg-brand-primary/90"
             }`}
           >
             {connected ? "Manage" : "Connect"}

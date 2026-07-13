@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.config import get_settings
 from app.models.client import Client
-from app.routers.auth import get_current_client
+from app.routers.auth import get_owner_client as get_current_client
 from app.services import whatsapp_service
 
 logger = logging.getLogger(__name__)

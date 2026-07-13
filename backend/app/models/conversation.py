@@ -105,6 +105,11 @@ class Conversation(Base):
     # Sandbox flag — sandbox conversations are excluded from analytics/leads (migration 0028)
     is_sandbox: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
 
+    # Entry-point attribution — stamped only at creation time, e.g. "comment_reply"
+    # when the conversation was opened via the IG comment private-reply trigger.
+    # NULL means the ordinary direct-DM/webhook entry point (migration 0049).
+    source: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
     # Language persistence — stores the last non-ambiguous customer language so
     # single-word replies ("yes", "COD", "1") stay in that language (migration 0021)
     last_customer_language: Mapped[str] = mapped_column(

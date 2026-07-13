@@ -59,21 +59,21 @@ export default function BookDemo() {
   return (
     <>
       <SEO
-        title="Book a Demo — AgentlyAI"
-        description="Book a demo to see AgentlyAI's AI sales agent working on your own fashion catalogue."
+        title="Book a Demo — SellerTalk24"
+        description="Book a demo to see SellerTalk24's AI sales agent working on your own fashion catalogue."
         path="/demo"
       />
       <section className="mx-auto max-w-3xl px-4 py-16 sm:px-6 lg:px-8">
         <h1 className="text-center text-4xl font-bold text-gray-900">Book a 30-minute demo</h1>
         <p className="mx-auto mt-3 max-w-xl text-center text-gray-600">
-          See AgentlyAI working on your own catalogue — WhatsApp &amp; Instagram order automation
+          See SellerTalk24 working on your own catalogue — WhatsApp &amp; Instagram order automation
           for fashion retailers.
         </p>
 
-        <ul className="mt-6 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm font-medium text-indigo-700">
+        <ul className="mt-6 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm font-medium text-brand-primaryDark">
           {trustPoints.map((point) => (
             <li key={point} className="flex items-center gap-1.5">
-              <span className="inline-block h-1.5 w-1.5 rounded-full bg-indigo-600" aria-hidden="true" />
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-brand-primary" aria-hidden="true" />
               {point}
             </li>
           ))}
@@ -96,7 +96,7 @@ export default function BookDemo() {
         </div>
 
         {status === "sent" ? (
-          <div className="mt-10 rounded-2xl border border-indigo-200 bg-indigo-50 p-8 text-center">
+          <div className="mt-10 rounded-2xl border border-brand-primary/20 bg-brand-primary/10 p-8 text-center">
             <h2 className="text-xl font-semibold text-gray-900">Thanks, we'll be in touch</h2>
             <p className="mt-2 text-gray-600">Our team will reach out shortly to schedule your demo.</p>
           </div>
@@ -112,7 +112,7 @@ export default function BookDemo() {
                   <>
                     {" "}
                     <a href={buildMailtoFallback(form)} className="font-semibold underline">
-                      demo@agentlyai.in
+                      demo@sellertalk24.com
                     </a>
                   </>
                 )}
@@ -129,7 +129,7 @@ export default function BookDemo() {
                 value={form.businessName}
                 onChange={update("businessName")}
                 disabled={status === "submitting"}
-                className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:opacity-60"
+                className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-brand-primary focus:outline-none focus:ring-1 focus:ring-brand-primary disabled:opacity-60"
               />
             </div>
             <div>
@@ -143,7 +143,7 @@ export default function BookDemo() {
                 value={form.email}
                 onChange={update("email")}
                 disabled={status === "submitting"}
-                className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:opacity-60"
+                className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-brand-primary focus:outline-none focus:ring-1 focus:ring-brand-primary disabled:opacity-60"
               />
             </div>
             <div>
@@ -156,7 +156,7 @@ export default function BookDemo() {
                 value={form.phone}
                 onChange={update("phone")}
                 disabled={status === "submitting"}
-                className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:opacity-60"
+                className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-brand-primary focus:outline-none focus:ring-1 focus:ring-brand-primary disabled:opacity-60"
               />
             </div>
             <div>
@@ -169,7 +169,7 @@ export default function BookDemo() {
                 value={form.whatsappNumber}
                 onChange={update("whatsappNumber")}
                 disabled={status === "submitting"}
-                className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:opacity-60"
+                className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-brand-primary focus:outline-none focus:ring-1 focus:ring-brand-primary disabled:opacity-60"
               />
             </div>
             <div>
@@ -182,7 +182,7 @@ export default function BookDemo() {
                 value={form.monthlyOrderVolume}
                 onChange={update("monthlyOrderVolume")}
                 disabled={status === "submitting"}
-                className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:opacity-60"
+                className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-brand-primary focus:outline-none focus:ring-1 focus:ring-brand-primary disabled:opacity-60"
               />
             </div>
             <div>
@@ -195,7 +195,7 @@ export default function BookDemo() {
                 value={form.message}
                 onChange={update("message")}
                 disabled={status === "submitting"}
-                className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:opacity-60"
+                className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-brand-primary focus:outline-none focus:ring-1 focus:ring-brand-primary disabled:opacity-60"
               />
             </div>
 
@@ -218,7 +218,7 @@ export default function BookDemo() {
             <button
               type="submit"
               disabled={status === "submitting"}
-              className="w-full rounded-xl bg-indigo-600 px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 disabled:opacity-60"
+              className="w-full rounded-xl bg-brand-primaryDark px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary focus-visible:ring-offset-2 disabled:opacity-60"
             >
               {status === "submitting" ? "Submitting..." : "Request Demo"}
             </button>

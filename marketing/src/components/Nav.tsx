@@ -3,6 +3,7 @@ import { Link, NavLink } from "react-router-dom";
 import { motion } from "framer-motion";
 import { DASHBOARD_LOGIN_URL, DASHBOARD_SIGNUP_URL } from "../config";
 import CTAButton from "./CTAButton";
+import Logo from "./Logo";
 
 const links = [
   { to: "/features", label: "Features" },
@@ -34,11 +35,7 @@ export default function Nav() {
     >
       <nav className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 sm:px-6 lg:px-8">
         <Link to="/" className="flex items-center gap-2 text-lg font-bold tracking-tight text-gray-900">
-          <span
-            className="inline-block h-8 w-8 rounded-xl bg-gradient-to-br from-indigo-600 to-violet-600 shadow-sm shadow-indigo-600/30"
-            aria-hidden="true"
-          />
-          AgentlyAI
+          <Logo className="h-11 w-auto" />
         </Link>
 
         <div className="hidden items-center gap-8 md:flex">
@@ -47,8 +44,8 @@ export default function Nav() {
               key={link.to}
               to={link.to}
               className={({ isActive }) =>
-                `text-sm font-medium transition-colors hover:text-indigo-600 ${
-                  isActive ? "text-indigo-600" : "text-gray-600"
+                `text-sm font-medium transition-colors hover:text-brand-primaryDark ${
+                  isActive ? "text-brand-primaryDark" : "text-gray-600"
                 }`
               }
             >
@@ -60,7 +57,7 @@ export default function Nav() {
         <div className="hidden items-center gap-3 md:flex">
           <a
             href={DASHBOARD_LOGIN_URL}
-            className="text-sm font-medium text-gray-700 hover:text-indigo-600"
+            className="text-sm font-medium text-gray-700 hover:text-brand-primaryDark"
           >
             Log in
           </a>

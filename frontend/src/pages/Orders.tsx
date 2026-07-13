@@ -27,7 +27,7 @@ import {
 
 const STATUS_STYLES: Record<string, string> = {
   new: "bg-blue-100 text-blue-700",
-  confirmed: "bg-indigo-100 text-indigo-700",
+  confirmed: "bg-brand-primary/10 text-brand-primaryDark",
   paid: "bg-green-100 text-green-700",
   processing: "bg-orange-100 text-orange-700",
   dispatched: "bg-purple-100 text-purple-700",
@@ -109,7 +109,7 @@ function DispatchModal({
             <select
               value={courier}
               onChange={(e) => setCourier(e.target.value)}
-              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
             >
               {COURIERS.map((c) => <option key={c}>{c}</option>)}
             </select>
@@ -120,7 +120,7 @@ function DispatchModal({
               value={tracking}
               onChange={(e) => setTracking(e.target.value)}
               placeholder="e.g. DL123456789"
-              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
             />
           </div>
         </div>
@@ -130,7 +130,7 @@ function DispatchModal({
           <button
             onClick={handleConfirm}
             disabled={saving}
-            className="flex-1 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50"
+            className="flex-1 py-2 rounded-lg bg-brand-primaryDark text-white text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50"
           >
             {saving ? "Saving…" : "Confirm & Notify"}
           </button>
@@ -214,7 +214,7 @@ function OrderDetailModal({
                 {[order.product_sku, order.variant_color, order.variant_size].filter(Boolean).join(" · ")}
                 {" — "}Qty {order.quantity} × ₹{order.unit_price.toLocaleString("en-IN")}
               </p>
-              <p className="text-base font-bold text-indigo-600 mt-1">₹{order.total_amount.toLocaleString("en-IN")}</p>
+              <p className="text-base font-bold text-brand-primaryDark mt-1">₹{order.total_amount.toLocaleString("en-IN")}</p>
             </div>
 
             <div>
@@ -246,7 +246,7 @@ function OrderDetailModal({
                 <div className="space-y-1">
                   {timeline.map((t) => (
                     <div key={t.label} className="flex items-center gap-2 text-xs text-gray-600">
-                      <CheckCircle2 size={12} className="text-indigo-400 shrink-0" />
+                      <CheckCircle2 size={12} className="text-brand-primaryDark shrink-0" />
                       <span className="font-medium">{t.label}</span>
                       <span className="text-gray-400">{relativeTime(t.time)}</span>
                     </div>
@@ -286,7 +286,7 @@ function OrderDetailModal({
                 {order.conversation_id && (
                   <Link
                     to="/conversations"
-                    className="text-xs px-3 py-1.5 rounded-lg bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100 font-medium"
+                    className="text-xs px-3 py-1.5 rounded-lg bg-brand-primary/5 text-brand-primaryDark border border-brand-primary/20 hover:bg-brand-primary/10 font-medium"
                   >
                     View Conversation
                   </Link>
@@ -302,12 +302,12 @@ function OrderDetailModal({
                   value={customMsg}
                   onChange={(e) => setCustomMsg(e.target.value)}
                   placeholder="Custom message to customer…"
-                  className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                  className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
                 />
                 <button
                   onClick={handleSendMsg}
                   disabled={sending || !customMsg.trim()}
-                  className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700 disabled:opacity-50"
+                  className="px-4 py-2 rounded-lg bg-brand-primaryDark text-white text-xs font-semibold hover:bg-brand-primary/90 disabled:opacity-50"
                 >
                   {msgSent ? "Sent!" : sending ? "…" : <MessageSquare size={14} />}
                 </button>
@@ -485,7 +485,7 @@ export default function Orders() {
               onClick={() => handleStatusTab(s)}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${
                 statusFilter === s
-                  ? "bg-indigo-600 text-white"
+                  ? "bg-brand-primaryDark text-white"
                   : "text-gray-500 hover:bg-gray-100"
               }`}
             >
@@ -502,7 +502,7 @@ export default function Orders() {
               value={search}
               onChange={handleSearch}
               placeholder="Search order number, customer name or phone…"
-              className="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              className="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
             />
           </div>
         </div>
@@ -545,7 +545,7 @@ export default function Orders() {
                     className="hover:bg-gray-50 transition-colors cursor-pointer"
                     onClick={() => setSelectedOrder(order)}
                   >
-                    <td className="px-4 py-3 font-medium text-indigo-700 text-xs whitespace-nowrap">
+                    <td className="px-4 py-3 font-medium text-brand-primaryDark text-xs whitespace-nowrap">
                       {order.order_number}
                     </td>
                     <td className="px-4 py-3">

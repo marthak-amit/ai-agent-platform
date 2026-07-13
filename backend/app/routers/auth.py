@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.models.client import Client
+from app.models.user import User
 from app.services import auth_service
 
 
@@ -45,12 +46,44 @@ _bearer = HTTPBearer(auto_error=False)
 # Public dependency — imported by conversations.py, leads.py, etc.
 # ---------------------------------------------------------------------------
 
+async def get_current_user(
+    credentials: Annotated[Optional[HTTPAuthorizationCredentials], Depends(_bearer)],
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """
+    FastAPI dependency: extract Bearer token and return the authenticated User.
+
+    Raises:
+        HTTPException 401: If the token is missing, invalid, or expired.
+    """
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        return await auth_service.get_current_user(credentials.credentials, db)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+
 async def get_current_client(
     credentials: Annotated[Optional[HTTPAuthorizationCredentials], Depends(_bearer)],
     db: AsyncSession = Depends(get_db),
 ) -> Client:
     """
-    FastAPI dependency: extract Bearer token and return the authenticated Client.
+    FastAPI dependency: extract Bearer token and return the authenticated
+    user's Client business record.
+
+    Any active user of the business (owner, manager, or staff) passes this
+    dependency — it only checks authentication, not per-permission
+    authorization. Use `require_permission` or `get_owner_client` on top of
+    this for routes that need to gate by checklist permission or Owner role.
 
     Raises:
         HTTPException 401: If the token is missing, invalid, or expired.
@@ -69,6 +102,54 @@ async def get_current_client(
             detail=str(exc),
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
+
+
+async def get_owner_client(
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> Client:
+    """
+    FastAPI dependency: like get_current_client, but 403s unless the caller
+    is the business Owner.
+
+    This checks `current_user.role` directly rather than the permissions
+    checklist, so a corrupted or tampered permissions array can never grant
+    access to a hard-locked, Owner-only action (billing, channel
+    connect/disconnect, staff management, credential display).
+
+    Raises:
+        HTTPException 403: If the authenticated user is not the Owner.
+    """
+    if not current_user.is_owner:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the account Owner can perform this action.",
+        )
+    return current_user.client
+
+
+def require_permission(permission_key: str):
+    """
+    FastAPI dependency factory: 403s unless the caller is the Owner or holds
+    `permission_key` in their permissions checklist.
+
+    Args:
+        permission_key: One of app.models.user.PERMISSION_KEYS.
+
+    Returns:
+        A dependency callable suitable for `Depends(...)`.
+    """
+
+    async def _check(
+        current_user: Annotated[User, Depends(get_current_user)],
+    ) -> User:
+        if not current_user.has_permission(permission_key):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Missing required permission: {permission_key}.",
+            )
+        return current_user
+
+    return _check
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +177,18 @@ class TokenResponse(BaseModel):
 
     access_token: str
     token_type: str = "bearer"
+
+
+class CurrentUserOut(BaseModel):
+    """The requesting login identity — distinct from the shared business profile."""
+
+    id: int
+    email: str
+    role: str
+    permissions: list[str]
+    is_owner: bool
+
+    model_config = {"from_attributes": True}
 
 
 class ClientOut(BaseModel):
@@ -141,13 +234,27 @@ class ClientOut(BaseModel):
     business_type: Optional[str] = None
     business_description: Optional[str] = None
     whatsapp_number: Optional[str] = None
+    ig_comment_autoreply_enabled: bool = False
+    ig_comment_reply_all: bool = False
+    ig_comment_triggers: list[str] = []
+    ig_comment_reply_text: dict[str, str] = {}
+    # Always populated by from_client() below — Optional only because the
+    # Client ORM object itself has no such attribute for model_validate to read.
+    current_user: Optional[CurrentUserOut] = None
 
     model_config = {"from_attributes": True}
 
     @classmethod
-    def from_client(cls, client: "Client") -> "ClientOut":
-        """Build ClientOut, masking sensitive payment fields before exposure."""
-        obj = cls.model_validate(client)
+    def from_client(cls, client: "Client", user: "User") -> "ClientOut":
+        """Build ClientOut for `user`, masking sensitive payment fields before exposure."""
+        obj = cls.model_validate(client, from_attributes=True)
+        obj.current_user = CurrentUserOut(
+            id=user.id,
+            email=user.email,
+            role=user.role,
+            permissions=list(user.permissions or []),
+            is_owner=user.is_owner,
+        )
         # Mask bank account number — show only last 4 digits
         if obj.bank_account_number:
             obj.bank_account_number = "****" + obj.bank_account_number[-4:]
@@ -192,6 +299,10 @@ class UpdateMeRequest(BaseModel):
     payment_instructions: Optional[str] = None
     delivery_days_min: Optional[int] = None
     delivery_days_max: Optional[int] = None
+    ig_comment_autoreply_enabled: Optional[bool] = None
+    ig_comment_reply_all: Optional[bool] = None
+    ig_comment_triggers: Optional[list[str]] = None
+    ig_comment_reply_text: Optional[dict[str, str]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -202,21 +313,23 @@ class UpdateMeRequest(BaseModel):
 async def register(
     body: RegisterRequest,
     db: AsyncSession = Depends(get_db),
-) -> Client:
+) -> ClientOut:
     """
-    Register a new client account.
+    Register a new client business, plus its first (Owner) User login.
 
     Args:
         body: business_name, email, password, phone (optional).
 
     Returns:
-        Created ClientOut profile.
+        Created ClientOut profile, with current_user describing the new Owner.
 
     Raises:
-        HTTPException 409: If the email is already registered.
+        HTTPException 409: If the email is already registered, as a Client or
+            as a User (invited team member) of any other business.
     """
-    result = await db.execute(select(Client).where(Client.email == body.email))
-    if result.scalar_one_or_none() is not None:
+    existing_client = await db.execute(select(Client).where(Client.email == body.email))
+    existing_user = await db.execute(select(User).where(User.email == body.email))
+    if existing_client.scalar_one_or_none() is not None or existing_user.scalar_one_or_none() is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Email already registered.",
@@ -233,9 +346,10 @@ async def register(
         slug = f"{base_slug}-{suffix}"
         suffix += 1
 
+    hashed_password = auth_service.hash_password(body.password)
     client = Client(
         email=body.email,
-        hashed_password=auth_service.hash_password(body.password),
+        hashed_password=hashed_password,
         business_name=body.business_name,
         phone=body.phone,
         plan_slug="starter",
@@ -243,9 +357,21 @@ async def register(
         catalogue_slug=slug,
     )
     db.add(client)
+    await db.flush()  # populate client.id for the owner User row below
+
+    owner = User(
+        client_id=client.id,
+        email=body.email,
+        hashed_password=hashed_password,
+        role="owner",
+        permissions=[],
+        is_active=True,
+    )
+    db.add(owner)
     await db.commit()
     await db.refresh(client)
-    return client
+    await db.refresh(owner)
+    return ClientOut.from_client(client, owner)
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -263,19 +389,26 @@ async def login(
         TokenResponse with access_token and token_type = "bearer".
 
     Raises:
-        HTTPException 401: If credentials are invalid.
+        HTTPException 401: If credentials are invalid, or the account is an
+            accepted invite whose password has not yet been set.
     """
-    result = await db.execute(select(Client).where(Client.email == body.email))
-    client = result.scalar_one_or_none()
+    result = await db.execute(select(User).where(User.email == body.email))
+    user = result.scalar_one_or_none()
 
-    if client is None or not auth_service.verify_password(body.password, client.hashed_password):
+    if user is None or user.hashed_password is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if not auth_service.verify_password(body.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    token = auth_service.create_access_token({"sub": client.email})
+    token = auth_service.create_access_token({"sub": user.email})
     return TokenResponse(access_token=token)
 
 
@@ -298,34 +431,71 @@ async def logout(
 
 @router.get("/me", response_model=ClientOut)
 async def get_me(
-    current_client: Annotated[Client, Depends(get_current_client)],
+    current_user: Annotated[User, Depends(get_current_user)],
 ) -> ClientOut:
     """
-    Return the currently authenticated client's profile.
+    Return the currently authenticated user's business profile + own identity.
 
     Returns:
         ClientOut for the decoded JWT subject (sensitive fields masked).
     """
-    return ClientOut.from_client(current_client)
+    return ClientOut.from_client(current_user.client, current_user)
+
+
+# Fields a non-owner may update via PATCH /auth/me, gated by comment_settings.
+# Every other field is Owner-only — this endpoint predates per-user accounts
+# and still carries business-critical/credential fields (WhatsApp/Razorpay
+# tokens, bank details, etc.) that must never be reachable by an invited user.
+_COMMENT_SETTINGS_FIELDS = {
+    "ig_comment_autoreply_enabled",
+    "ig_comment_reply_all",
+    "ig_comment_triggers",
+    "ig_comment_reply_text",
+}
 
 
 @router.patch("/me", response_model=ClientOut)
 async def update_me(
     body: UpdateMeRequest,
-    current_client: Annotated[Client, Depends(get_current_client)],
+    current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-) -> Client:
+) -> ClientOut:
     """
-    Partially update the current client's profile.
+    Partially update the current business profile.
 
-    Only fields present in the request body are updated.
+    Only fields present in the request body are updated. The Owner may update
+    any field. A non-owner may only submit the IG comment-settings fields,
+    and only if they hold the comment_settings permission — every other field
+    is hard-locked to the Owner regardless of the permissions checklist.
 
     Args:
-        body: Any combination of business_name, phone, gemini_system_prompt.
+        body: Any combination of business_name, phone, gemini_system_prompt,
+            or (non-owner, with comment_settings) the ig_comment_* fields.
 
     Returns:
         Updated ClientOut.
+
+    Raises:
+        HTTPException 403: If a non-owner submits any field outside
+            comment_settings, or lacks the comment_settings permission
+            entirely while submitting ig_comment_* fields.
     """
+    current_client = current_user.client
+    submitted_fields = {k for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+
+    if not current_user.is_owner:
+        disallowed_fields = submitted_fields - _COMMENT_SETTINGS_FIELDS
+        if disallowed_fields:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Only the Owner can update: {', '.join(sorted(disallowed_fields))}.",
+            )
+        if submitted_fields and not current_user.has_permission("comment_settings"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Missing required permission: comment_settings.",
+            )
+
     if body.business_name is not None:
         current_client.business_name = body.business_name
     if body.phone is not None:
@@ -397,7 +567,15 @@ async def update_me(
         current_client.delivery_days_min = body.delivery_days_min
     if body.delivery_days_max is not None:
         current_client.delivery_days_max = body.delivery_days_max
+    if body.ig_comment_autoreply_enabled is not None:
+        current_client.ig_comment_autoreply_enabled = body.ig_comment_autoreply_enabled
+    if body.ig_comment_reply_all is not None:
+        current_client.ig_comment_reply_all = body.ig_comment_reply_all
+    if body.ig_comment_triggers is not None:
+        current_client.ig_comment_triggers = body.ig_comment_triggers
+    if body.ig_comment_reply_text is not None:
+        current_client.ig_comment_reply_text = body.ig_comment_reply_text
 
     await db.commit()
     await db.refresh(current_client)
-    return ClientOut.from_client(current_client)
+    return ClientOut.from_client(current_client, current_user)

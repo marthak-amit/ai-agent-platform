@@ -140,7 +140,7 @@ function ConvItem({ conv, selected, onClick }: { conv: ConversationSummary; sele
     <button
       onClick={onClick}
       className={`w-full text-left px-4 py-3.5 border-b border-gray-50 transition-all duration-150 ${
-        selected ? "bg-indigo-50" : "hover:bg-gray-50"
+        selected ? "bg-brand-primary/5" : "hover:bg-gray-50"
       }`}
     >
       <div className="flex items-start gap-3">
@@ -209,7 +209,7 @@ function ChatBubble({ msg }: { msg: Message }) {
             ? "bg-white border border-gray-200 text-gray-800 rounded-tl-sm"
             : isHuman
             ? "bg-green-500 text-white rounded-tr-sm"
-            : "bg-indigo-600 text-white rounded-tr-sm"
+            : "bg-brand-primaryDark text-white rounded-tr-sm"
         }`}
       >
         {msg.original_type === "audio" ? (
@@ -351,7 +351,7 @@ export default function Conversations() {
         <div className="flex items-center gap-2 mb-3 lg:hidden">
           <button
             onClick={() => setMobileView("list")}
-            className="flex items-center gap-1 text-sm text-indigo-600 font-medium"
+            className="flex items-center gap-1 text-sm text-brand-primaryDark font-medium"
           >
             <ChevronLeft size={16} /> Back
           </button>
@@ -374,7 +374,7 @@ export default function Conversations() {
                 placeholder={t("conversations.search")}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="w-full pl-8 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-400 bg-gray-50"
+                className="w-full pl-8 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-primary bg-gray-50"
               />
             </div>
           </div>
@@ -387,8 +387,8 @@ export default function Conversations() {
                 onClick={() => setFilter(tab.key)}
                 className={`shrink-0 text-xs px-3 py-1 rounded-full font-medium transition-all duration-150 ${
                   filter === tab.key
-                    ? "bg-indigo-600 text-white shadow-sm"
-                    : "border border-gray-200 text-gray-500 hover:border-indigo-300 hover:text-indigo-600"
+                    ? "bg-brand-primaryDark text-white shadow-sm"
+                    : "border border-gray-200 text-gray-500 hover:border-brand-primary/40 hover:text-brand-primaryDark"
                 }`}
               >
                 {tab.label}
@@ -437,7 +437,7 @@ export default function Conversations() {
             </div>
           ) : detailLoading ? (
             <div className="flex-1 flex items-center justify-center">
-              <div className="w-8 h-8 border-3 border-indigo-200 border-t-indigo-600 rounded-full animate-spin" />
+              <div className="w-8 h-8 border-3 border-brand-primary/20 border-t-brand-primary rounded-full animate-spin" />
             </div>
           ) : detail ? (
             <>
@@ -500,7 +500,7 @@ export default function Conversations() {
                 <select
                   value={detail.lead_status}
                   onChange={(e) => handleLeadChange(e.target.value)}
-                  className={`text-xs font-medium px-2.5 py-1.5 rounded-full border-0 capitalize cursor-pointer focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
+                  className={`text-xs font-medium px-2.5 py-1.5 rounded-full border-0 capitalize cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand-primary ${
                     LEAD_COLORS[detail.lead_status] ?? LEAD_COLORS.cold
                   }`}
                 >
@@ -572,13 +572,13 @@ export default function Conversations() {
                       }
                     }}
                     placeholder={t("conversations.type_message")}
-                    className="flex-1 border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-indigo-400 bg-gray-50"
+                    className="flex-1 border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-brand-primary bg-gray-50"
                     style={{ minHeight: "42px" }}
                   />
                   <button
                     type="submit"
                     disabled={!draft.trim() || sending}
-                    className="w-11 h-11 rounded-xl bg-indigo-600 text-white flex items-center justify-center hover:bg-indigo-700 disabled:opacity-40 transition-colors shrink-0"
+                    className="w-11 h-11 rounded-xl bg-brand-primaryDark text-white flex items-center justify-center hover:bg-brand-primary/90 disabled:opacity-40 transition-colors shrink-0"
                   >
                     {sending ? (
                       <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />

@@ -1,6 +1,7 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "./context/AuthContext";
 import ProtectedRoute from "./components/ProtectedRoute";
+import RequirePermission from "./components/RequirePermission";
 import Login from "./pages/Login";
 import Onboarding from "./pages/Onboarding";
 import Dashboard from "./pages/Dashboard";
@@ -15,6 +16,7 @@ import Orders from "./pages/Orders";
 import Customers from "./pages/Customers";
 import KnowledgeBase from "./pages/KnowledgeBase";
 import Sandbox from "./pages/Sandbox";
+import AcceptInvite from "./pages/AcceptInvite";
 import CataloguePage from "./pages/public/CataloguePage";
 import ProductPage from "./pages/public/ProductPage";
 
@@ -44,7 +46,9 @@ export default function App() {
             path="/conversations"
             element={
               <ProtectedRoute>
-                <Conversations />
+                <RequirePermission permission="manual_reply">
+                  <Conversations />
+                </RequirePermission>
               </ProtectedRoute>
             }
           />
@@ -52,7 +56,9 @@ export default function App() {
             path="/leads"
             element={
               <ProtectedRoute>
-                <Leads />
+                <RequirePermission ownerOnly>
+                  <Leads />
+                </RequirePermission>
               </ProtectedRoute>
             }
           />
@@ -60,7 +66,9 @@ export default function App() {
             path="/analytics"
             element={
               <ProtectedRoute>
-                <Analytics />
+                <RequirePermission permission="analytics_view">
+                  <Analytics />
+                </RequirePermission>
               </ProtectedRoute>
             }
           />
@@ -68,7 +76,9 @@ export default function App() {
             path="/channels"
             element={
               <ProtectedRoute>
-                <Channels />
+                <RequirePermission ownerOnly>
+                  <Channels />
+                </RequirePermission>
               </ProtectedRoute>
             }
           />
@@ -76,7 +86,9 @@ export default function App() {
             path="/catalogue"
             element={
               <ProtectedRoute>
-                <Catalogue />
+                <RequirePermission permission="catalog_edit">
+                  <Catalogue />
+                </RequirePermission>
               </ProtectedRoute>
             }
           />
@@ -84,7 +96,9 @@ export default function App() {
             path="/settings"
             element={
               <ProtectedRoute>
-                <Settings />
+                <RequirePermission ownerOnly>
+                  <Settings />
+                </RequirePermission>
               </ProtectedRoute>
             }
           />
@@ -92,7 +106,9 @@ export default function App() {
             path="/campaigns"
             element={
               <ProtectedRoute>
-                <Campaigns />
+                <RequirePermission ownerOnly>
+                  <Campaigns />
+                </RequirePermission>
               </ProtectedRoute>
             }
           />
@@ -100,7 +116,9 @@ export default function App() {
             path="/orders"
             element={
               <ProtectedRoute>
-                <Orders />
+                <RequirePermission permission="order_view">
+                  <Orders />
+                </RequirePermission>
               </ProtectedRoute>
             }
           />
@@ -108,7 +126,9 @@ export default function App() {
             path="/customers"
             element={
               <ProtectedRoute>
-                <Customers />
+                <RequirePermission ownerOnly>
+                  <Customers />
+                </RequirePermission>
               </ProtectedRoute>
             }
           />
@@ -116,7 +136,9 @@ export default function App() {
             path="/knowledge"
             element={
               <ProtectedRoute>
-                <KnowledgeBase />
+                <RequirePermission ownerOnly>
+                  <KnowledgeBase />
+                </RequirePermission>
               </ProtectedRoute>
             }
           />
@@ -124,13 +146,16 @@ export default function App() {
             path="/sandbox"
             element={
               <ProtectedRoute>
-                <Sandbox />
+                <RequirePermission ownerOnly>
+                  <Sandbox />
+                </RequirePermission>
               </ProtectedRoute>
             }
           />
           {/* Public catalogue routes — no auth */}
           <Route path="/shop/:slug" element={<CataloguePage />} />
           <Route path="/shop/:slug/product/:sku" element={<ProductPage />} />
+          <Route path="/accept-invite" element={<AcceptInvite />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </BrowserRouter>

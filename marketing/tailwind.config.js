@@ -6,9 +6,17 @@ export default {
       fontFamily: {
         sans: ["Inter", "sans-serif"],
       },
-      // No custom color palette: mirrors frontend/tailwind.config.js, which
-      // uses Tailwind's stock palette (indigo primary, gray neutrals) directly
-      // in components rather than custom tokens. Keep these configs in sync.
+      colors: {
+        brand: {
+          primary: '#25D366',
+          primaryDark: '#0F8B4C',
+          secondary: '#1A2E44',
+          bg: '#F7F9F8',
+          bgDark: '#1F2937',
+          accent: '#F2536B',
+          warning: '#F5A623',
+        },
+      },
     },
   },
   plugins: [],

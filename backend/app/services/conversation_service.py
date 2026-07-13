@@ -44,6 +44,7 @@ async def get_or_create_conversation(
     channel: str = "whatsapp",
     is_sandbox: bool = False,
     client_id: int | None = None,
+    source: str | None = None,
 ) -> Conversation:
     """
     Return an existing conversation for this customer or create a new one.
@@ -55,6 +56,9 @@ async def get_or_create_conversation(
         is_sandbox:   When True, scopes lookup/creation to sandbox conversations only.
         client_id:    Owning client's PK, when already resolved by the caller.
                       Scopes the lookup and is stamped onto newly created rows.
+        source:       Entry-point attribution (e.g. "comment_reply"), stamped
+                      only on newly created rows — never overwrites an
+                      existing conversation's source on repeat lookups.
 
     Returns:
         Conversation instance (persisted).
@@ -75,6 +79,7 @@ async def get_or_create_conversation(
             channel=channel,
             is_sandbox=is_sandbox,
             client_id=client_id,
+            source=source,
         )
         db.add(conv)
         await db.commit()

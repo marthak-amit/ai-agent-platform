@@ -147,15 +147,15 @@ function StepBar({ current }: { current: number }) {
             <div key={n} className="flex-1 flex flex-col items-center gap-1">
               <div
                 className={`w-full h-1.5 rounded-full transition-colors ${
-                  done || active ? "bg-indigo-600" : "bg-gray-200"
+                  done || active ? "bg-brand-primary" : "bg-gray-200"
                 }`}
               />
               <span
                 className={`text-[10px] font-medium ${
                   active
-                    ? "text-indigo-600"
+                    ? "text-brand-primaryDark"
                     : done
-                    ? "text-indigo-400"
+                    ? "text-brand-primaryDark"
                     : "text-gray-400"
                 }`}
               >
@@ -425,7 +425,7 @@ export default function Onboarding() {
   const waConnected = !!(waPhoneId && waToken);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50 flex items-center justify-center px-4 py-12">
+    <div className="min-h-screen bg-gradient-to-br from-brand-primary/5 via-white to-brand-primary/5 flex items-center justify-center px-4 py-12">
       <div className="bg-white rounded-2xl shadow-lg border border-gray-100 w-full max-w-2xl">
         {step <= 6 && <StepBar current={step} />}
 
@@ -448,7 +448,7 @@ export default function Onboarding() {
                     type="text"
                     value={businessName}
                     onChange={(e) => setBusinessName(e.target.value)}
-                    className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
                     placeholder="Raj's Textiles"
                   />
                 </div>
@@ -460,7 +460,7 @@ export default function Onboarding() {
                   <select
                     value={businessType}
                     onChange={(e) => setBusinessType(e.target.value)}
-                    className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                    className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary bg-white"
                   >
                     {BUSINESS_TYPES.map((t) => (
                       <option key={t.value} value={t.value}>
@@ -478,7 +478,7 @@ export default function Onboarding() {
                     type="text"
                     value={city}
                     onChange={(e) => setCity(e.target.value)}
-                    className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
                     placeholder="Surat"
                   />
                 </div>
@@ -491,7 +491,7 @@ export default function Onboarding() {
                     type="tel"
                     value={phone}
                     onChange={(e) => setPhone(e.target.value)}
-                    className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
                     placeholder="+91 98765 43210"
                   />
                 </div>
@@ -504,7 +504,7 @@ export default function Onboarding() {
                     value={businessDesc}
                     onChange={(e) => setBusinessDesc(e.target.value)}
                     rows={3}
-                    className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+                    className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary resize-none"
                     placeholder="Tell us about your business so AI can represent you better — what you sell, who your customers are, what makes you special..."
                   />
                 </div>
@@ -515,7 +515,7 @@ export default function Onboarding() {
               <button
                 onClick={handleStep1}
                 disabled={submitting || !businessName.trim() || !businessDesc.trim()}
-                className="flex items-center justify-center gap-2 bg-indigo-600 text-white rounded-xl py-3 text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                className="flex items-center justify-center gap-2 bg-brand-primaryDark text-white rounded-xl py-3 text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors"
               >
                 {submitting ? <Loader2 size={16} className="animate-spin" /> : null}
                 Continue <ChevronRight size={16} />
@@ -550,28 +550,28 @@ export default function Onboarding() {
                       value={row.name}
                       onChange={(e) => updateRow(i, "name", e.target.value)}
                       placeholder="Banarasi Silk Saree"
-                      className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
                     />
                     <input
                       type="number"
                       value={row.price}
                       onChange={(e) => updateRow(i, "price", e.target.value)}
                       placeholder="2450"
-                      className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
                     />
                     <input
                       type="number"
                       value={row.stock}
                       onChange={(e) => updateRow(i, "stock", e.target.value)}
                       placeholder="50"
-                      className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
                     />
                     <input
                       type="text"
                       value={row.category}
                       onChange={(e) => updateRow(i, "category", e.target.value)}
                       placeholder="Sarees"
-                      className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
                     />
                     {products.length > 1 ? (
                       <button
@@ -591,7 +591,7 @@ export default function Onboarding() {
                 {products.length < 5 && (
                   <button
                     onClick={addRow}
-                    className="text-sm text-indigo-600 hover:underline"
+                    className="text-sm text-brand-primaryDark hover:underline"
                   >
                     + Add another
                   </button>
@@ -626,7 +626,7 @@ export default function Onboarding() {
                 <button
                   onClick={() => handleStep2(false)}
                   disabled={submitting}
-                  className="flex-1 flex items-center justify-center gap-2 bg-indigo-600 text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                  className="flex-1 flex items-center justify-center gap-2 bg-brand-primaryDark text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors"
                 >
                   {submitting ? <Loader2 size={16} className="animate-spin" /> : null}
                   Continue <ChevronRight size={16} />
@@ -653,7 +653,7 @@ export default function Onboarding() {
                       key={t.key}
                       className={`flex items-start gap-3 border rounded-xl p-3 cursor-pointer transition-colors ${
                         toneKey === t.key
-                          ? "border-indigo-500 bg-indigo-50"
+                          ? "border-brand-primary bg-brand-primary/5"
                           : "border-gray-200 hover:border-gray-300"
                       }`}
                     >
@@ -663,7 +663,7 @@ export default function Onboarding() {
                         value={t.key}
                         checked={toneKey === t.key}
                         onChange={() => setToneKey(t.key)}
-                        className="mt-0.5 accent-indigo-600"
+                        className="mt-0.5 accent-brand-primary"
                       />
                       <div>
                         <p className="text-sm font-medium text-gray-800">{t.label}</p>
@@ -700,7 +700,7 @@ export default function Onboarding() {
                   value={systemPrompt}
                   onChange={(e) => setSystemPrompt(e.target.value)}
                   rows={5}
-                  className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+                  className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary resize-none"
                 />
               </div>
 
@@ -716,7 +716,7 @@ export default function Onboarding() {
                 <button
                   onClick={handleStep3}
                   disabled={submitting}
-                  className="flex-1 flex items-center justify-center gap-2 bg-indigo-600 text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                  className="flex-1 flex items-center justify-center gap-2 bg-brand-primaryDark text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors"
                 >
                   {submitting ? <Loader2 size={16} className="animate-spin" /> : null}
                   Continue <ChevronRight size={16} />
@@ -744,7 +744,7 @@ export default function Onboarding() {
                     type="tel"
                     value={waNumber}
                     onChange={(e) => setWaNumber(e.target.value)}
-                    className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
                     placeholder="+91 98765 43210"
                   />
                 </div>
@@ -757,7 +757,7 @@ export default function Onboarding() {
                     type="text"
                     value={waPhoneId}
                     onChange={(e) => setWaPhoneId(e.target.value)}
-                    className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-primary"
                     placeholder="123456789012345"
                   />
                 </div>
@@ -770,7 +770,7 @@ export default function Onboarding() {
                     type="password"
                     value={waToken}
                     onChange={(e) => setWaToken(e.target.value)}
-                    className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-primary"
                     placeholder="EAAGm..."
                   />
                 </div>
@@ -792,7 +792,7 @@ export default function Onboarding() {
                 <button
                   onClick={() => handleStep4(false)}
                   disabled={submitting}
-                  className="flex-1 flex items-center justify-center gap-2 bg-indigo-600 text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                  className="flex-1 flex items-center justify-center gap-2 bg-brand-primaryDark text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors"
                 >
                   {submitting ? <Loader2 size={16} className="animate-spin" /> : null}
                   Connect WhatsApp <ChevronRight size={16} />
@@ -826,7 +826,7 @@ export default function Onboarding() {
                 <button
                   onClick={handleStep5}
                   disabled={submitting}
-                  className="flex-1 flex items-center justify-center gap-2 bg-indigo-600 text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                  className="flex-1 flex items-center justify-center gap-2 bg-brand-primaryDark text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors"
                 >
                   {submitting ? <Loader2 size={16} className="animate-spin" /> : null}
                   This looks good! <ChevronRight size={16} />
@@ -906,7 +906,7 @@ export default function Onboarding() {
                 <button
                   onClick={handleStep6}
                   disabled={submitting}
-                  className="flex-1 flex items-center justify-center gap-2 bg-indigo-600 text-white rounded-xl py-3 text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                  className="flex-1 flex items-center justify-center gap-2 bg-brand-primaryDark text-white rounded-xl py-3 text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors"
                 >
                   {submitting ? <Loader2 size={16} className="animate-spin" /> : null}
                   Go to Dashboard
@@ -926,7 +926,7 @@ export default function Onboarding() {
           {/* ── STEP 7: Navigate after done ──────────────────────────────── */}
           {step === 7 && (
             <div className="flex flex-col items-center gap-4 py-8">
-              <Loader2 size={32} className="animate-spin text-indigo-600" />
+              <Loader2 size={32} className="animate-spin text-brand-primaryDark" />
               <p className="text-sm text-gray-500">Taking you to your dashboard...</p>
             </div>
           )}

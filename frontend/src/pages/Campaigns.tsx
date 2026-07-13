@@ -27,7 +27,7 @@ const RECIPIENT_BADGE: Record<string, string> = {
   pending:   "bg-gray-100 text-gray-500",
   sent:      "bg-green-100 text-green-700",
   failed:    "bg-red-100 text-red-600",
-  delivered: "bg-indigo-100 text-indigo-700",
+  delivered: "bg-brand-primary/10 text-brand-primaryDark",
 };
 
 function fmt(d: string | null) {
@@ -47,7 +47,7 @@ function ProgressBar({ value, max }: { value: number; max: number }) {
   const pct = max > 0 ? Math.min(100, Math.round((value / max) * 100)) : 0;
   return (
     <div className="w-full bg-gray-100 rounded-full h-2">
-      <div className="bg-indigo-500 h-2 rounded-full transition-all" style={{ width: `${pct}%` }} />
+      <div className="bg-brand-primary/50 h-2 rounded-full transition-all" style={{ width: `${pct}%` }} />
     </div>
   );
 }
@@ -154,7 +154,7 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
         <div className="flex border-b border-gray-100">
           {STEPS.map((s, i) => (
             <div key={s} className={`flex-1 py-3 text-xs font-medium text-center capitalize ${
-              step === s ? "border-b-2 border-indigo-600 text-indigo-600"
+              step === s ? "border-b-2 border-brand-primary text-brand-primaryDark"
                 : i < STEPS.indexOf(step) ? "text-green-600"
                 : "text-gray-400"
             }`}>
@@ -171,7 +171,7 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
               <div>
                 <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">Campaign name</label>
                 <input type="text" value={name} onChange={(e) => setName(e.target.value)}
-                  className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
                   placeholder="Diwali Sale Announcement" />
               </div>
               <div>
@@ -181,7 +181,7 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
                 </div>
                 <p className="text-xs text-gray-400 mb-2">Use <code className="bg-gray-100 px-1 rounded">{"{name}"}</code> to personalise.</p>
                 <textarea value={template} onChange={(e) => setTemplate(e.target.value)} rows={5} maxLength={1024}
-                  className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+                  className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary resize-none"
                   placeholder={"Namaste {name}! 🎉 Diwali special offer: 20% off on all sarees. Shop now!"} />
               </div>
               {template && (
@@ -199,7 +199,7 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
                 {(["import", "manual", "csv"] as const).map((m) => (
                   <button key={m} type="button" onClick={() => setRecipientMode(m)}
                     className={`flex-1 py-2.5 text-sm rounded-lg border font-medium transition-all ${
-                      recipientMode === m ? "border-indigo-500 bg-indigo-50 text-indigo-700" : "border-gray-200 text-gray-600 hover:bg-gray-50"
+                      recipientMode === m ? "border-brand-primary bg-brand-primary/5 text-brand-primaryDark" : "border-gray-200 text-gray-600 hover:bg-gray-50"
                     }`}>
                     {m === "import" ? "Auto-import" : m === "manual" ? "Add manually" : "Upload CSV"}
                   </button>
@@ -216,10 +216,10 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
                     <div key={i} className="flex gap-2">
                       <input type="tel" placeholder="Phone (e.g. 919876543210)" value={row.phone}
                         onChange={(e) => setManualRows((r) => r.map((x, j) => j === i ? { ...x, phone: e.target.value } : x))}
-                        className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                        className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary" />
                       <input type="text" placeholder="Name (optional)" value={row.name}
                         onChange={(e) => setManualRows((r) => r.map((x, j) => j === i ? { ...x, name: e.target.value } : x))}
-                        className="w-36 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                        className="w-36 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary" />
                       {manualRows.length > 1 && (
                         <button type="button" onClick={() => setManualRows((r) => r.filter((_, j) => j !== i))}
                           className="text-gray-400 hover:text-red-500 px-1">×</button>
@@ -227,7 +227,7 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
                     </div>
                   ))}
                   <button type="button" onClick={() => setManualRows((r) => [...r, { phone: "", name: "" }])}
-                    className="self-start text-xs text-indigo-600 hover:text-indigo-800 font-medium">
+                    className="self-start text-xs text-brand-primaryDark hover:text-brand-primaryDark font-medium">
                     + Add another
                   </button>
                 </div>
@@ -250,7 +250,7 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
                 {(["now", "later"] as const).map((m) => (
                   <button key={m} type="button" onClick={() => setScheduleMode(m)}
                     className={`py-3 rounded-xl border text-sm font-medium transition-all ${
-                      scheduleMode === m ? "border-indigo-500 bg-indigo-50 text-indigo-700" : "border-gray-200 text-gray-600 hover:bg-gray-50"
+                      scheduleMode === m ? "border-brand-primary bg-brand-primary/5 text-brand-primaryDark" : "border-gray-200 text-gray-600 hover:bg-gray-50"
                     }`}>
                     {m === "now" ? "🚀 Send now" : "📅 Schedule for later"}
                   </button>
@@ -258,7 +258,7 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
               </div>
               {scheduleMode === "later" && (
                 <input type="datetime-local" value={scheduledAt} onChange={(e) => setScheduledAt(e.target.value)}
-                  className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                  className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary" />
               )}
               <div className="bg-amber-50 border border-amber-100 rounded-xl p-4">
                 <p className="text-sm font-semibold text-amber-800">Estimated cost</p>
@@ -277,7 +277,7 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
           </button>
           <button type="button" disabled={busy || charCount > 1024}
             onClick={step === "compose" ? handleCompose : step === "recipients" ? handleRecipients : handleSend}
-            className="bg-indigo-600 text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors">
+            className="bg-brand-primaryDark text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors">
             {busy ? "…" : step === "compose" ? "Next →" : step === "recipients" ? "Next →" : scheduleMode === "now" ? "Send campaign" : "Schedule"}
           </button>
         </div>
@@ -341,7 +341,7 @@ function CampaignDetailPanel({ campaignId, onClose }: { campaignId: number; onCl
               { label: "Total", value: detail.total_recipients, cls: "text-gray-800" },
               { label: "Sent", value: detail.sent_count, cls: "text-green-600" },
               { label: "Failed", value: detail.failed_count, cls: "text-red-500" },
-              { label: "Rate", value: `${pct}%`, cls: "text-indigo-600" },
+              { label: "Rate", value: `${pct}%`, cls: "text-brand-primaryDark" },
             ].map((s) => (
               <div key={s.label} className="bg-gray-50 rounded-xl p-3.5 text-center">
                 <p className={`text-2xl font-bold ${s.cls}`}>{s.value}</p>
@@ -362,7 +362,7 @@ function CampaignDetailPanel({ campaignId, onClose }: { campaignId: number; onCl
                 {["all", "sent", "failed", "pending"].map((f) => (
                   <button key={f} onClick={() => setFilter(f)}
                     className={`px-2.5 py-1 rounded-lg text-xs font-medium capitalize transition-colors ${
-                      filter === f ? "bg-indigo-100 text-indigo-700" : "text-gray-500 hover:bg-gray-100"
+                      filter === f ? "bg-brand-primary/10 text-brand-primaryDark" : "text-gray-500 hover:bg-gray-100"
                     }`}>
                     {f}
                   </button>
@@ -437,7 +437,7 @@ export default function Campaigns() {
         <h1 className="text-2xl font-bold text-gray-900">Campaigns</h1>
         {canUseCampaigns && (
           <button onClick={() => setShowNew(true)}
-            className="flex items-center gap-2 bg-indigo-600 text-white rounded-lg px-4 py-2.5 text-sm font-semibold hover:bg-indigo-700 active:scale-95 transition-all shadow-sm">
+            className="flex items-center gap-2 bg-brand-primaryDark text-white rounded-lg px-4 py-2.5 text-sm font-semibold hover:bg-brand-primary/90 active:scale-95 transition-all shadow-sm">
             <Plus size={16} /> New Campaign
           </button>
         )}
@@ -456,7 +456,7 @@ export default function Campaigns() {
             { label: "Total sent", value: totalSent.toLocaleString(), color: "text-gray-900" },
             { label: "Delivered", value: totalDelivered.toLocaleString(), color: "text-green-600" },
             { label: "Failed", value: totalFailed.toLocaleString(), color: "text-red-500" },
-            { label: "Delivery rate", value: `${overallRate}%`, color: "text-indigo-600" },
+            { label: "Delivery rate", value: `${overallRate}%`, color: "text-brand-primaryDark" },
           ].map((s) => (
             <div key={s.label} className="bg-white border border-gray-100 shadow-sm rounded-xl p-5">
               <p className={`text-2xl font-bold ${s.color}`}>{s.value}</p>
@@ -507,9 +507,9 @@ export default function Campaigns() {
               <div className="flex items-center gap-6 text-sm">
                 <div><span className="font-semibold text-gray-900">{c.total_recipients}</span> <span className="text-gray-400 text-xs">recipients</span></div>
                 <div><span className="font-semibold text-green-600">{c.sent_count}</span> <span className="text-gray-400 text-xs">sent</span></div>
-                <div><span className="font-semibold text-indigo-600">{c.delivered_count}</span> <span className="text-gray-400 text-xs">delivered</span></div>
+                <div><span className="font-semibold text-brand-primaryDark">{c.delivered_count}</span> <span className="text-gray-400 text-xs">delivered</span></div>
                 <div><span className="font-semibold text-red-500">{c.failed_count}</span> <span className="text-gray-400 text-xs">failed</span></div>
-                <button onClick={() => setDetailId(c.id)} className="ml-auto text-xs text-indigo-600 font-semibold hover:underline">
+                <button onClick={() => setDetailId(c.id)} className="ml-auto text-xs text-brand-primaryDark font-semibold hover:underline">
                   View details →
                 </button>
               </div>

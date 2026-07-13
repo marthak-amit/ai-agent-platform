@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
-import { api, updateProfile } from "../api/client";
+import { api, getTeam, inviteTeamMember, updateProfile, updateTeamMember } from "../api/client";
 import Layout from "../components/Layout";
 import { useAuth } from "../context/AuthContext";
-import { User, Bot, Globe, CheckCircle2, Store, Copy, ExternalLink, FileDown, Palette, Award, FlaskConical, X, ChevronRight, CreditCard, AlertTriangle } from "lucide-react";
+import { User, Bot, Globe, CheckCircle2, Store, Copy, ExternalLink, FileDown, Palette, Award, FlaskConical, X, ChevronRight, CreditCard, AlertTriangle, UsersRound } from "lucide-react";
 import QRCode from "qrcode";
 import { SandboxUI } from "./Sandbox";
+import type { PermissionKey, TeamMember } from "../types";
 
 const LANG_OPTIONS = [
   { code: "en", label: "English", native: "English" },
@@ -14,13 +15,28 @@ const LANG_OPTIONS = [
   { code: "gu", label: "Gujarati", native: "ગુજરાતી" },
 ];
 
-type Tab = "profile" | "agent" | "language" | "catalogue" | "payment" | "compare";
+// Mirrors app.models.user.PERMISSION_KEYS / MANAGER_PRESET_PERMISSIONS / STAFF_PRESET_PERMISSIONS.
+const PERMISSION_OPTIONS: { key: PermissionKey; label: string }[] = [
+  { key: "catalog_edit", label: "Edit catalogue" },
+  { key: "comment_settings", label: "Comment reply settings" },
+  { key: "nudge_settings", label: "Follow-up nudge settings" },
+  { key: "order_view", label: "View orders" },
+  { key: "manual_reply", label: "Chat takeover / manual reply" },
+  { key: "mark_packed", label: "Mark orders packed" },
+  { key: "manual_utility_send", label: "Send dispatch/shipping message" },
+  { key: "analytics_view", label: "View analytics" },
+];
+const MANAGER_PRESET: PermissionKey[] = PERMISSION_OPTIONS.map((p) => p.key);
+const STAFF_PRESET: PermissionKey[] = ["order_view", "manual_reply", "mark_packed", "manual_utility_send"];
 
-const TABS: { key: Tab; label: string; icon: typeof User }[] = [
+type Tab = "profile" | "agent" | "language" | "catalogue" | "payment" | "compare" | "team";
+
+const ALL_TABS: { key: Tab; label: string; icon: typeof User; ownerOnly?: boolean }[] = [
   { key: "profile", label: "Profile", icon: User },
   { key: "agent", label: "Agent Config", icon: Bot },
   { key: "catalogue", label: "Catalogue", icon: Store },
   { key: "payment", label: "Payment", icon: CreditCard },
+  { key: "team", label: "Team", icon: UsersRound, ownerOnly: true },
   { key: "language", label: "Language", icon: Globe },
   { key: "compare", label: "Why Us", icon: Award },
 ];
@@ -48,6 +64,16 @@ export default function Settings() {
   const [briefingResult, setBriefingResult] = useState<string | null>(null);
   const [langSaved, setLangSaved] = useState(false);
   const [showSandbox, setShowSandbox] = useState(false);
+
+  // Team tab state
+  const [team, setTeam] = useState<TeamMember[]>([]);
+  const [teamLoading, setTeamLoading] = useState(false);
+  const [teamError, setTeamError] = useState<string | null>(null);
+  const [savingMemberId, setSavingMemberId] = useState<number | null>(null);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState<"manager" | "staff">("staff");
+  const [inviting, setInviting] = useState(false);
+  const [inviteLink, setInviteLink] = useState<string | null>(null);
 
   // Payment settings state
   const [acceptsCod, setAcceptsCod] = useState(false);
@@ -111,6 +137,83 @@ export default function Settings() {
       setDeliveryMax(c.delivery_days_max ?? 7);
     }
   }, [client]);
+
+  async function loadTeam() {
+    setTeamLoading(true);
+    setTeamError(null);
+    try {
+      setTeam(await getTeam());
+    } catch {
+      setTeamError("Failed to load team members.");
+    } finally {
+      setTeamLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (activeTab === "team" && client?.current_user.is_owner) {
+      loadTeam();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
+
+  async function handleInvite(e: React.FormEvent) {
+    e.preventDefault();
+    setInviting(true);
+    setTeamError(null);
+    setInviteLink(null);
+    try {
+      const { invite_link } = await inviteTeamMember(inviteEmail, inviteRole);
+      setInviteLink(invite_link);
+      setInviteEmail("");
+      await loadTeam();
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? "Failed to create invite.";
+      setTeamError(detail);
+    } finally {
+      setInviting(false);
+    }
+  }
+
+  async function handleTogglePermission(member: TeamMember, key: PermissionKey) {
+    const nextPermissions = member.permissions.includes(key)
+      ? member.permissions.filter((p) => p !== key)
+      : [...member.permissions, key];
+    setSavingMemberId(member.id);
+    try {
+      const updated = await updateTeamMember(member.id, { permissions: nextPermissions });
+      setTeam((prev) => prev.map((m) => (m.id === member.id ? updated : m)));
+    } catch {
+      setTeamError("Failed to update permissions.");
+    } finally {
+      setSavingMemberId(null);
+    }
+  }
+
+  async function handleApplyPreset(member: TeamMember, role: "manager" | "staff") {
+    const preset = role === "manager" ? MANAGER_PRESET : STAFF_PRESET;
+    setSavingMemberId(member.id);
+    try {
+      const updated = await updateTeamMember(member.id, { role, permissions: preset });
+      setTeam((prev) => prev.map((m) => (m.id === member.id ? updated : m)));
+    } catch {
+      setTeamError("Failed to update role.");
+    } finally {
+      setSavingMemberId(null);
+    }
+  }
+
+  async function handleToggleActive(member: TeamMember) {
+    setSavingMemberId(member.id);
+    try {
+      const updated = await updateTeamMember(member.id, { is_active: !member.is_active });
+      setTeam((prev) => prev.map((m) => (m.id === member.id ? updated : m)));
+    } catch {
+      setTeamError("Failed to update status.");
+    } finally {
+      setSavingMemberId(null);
+    }
+  }
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
@@ -234,6 +337,8 @@ export default function Settings() {
   const navigate = useNavigate();
   const currentLang = client?.dashboard_language || "en";
   const initials = (client?.email ?? "U").slice(0, 2).toUpperCase();
+  const isOwner = !!client?.current_user.is_owner;
+  const TABS = ALL_TABS.filter((tab) => !tab.ownerOnly || isOwner);
 
   return (
     <Layout>
@@ -253,7 +358,7 @@ export default function Settings() {
                   key={tab.key}
                   onClick={() => setActiveTab(tab.key)}
                   className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-left transition-all duration-150 ${
-                    active ? "bg-indigo-600 text-white shadow-sm" : "text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+                    active ? "bg-brand-primaryDark text-white shadow-sm" : "text-gray-600 hover:bg-gray-100 hover:text-gray-900"
                   }`}
                 >
                   <Icon size={16} className={active ? "text-white" : "text-gray-400"} />
@@ -271,7 +376,7 @@ export default function Settings() {
           {activeTab === "profile" && (
             <form onSubmit={handleSave} className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 max-w-xl">
               <div className="flex items-center gap-4 mb-6">
-                <div className="w-16 h-16 bg-indigo-600 rounded-full flex items-center justify-center text-white text-xl font-bold">
+                <div className="w-16 h-16 bg-brand-primaryDark rounded-full flex items-center justify-center text-white text-xl font-bold">
                   {initials}
                 </div>
                 <div>
@@ -289,7 +394,7 @@ export default function Settings() {
                     type="text"
                     value={businessName}
                     onChange={(e) => setBusinessName(e.target.value)}
-                    className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
+                    className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-primary focus:border-transparent transition-all"
                     placeholder="Raj's Electronics"
                   />
                 </div>
@@ -298,7 +403,7 @@ export default function Settings() {
                   <button
                     type="submit"
                     disabled={saving}
-                    className="bg-indigo-600 text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                    className="bg-brand-primaryDark text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors"
                   >
                     {saving ? t("settings.saving") : t("settings.save_changes")}
                   </button>
@@ -360,7 +465,7 @@ export default function Settings() {
                   value={systemPrompt}
                   onChange={(e) => setSystemPrompt(e.target.value)}
                   rows={8}
-                  className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none"
+                  className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-primary focus:border-transparent resize-none"
                   placeholder="You are a helpful assistant for [Business name]. Help customers with..."
                 />
               </div>
@@ -374,7 +479,7 @@ export default function Settings() {
                   <button
                     type="button"
                     onClick={() => setBriefingEnabled((v) => !v)}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${briefingEnabled ? "bg-indigo-600" : "bg-gray-300"}`}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${briefingEnabled ? "bg-brand-primary" : "bg-gray-300"}`}
                   >
                     <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${briefingEnabled ? "translate-x-6" : "translate-x-1"}`} />
                   </button>
@@ -387,7 +492,7 @@ export default function Settings() {
                       type="time"
                       value={briefingTime}
                       onChange={(e) => setBriefingTime(e.target.value)}
-                      className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
                     />
                   </div>
                 )}
@@ -397,7 +502,7 @@ export default function Settings() {
                     type="button"
                     onClick={handleSendBriefingNow}
                     disabled={briefingSending}
-                    className="self-start bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg px-4 py-2 text-sm font-medium hover:bg-indigo-100 disabled:opacity-50 transition-colors"
+                    className="self-start bg-brand-primary/5 text-brand-primaryDark border border-brand-primary/20 rounded-lg px-4 py-2 text-sm font-medium hover:bg-brand-primary/10 disabled:opacity-50 transition-colors"
                   >
                     {briefingSending ? "Sending…" : "Get briefing now"}
                   </button>
@@ -413,7 +518,7 @@ export default function Settings() {
                 <button
                   type="submit"
                   disabled={saving}
-                  className="bg-indigo-600 text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                  className="bg-brand-primaryDark text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors"
                 >
                   {saving ? t("settings.saving") : t("settings.save_changes")}
                 </button>
@@ -444,7 +549,7 @@ export default function Settings() {
                     min={1}
                     value={deliveryMin}
                     onChange={(e) => setDeliveryMin(Number(e.target.value))}
-                    className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                    className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-primary focus:border-transparent"
                   />
                 </div>
                 <div className="flex-1">
@@ -456,7 +561,7 @@ export default function Settings() {
                     min={1}
                     value={deliveryMax}
                     onChange={(e) => setDeliveryMax(Number(e.target.value))}
-                    className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                    className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-primary focus:border-transparent"
                   />
                 </div>
                 <div className="shrink-0 pb-0.5 text-sm text-gray-500">business days</div>
@@ -468,7 +573,7 @@ export default function Settings() {
                 <button
                   type="submit"
                   disabled={deliverySaving}
-                  className="bg-indigo-600 text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                  className="bg-brand-primaryDark text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors"
                 >
                   {deliverySaving ? "Saving…" : "Save Delivery Settings"}
                 </button>
@@ -490,7 +595,7 @@ export default function Settings() {
               </div>
               <button
                 onClick={() => setShowSandbox(true)}
-                className="flex items-center gap-2 bg-indigo-600 text-white rounded-lg px-4 py-2 text-sm font-semibold hover:bg-indigo-700 transition-colors"
+                className="flex items-center gap-2 bg-brand-primaryDark text-white rounded-lg px-4 py-2 text-sm font-semibold hover:bg-brand-primary/90 transition-colors"
               >
                 <FlaskConical size={15} />
                 Test Your Agent
@@ -502,7 +607,7 @@ export default function Settings() {
             <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 max-w-2xl mt-4">
               <div className="flex items-center justify-between mb-4">
                 <p className="text-sm font-semibold text-gray-800 flex items-center gap-2">
-                  <FlaskConical size={15} className="text-indigo-600" />
+                  <FlaskConical size={15} className="text-brand-primaryDark" />
                   Agent Sandbox
                 </p>
                 <button
@@ -529,7 +634,7 @@ export default function Settings() {
                 <div className="bg-gray-50 rounded-xl p-4 border border-gray-200">
                   <p className="text-xs text-gray-400 mb-1.5 font-medium uppercase tracking-wide">Catalogue URL</p>
                   <div className="flex items-center gap-2">
-                    <code className="text-sm text-indigo-700 bg-indigo-50 px-3 py-1.5 rounded-lg flex-1 truncate">
+                    <code className="text-sm text-brand-primaryDark bg-brand-primary/5 px-3 py-1.5 rounded-lg flex-1 truncate">
                       {window.location.origin}/shop/{catSlug}
                     </code>
                     <button
@@ -561,7 +666,7 @@ export default function Settings() {
                   type="text"
                   value={catSlug}
                   onChange={(e) => setCatSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))}
-                  className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                  className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-primary focus:border-transparent"
                   placeholder="riyasarees"
                 />
                 <p className="text-xs text-gray-400 mt-1">Only lowercase letters, numbers, and hyphens.</p>
@@ -576,7 +681,7 @@ export default function Settings() {
                   type="text"
                   value={catTagline}
                   onChange={(e) => setCatTagline(e.target.value)}
-                  className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                  className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-primary focus:border-transparent"
                   placeholder="Premium Banarasi Sarees from Surat"
                 />
               </div>
@@ -608,7 +713,7 @@ export default function Settings() {
                 <button
                   type="submit"
                   disabled={catSaving || !catSlug}
-                  className="bg-indigo-600 text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                  className="bg-brand-primaryDark text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors"
                 >
                   {catSaving ? "Saving…" : "Save & Preview"}
                 </button>
@@ -668,7 +773,7 @@ export default function Settings() {
                   <button
                     type="button"
                     onClick={() => setAcceptsUpi((v) => !v)}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${acceptsUpi ? "bg-indigo-600" : "bg-gray-300"}`}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${acceptsUpi ? "bg-brand-primary" : "bg-gray-300"}`}
                   >
                     <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${acceptsUpi ? "translate-x-6" : "translate-x-1"}`} />
                   </button>
@@ -683,7 +788,7 @@ export default function Settings() {
                         value={upiId}
                         onChange={(e) => setUpiId(e.target.value)}
                         placeholder="riyasarees@paytm"
-                        className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                        className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-primary focus:border-transparent"
                       />
                     </div>
                     <div>
@@ -693,12 +798,12 @@ export default function Settings() {
                         value={upiDisplayName}
                         onChange={(e) => setUpiDisplayName(e.target.value)}
                         placeholder="Riya Sarees"
-                        className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                        className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-primary focus:border-transparent"
                       />
                       <p className="text-xs text-gray-400 mt-1">Name shown on UPI apps next to your UPI ID.</p>
                     </div>
                     {upiId && (
-                      <div className="bg-indigo-50 border border-indigo-100 rounded-lg px-4 py-2.5 text-sm text-indigo-800">
+                      <div className="bg-brand-primary/5 border border-brand-primary/20 rounded-lg px-4 py-2.5 text-sm text-brand-primaryDark">
                         <span className="font-medium">Preview: </span>
                         Pay via UPI: <span className="font-mono">{upiId}</span>
                         {upiDisplayName && <span> ({upiDisplayName})</span>}
@@ -718,7 +823,7 @@ export default function Settings() {
                   <button
                     type="button"
                     onClick={() => setAcceptsCod((v) => !v)}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${acceptsCod ? "bg-indigo-600" : "bg-gray-300"}`}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${acceptsCod ? "bg-brand-primary" : "bg-gray-300"}`}
                   >
                     <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${acceptsCod ? "translate-x-6" : "translate-x-1"}`} />
                   </button>
@@ -734,7 +839,7 @@ export default function Settings() {
                         value={codLimit}
                         onChange={(e) => setCodLimit(e.target.value === "" ? "" : Number(e.target.value))}
                         placeholder="0 = no limit"
-                        className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                        className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-primary focus:border-transparent"
                       />
                       <p className="text-xs text-gray-400 mt-1">Orders above this amount must prepay. Leave empty for no limit.</p>
                     </div>
@@ -756,7 +861,7 @@ export default function Settings() {
                   <button
                     type="button"
                     onClick={() => setAcceptsBankTransfer((v) => !v)}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${acceptsBankTransfer ? "bg-indigo-600" : "bg-gray-300"}`}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${acceptsBankTransfer ? "bg-brand-primary" : "bg-gray-300"}`}
                   >
                     <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${acceptsBankTransfer ? "translate-x-6" : "translate-x-1"}`} />
                   </button>
@@ -771,7 +876,7 @@ export default function Settings() {
                         value={bankAccountName}
                         onChange={(e) => setBankAccountName(e.target.value)}
                         placeholder="Riya Sarees Pvt Ltd"
-                        className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                        className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-primary focus:border-transparent"
                       />
                     </div>
                     <div>
@@ -781,7 +886,7 @@ export default function Settings() {
                         value={bankAccountNumber}
                         onChange={(e) => setBankAccountNumber(e.target.value)}
                         placeholder="1234567890"
-                        className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                        className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-primary focus:border-transparent"
                       />
                     </div>
                     <div>
@@ -791,7 +896,7 @@ export default function Settings() {
                         value={bankIfsc}
                         onChange={(e) => setBankIfsc(e.target.value.toUpperCase())}
                         placeholder="SBIN0001234"
-                        className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm font-mono text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                        className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm font-mono text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-primary focus:border-transparent"
                       />
                     </div>
                   </div>
@@ -811,7 +916,7 @@ export default function Settings() {
                     value={razorpayKeyId}
                     onChange={(e) => setRazorpayKeyId(e.target.value)}
                     placeholder="rzp_live_..."
-                    className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm font-mono text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                    className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm font-mono text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-primary focus:border-transparent"
                   />
                 </div>
                 <div>
@@ -821,7 +926,7 @@ export default function Settings() {
                     value={razorpayKeySecret}
                     onChange={(e) => setRazorpayKeySecret(e.target.value)}
                     placeholder="Enter new secret to update"
-                    className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm font-mono text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                    className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm font-mono text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-primary focus:border-transparent"
                   />
                   <p className="text-xs text-gray-400 mt-1">Stored securely. Leave blank to keep existing secret.</p>
                 </div>
@@ -829,7 +934,7 @@ export default function Settings() {
                   href="https://dashboard.razorpay.com/app/keys"
                   target="_blank"
                   rel="noreferrer"
-                  className="flex items-center gap-1 text-xs text-indigo-600 hover:underline"
+                  className="flex items-center gap-1 text-xs text-brand-primaryDark hover:underline"
                 >
                   Get Razorpay API keys <ExternalLink size={11} />
                 </a>
@@ -846,7 +951,7 @@ export default function Settings() {
                   onChange={(e) => setPaymentInstructions(e.target.value.slice(0, 200))}
                   rows={3}
                   placeholder="e.g. Please mention your order number in the payment note"
-                  className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none"
+                  className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-primary focus:border-transparent resize-none"
                 />
                 <p className="text-xs text-gray-400">{paymentInstructions.length}/200 characters</p>
               </div>
@@ -856,7 +961,7 @@ export default function Settings() {
                 <button
                   type="submit"
                   disabled={paymentSaving}
-                  className="bg-indigo-600 text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                  className="bg-brand-primaryDark text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors"
                 >
                   {paymentSaving ? "Saving…" : "Save Payment Settings"}
                 </button>
@@ -867,6 +972,134 @@ export default function Settings() {
                 )}
               </div>
             </form>
+          )}
+
+          {/* Team tab — Owner only */}
+          {activeTab === "team" && isOwner && (
+            <div className="flex flex-col gap-4 max-w-3xl">
+              <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+                <h2 className="text-base font-semibold text-gray-900 mb-1">Invite a team member</h2>
+                <p className="text-xs text-gray-400 mb-4">
+                  They'll get a one-time link to set their own password — no email is sent automatically, so copy and share it yourself.
+                </p>
+                <form onSubmit={handleInvite} className="flex flex-col sm:flex-row gap-3 items-start sm:items-end">
+                  <div className="flex-1 w-full">
+                    <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">Email</label>
+                    <input
+                      type="email"
+                      value={inviteEmail}
+                      onChange={(e) => setInviteEmail(e.target.value)}
+                      required
+                      placeholder="teammate@business.com"
+                      className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-primary focus:border-transparent"
+                    />
+                  </div>
+                  <div className="w-full sm:w-40">
+                    <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">Role</label>
+                    <select
+                      value={inviteRole}
+                      onChange={(e) => setInviteRole(e.target.value as "manager" | "staff")}
+                      className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-primary focus:border-transparent"
+                    >
+                      <option value="manager">Manager</option>
+                      <option value="staff">Staff</option>
+                    </select>
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={inviting}
+                    className="bg-brand-primaryDark text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors shrink-0"
+                  >
+                    {inviting ? "Creating…" : "Create invite"}
+                  </button>
+                </form>
+
+                {inviteLink && (
+                  <div className="mt-4 bg-brand-primary/5 border border-brand-primary/20 rounded-lg px-4 py-3 flex items-center gap-2">
+                    <code className="text-xs text-brand-primaryDark flex-1 truncate">{inviteLink}</code>
+                    <button
+                      type="button"
+                      onClick={() => navigator.clipboard.writeText(inviteLink)}
+                      title="Copy link"
+                      className="p-1.5 text-brand-primaryDark hover:bg-brand-primary/10 rounded-lg transition-colors shrink-0"
+                    >
+                      <Copy size={14} />
+                    </button>
+                  </div>
+                )}
+                {teamError && (
+                  <p className="text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg mt-4">{teamError}</p>
+                )}
+              </div>
+
+              <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+                <h2 className="text-base font-semibold text-gray-900 mb-4">Team members</h2>
+                {teamLoading ? (
+                  <p className="text-sm text-gray-400">Loading…</p>
+                ) : team.length === 0 ? (
+                  <p className="text-sm text-gray-400">No team members yet — invite one above.</p>
+                ) : (
+                  <div className="flex flex-col gap-5">
+                    {team.map((member) => (
+                      <div key={member.id} className="border border-gray-100 rounded-xl p-4">
+                        <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
+                          <div>
+                            <div className="text-sm font-medium text-gray-900">{member.email}</div>
+                            <div className="text-xs text-gray-400 capitalize">
+                              {member.role}
+                              {member.is_pending && <span className="ml-2 text-amber-600">· invite pending</span>}
+                              {!member.is_active && <span className="ml-2 text-red-500">· removed</span>}
+                            </div>
+                          </div>
+                          {member.role !== "owner" && (
+                            <div className="flex items-center gap-2 shrink-0">
+                              <select
+                                value={member.role}
+                                onChange={(e) => handleApplyPreset(member, e.target.value as "manager" | "staff")}
+                                disabled={savingMemberId === member.id}
+                                className="border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs text-gray-700 focus:outline-none focus:ring-2 focus:ring-brand-primary"
+                              >
+                                <option value="manager">Manager preset</option>
+                                <option value="staff">Staff preset</option>
+                              </select>
+                              <button
+                                type="button"
+                                onClick={() => handleToggleActive(member)}
+                                disabled={savingMemberId === member.id}
+                                className={`text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors ${
+                                  member.is_active
+                                    ? "border-red-200 text-red-600 hover:bg-red-50"
+                                    : "border-emerald-200 text-emerald-600 hover:bg-emerald-50"
+                                }`}
+                              >
+                                {member.is_active ? "Remove" : "Reactivate"}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+
+                        {member.role !== "owner" && (
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-2">
+                            {PERMISSION_OPTIONS.map((perm) => (
+                              <label key={perm.key} className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={member.permissions.includes(perm.key)}
+                                  onChange={() => handleTogglePermission(member, perm.key)}
+                                  disabled={savingMemberId === member.id}
+                                  className="w-3.5 h-3.5 accent-brand-primary shrink-0"
+                                />
+                                {perm.label}
+                              </label>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
           )}
 
           {/* Language tab */}
@@ -881,7 +1114,7 @@ export default function Settings() {
                     key={opt.code}
                     className={`flex items-center gap-4 p-4 rounded-xl border cursor-pointer transition-all ${
                       currentLang === opt.code
-                        ? "border-indigo-300 bg-indigo-50"
+                        ? "border-brand-primary/40 bg-brand-primary/5"
                         : "border-gray-200 hover:border-gray-300 hover:bg-gray-50"
                     }`}
                   >
@@ -891,13 +1124,13 @@ export default function Settings() {
                       value={opt.code}
                       checked={currentLang === opt.code}
                       onChange={() => handleLangChange(opt.code)}
-                      className="w-4 h-4 accent-indigo-600"
+                      className="w-4 h-4 accent-brand-primary"
                     />
                     <div>
-                      <div className={`text-sm font-medium ${currentLang === opt.code ? "text-indigo-700" : "text-gray-700"}`}>{opt.label}</div>
+                      <div className={`text-sm font-medium ${currentLang === opt.code ? "text-brand-primaryDark" : "text-gray-700"}`}>{opt.label}</div>
                       <div className="text-xs text-gray-400">{opt.native}</div>
                     </div>
-                    {currentLang === opt.code && <CheckCircle2 size={16} className="text-indigo-600 ml-auto" />}
+                    {currentLang === opt.code && <CheckCircle2 size={16} className="text-brand-primaryDark ml-auto" />}
                   </label>
                 ))}
               </div>
@@ -914,7 +1147,7 @@ export default function Settings() {
           {activeTab === "compare" && (
             <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 max-w-2xl">
               <h2 className="text-base font-semibold text-gray-900 mb-1 flex items-center gap-2">
-                <Award size={18} className="text-indigo-600" />
+                <Award size={18} className="text-brand-primaryDark" />
                 Why we're better than other platforms
               </h2>
               <p className="text-xs text-gray-400 mb-5">

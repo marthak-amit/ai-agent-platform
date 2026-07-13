@@ -75,32 +75,32 @@ function CatalogueBanner({ slug, businessName }: { slug: string; businessName: s
   }
 
   return (
-    <div className="flex items-center gap-3 bg-[#EEF2FF] border border-indigo-100 rounded-xl px-4 py-2.5">
-      <div className="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center shrink-0 text-base">
+    <div className="flex items-center gap-3 bg-brand-primary/5 border border-brand-primary/20 rounded-xl px-4 py-2.5">
+      <div className="w-8 h-8 bg-brand-primary/10 rounded-full flex items-center justify-center shrink-0 text-base">
         🛍️
       </div>
-      <code className="flex-1 min-w-0 text-xs text-indigo-700 font-mono truncate">
+      <code className="flex-1 min-w-0 text-xs text-brand-primaryDark font-mono truncate">
         /shop/{slug}
       </code>
       <div className="flex items-center gap-1.5 shrink-0">
         <button
           onClick={copyLink}
           title={copied ? "Copied!" : "Copy link"}
-          className="w-8 h-8 flex items-center justify-center bg-white rounded-full shadow-sm border border-gray-100 hover:bg-indigo-50 hover:border-indigo-200 transition-colors"
+          className="w-8 h-8 flex items-center justify-center bg-white rounded-full shadow-sm border border-gray-100 hover:bg-brand-primary/10 hover:border-brand-primary/20 transition-colors"
         >
-          <Copy size={13} className={copied ? "text-indigo-600" : "text-gray-400"} />
+          <Copy size={13} className={copied ? "text-brand-primaryDark" : "text-gray-400"} />
         </button>
         <button
           onClick={() => window.open(catalogueUrl, "_blank")}
           title="Preview"
-          className="w-8 h-8 flex items-center justify-center bg-white rounded-full shadow-sm border border-gray-100 hover:bg-indigo-50 hover:border-indigo-200 transition-colors"
+          className="w-8 h-8 flex items-center justify-center bg-white rounded-full shadow-sm border border-gray-100 hover:bg-brand-primary/10 hover:border-brand-primary/20 transition-colors"
         >
           <Eye size={13} className="text-gray-400" />
         </button>
         <button
           onClick={share}
           title="Share"
-          className="w-8 h-8 flex items-center justify-center bg-white rounded-full shadow-sm border border-gray-100 hover:bg-indigo-50 hover:border-indigo-200 transition-colors"
+          className="w-8 h-8 flex items-center justify-center bg-white rounded-full shadow-sm border border-gray-100 hover:bg-brand-primary/10 hover:border-brand-primary/20 transition-colors"
         >
           <Share2 size={13} className="text-gray-400" />
         </button>
@@ -151,7 +151,7 @@ function ConnectWhatsAppBanner({ onDismiss }: { onDismiss: () => void }) {
 
 const STATUS_STYLES: Record<string, string> = {
   new:             "bg-blue-100 text-blue-700",
-  confirmed:       "bg-indigo-100 text-indigo-700",
+  confirmed:       "bg-brand-primary/10 text-brand-primaryDark",
   paid:            "bg-green-100 text-green-700",
   payment_pending: "bg-amber-100 text-amber-700",
   processing:      "bg-orange-100 text-orange-700",
@@ -176,7 +176,7 @@ function UsageBar({ usage }: { usage: UsageStat }) {
     >
       <div className="flex items-center justify-between mb-3">
         <span className="text-[14px] font-bold text-gray-900">Daily Usage</span>
-        <span className="text-[14px] font-bold text-indigo-600 tabular-nums">
+        <span className="text-[14px] font-bold text-brand-primaryDark tabular-nums">
           {usage.today_count} / {usage.limit}
         </span>
       </div>
@@ -237,22 +237,28 @@ export default function Dashboard() {
     setWaBannerDismissed(true);
   }
 
+  const isOwner = !!client?.current_user.is_owner;
+
   useEffect(() => {
     async function load() {
-      const [ls, us, orders, ostats] = await Promise.all([
-        getLeads(),
+      // Leads is Owner-only — a Manager/Staff would just 403 on it, and
+      // Promise.all would reject the whole batch (leaving the page stuck on
+      // its loading skeleton) rather than showing the widgets they can see.
+      const [ls, us, orders, ostats] = await Promise.allSettled([
+        isOwner ? getLeads() : Promise.resolve([]),
         getUsageStats(),
         getOrders({ limit: 5 }),
         getOrderStats(),
       ]);
-      setLeads(ls);
-      setUsage(us);
-      setRecentOrders(orders);
-      setOrderStats(ostats);
+      setLeads(ls.status === "fulfilled" ? ls.value : []);
+      setUsage(us.status === "fulfilled" ? us.value : null);
+      setRecentOrders(orders.status === "fulfilled" ? orders.value : []);
+      setOrderStats(ostats.status === "fulfilled" ? ostats.value : null);
       setLoading(false);
     }
     load();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOwner]);
 
   const hot = leads.filter((l) => l.status === "hot").length;
   const warm = leads.filter((l) => l.status === "warm").length;
@@ -270,9 +276,10 @@ export default function Dashboard() {
     {
       label: "New Broadcast",
       icon: Send,
-      iconColor: "text-indigo-600",
+      iconColor: "text-brand-primaryDark",
       to: "/campaigns",
       badge: null,
+      ownerOnly: true,
     },
     {
       label: "Process Orders",
@@ -280,6 +287,7 @@ export default function Dashboard() {
       iconColor: "text-amber-600",
       to: "/orders?status=confirmed",
       badge: pendingOrders > 0 ? String(pendingOrders) : null,
+      permission: "order_view" as const,
     },
     {
       label: "Hot Leads",
@@ -287,6 +295,7 @@ export default function Dashboard() {
       iconColor: "text-red-500",
       to: "/leads?status=hot",
       badge: hot > 0 ? String(hot) : null,
+      ownerOnly: true,
     },
     {
       label: "Test Agent",
@@ -294,8 +303,9 @@ export default function Dashboard() {
       iconColor: "text-purple-600",
       to: "/sandbox",
       badge: null,
+      ownerOnly: true,
     },
-  ];
+  ].filter((action) => isOwner || (!action.ownerOnly && client?.current_user.permissions.includes(action.permission!)));
 
   return (
     <Layout>
@@ -303,7 +313,7 @@ export default function Dashboard() {
 
         {/* 1 — Welcome banner */}
         <div
-          className="bg-gradient-to-r from-indigo-600 to-indigo-700 rounded-2xl px-8 py-6 text-white shadow-md"
+          className="bg-gradient-to-r from-brand-primaryDark to-brand-primary rounded-2xl px-8 py-6 text-white shadow-md"
           style={{ minHeight: 100 }}
         >
           <div className="flex items-center justify-between gap-4">
@@ -405,7 +415,7 @@ export default function Dashboard() {
                   <button
                     key={action.label}
                     onClick={() => navigate(action.to)}
-                    className="flex items-center gap-2 bg-white border border-gray-200 rounded-[10px] px-5 py-2.5 text-[13px] font-medium text-gray-700 hover:border-indigo-400 hover:bg-indigo-50/50 hover:shadow-sm transition-all duration-150 active:scale-[0.98] relative"
+                    className="flex items-center gap-2 bg-white border border-gray-200 rounded-[10px] px-5 py-2.5 text-[13px] font-medium text-gray-700 hover:border-brand-primary hover:bg-brand-primary/10 hover:shadow-sm transition-all duration-150 active:scale-[0.98] relative"
                   >
                     <Icon size={16} className={action.iconColor} />
                     {action.label}
@@ -432,7 +442,7 @@ export default function Dashboard() {
                   <h2 className="text-[16px] font-bold text-gray-900">Recent Orders</h2>
                   <Link
                     to="/orders"
-                    className="text-[13px] font-medium text-indigo-600 hover:text-indigo-700 transition-colors"
+                    className="text-[13px] font-medium text-brand-primaryDark hover:text-brand-primaryDark transition-colors"
                   >
                     View all orders →
                   </Link>
@@ -450,7 +460,7 @@ export default function Dashboard() {
                       >
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
-                            <span className="text-[13px] font-bold text-indigo-700">
+                            <span className="text-[13px] font-bold text-brand-primaryDark">
                               {order.order_number}
                             </span>
                             <span
@@ -475,7 +485,7 @@ export default function Dashboard() {
                           <span className="text-[15px] font-bold text-emerald-700">
                             ₹{order.total_amount.toLocaleString("en-IN")}
                           </span>
-                          <span className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-100 group-hover:bg-indigo-100 group-hover:text-indigo-600 text-gray-400 transition-all duration-150">
+                          <span className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-100 group-hover:bg-brand-primary/10 group-hover:text-brand-primaryDark text-gray-400 transition-all duration-150">
                             <ChevronRight size={15} />
                           </span>
                         </div>

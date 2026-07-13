@@ -2,6 +2,8 @@ import { useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useAuth } from "../context/AuthContext";
+import Logo from "./Logo";
+import type { CurrentUser, PermissionKey } from "../types";
 import {
   LayoutDashboard,
   MessageSquare,
@@ -16,32 +18,38 @@ import {
   LogOut,
   Globe,
   Menu,
-  Zap,
   ShoppingBag,
   ExternalLink,
   FlaskConical,
   Brain,
 } from "lucide-react";
 
-// Issue 11 — configurable platform name
-const PLATFORM_NAME = (import.meta.env.VITE_PLATFORM_NAME as string) || "AgentlyAI";
-
 const APP_BASE_URL = (import.meta.env.VITE_APP_URL as string) || "http://localhost:5173";
 
-const NAV_ITEMS = [
+// permission: undefined means visible to any authenticated user (e.g. Dashboard).
+// ownerOnly: true means the item never shows for a non-owner, regardless of checklist.
+const NAV_ITEMS: { path: string; key: string; icon: typeof LayoutDashboard; permission?: PermissionKey; ownerOnly?: boolean }[] = [
   { path: "/dashboard",     key: "nav.dashboard",     icon: LayoutDashboard },
-  { path: "/conversations", key: "nav.conversations", icon: MessageSquare },
-  { path: "/orders",        key: "nav.orders",        icon: ClipboardList },
-  { path: "/leads",         key: "nav.leads",         icon: Users },
-  { path: "/customers",     key: "nav.customers",     icon: UserCheck },
-  { path: "/analytics",     key: "nav.analytics",     icon: BarChart2 },
-  { path: "/campaigns",     key: "nav.campaigns",     icon: Megaphone },
-  { path: "/knowledge",     key: "nav.knowledge",     icon: Brain },
-  { path: "/catalogue",     key: "nav.catalogue",     icon: Package },
-  { path: "/channels",      key: "nav.channels",      icon: Link2 },
-  { path: "/sandbox",       key: "nav.sandbox",       icon: FlaskConical },
-  { path: "/settings",      key: "nav.settings",      icon: Settings },
+  { path: "/conversations", key: "nav.conversations", icon: MessageSquare, permission: "manual_reply" },
+  { path: "/orders",        key: "nav.orders",        icon: ClipboardList, permission: "order_view" },
+  { path: "/leads",         key: "nav.leads",         icon: Users, ownerOnly: true },
+  { path: "/customers",     key: "nav.customers",     icon: UserCheck, ownerOnly: true },
+  { path: "/analytics",     key: "nav.analytics",     icon: BarChart2, permission: "analytics_view" },
+  { path: "/campaigns",     key: "nav.campaigns",     icon: Megaphone, ownerOnly: true },
+  { path: "/knowledge",     key: "nav.knowledge",     icon: Brain, ownerOnly: true },
+  { path: "/catalogue",     key: "nav.catalogue",     icon: Package, permission: "catalog_edit" },
+  { path: "/channels",      key: "nav.channels",      icon: Link2, ownerOnly: true },
+  { path: "/sandbox",       key: "nav.sandbox",       icon: FlaskConical, ownerOnly: true },
+  { path: "/settings",      key: "nav.settings",      icon: Settings, ownerOnly: true },
 ];
+
+function isNavItemVisible(item: (typeof NAV_ITEMS)[number], currentUser: CurrentUser | undefined) {
+  if (!item.permission && !item.ownerOnly) return true;
+  if (!currentUser) return false;
+  if (currentUser.is_owner) return true;
+  if (item.ownerOnly) return false;
+  return !!item.permission && currentUser.permissions.includes(item.permission);
+}
 
 const LANG_OPTIONS = [
   { code: "en", label: "EN" },
@@ -79,14 +87,15 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  const navItems = NAV_ITEMS;
+  const navItems = NAV_ITEMS.filter((item) => isNavItemVisible(item, client?.current_user));
 
   function handleSignOut() {
     signOut();
     navigate("/login");
   }
 
-  const initials = (client?.email ?? "U").slice(0, 2).toUpperCase();
+  const signedInEmail = client?.current_user.email ?? client?.email;
+  const initials = (signedInEmail ?? "U").slice(0, 2).toUpperCase();
   const currentLang = client?.dashboard_language || "en";
 
   function SidebarContent() {
@@ -94,21 +103,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       <div className="flex flex-col h-full">
         {/* Logo + agent status */}
         <div className="px-4 py-5 border-b border-gray-100">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 bg-indigo-600 rounded-xl flex items-center justify-center shrink-0">
-              <Zap size={18} className="text-white" />
-            </div>
-            <div className="min-w-0">
-              <div className="font-bold text-gray-900 text-base leading-tight">
-                {PLATFORM_NAME}
-              </div>
-              <div className="text-xs text-gray-400 truncate max-w-[140px]">
-                {client?.business_name || "Your Business"}
-              </div>
+          <div className="flex flex-col items-start gap-1.5">
+            <Logo className="h-10 w-auto shrink-0" />
+            <div className="text-sm font-medium text-gray-700 truncate">
+              {client?.business_name || "Your Business"}
             </div>
           </div>
           {/* Issue 10 — agent status under logo */}
-          <div className="mt-2 pl-12">
+          <div className="mt-2">
             <AgentStatusDot client={client} />
           </div>
         </div>
@@ -125,8 +127,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 onClick={() => setSidebarOpen(false)}
                 className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 ${
                   active
-                    ? "bg-indigo-600 text-white shadow-[inset_3px_0_0_rgba(255,255,255,0.7),0_1px_2px_rgba(0,0,0,0.05)]"
-                    : "text-gray-600 hover:bg-indigo-50 hover:text-indigo-700"
+                    ? "bg-brand-primaryDark text-white shadow-[inset_3px_0_0_rgba(255,255,255,0.7),0_1px_2px_rgba(0,0,0,0.05)]"
+                    : "text-gray-600 hover:bg-brand-primary/10 hover:text-brand-primaryDark"
                 }`}
               >
                 <Icon size={18} className={active ? "text-white" : "text-gray-400"} />
@@ -163,7 +165,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 onClick={() => changeLanguage(opt.code)}
                 className={`text-xs font-medium px-2 py-1 rounded transition-colors ${
                   currentLang === opt.code
-                    ? "bg-indigo-100 text-indigo-700"
+                    ? "bg-brand-primary/10 text-brand-primaryDark"
                     : "text-gray-400 hover:text-gray-600 hover:bg-gray-100"
                 }`}
               >
@@ -174,11 +176,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
           {/* User row */}
           <div className="flex items-center gap-3 px-2">
-            <div className="w-8 h-8 bg-indigo-600 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0">
+            <div className="w-8 h-8 bg-brand-primaryDark rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0">
               {initials}
             </div>
             <div className="flex-1 min-w-0">
-              <div className="text-xs text-gray-500 truncate">{client?.email}</div>
+              <div className="text-xs text-gray-500 truncate">{signedInEmail}</div>
             </div>
             <button
               onClick={handleSignOut}
@@ -223,12 +225,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           >
             <Menu size={22} />
           </button>
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 bg-indigo-600 rounded-lg flex items-center justify-center">
-              <Zap size={14} className="text-white" />
-            </div>
-            <span className="font-bold text-gray-900 text-sm">{PLATFORM_NAME}</span>
-          </div>
+          <Logo className="h-8 w-auto" />
         </div>
 
         {/* Page content */}

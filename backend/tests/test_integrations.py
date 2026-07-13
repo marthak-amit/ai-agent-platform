@@ -66,11 +66,11 @@ def test_state_token_rejects_wrong_purpose(mock_settings):
         _verify_state_token(bogus)
 
 
-def test_connect_returns_authorize_url_bound_to_caller(client, mock_db, mock_settings):
+def test_connect_returns_authorize_url_bound_to_caller(client, mock_db, mock_settings, make_test_user):
     """GET /integrations/instagram/connect embeds a state token for the calling client."""
     existing = _make_client(client_id=7, email="owner@biz.com")
     mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = existing
+    mock_result.scalar_one_or_none.return_value = make_test_user(existing)
     mock_db.execute.return_value = mock_result
 
     token = auth_service.create_access_token({"sub": "owner@biz.com"})
@@ -155,7 +155,7 @@ def test_callback_handles_user_cancellation(client, mock_db, mock_settings):
     assert "ig_status=cancelled" in response.headers["location"]
 
 
-def test_disconnect_clears_credentials(client, mock_db, mock_settings):
+def test_disconnect_clears_credentials(client, mock_db, mock_settings, make_test_user):
     """POST /integrations/instagram/disconnect nulls out both IG columns for the caller."""
     existing = _make_client(
         client_id=7,
@@ -164,7 +164,7 @@ def test_disconnect_clears_credentials(client, mock_db, mock_settings):
         instagram_account_id="178414581234567",
     )
     mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = existing
+    mock_result.scalar_one_or_none.return_value = make_test_user(existing)
     mock_db.execute.return_value = mock_result
 
     token = auth_service.create_access_token({"sub": "owner@biz.com"})

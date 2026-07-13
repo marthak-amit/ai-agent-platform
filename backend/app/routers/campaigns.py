@@ -27,7 +27,7 @@ from app.db import get_db
 from app.models.campaign import Campaign
 from app.models.campaign_recipient import CampaignRecipient
 from app.models.client import Client
-from app.routers.auth import get_current_client
+from app.routers.auth import get_owner_client as get_current_client
 from app.services import campaign_service
 
 logger = logging.getLogger(__name__)

@@ -85,6 +85,28 @@ async def _msg(http, phone: str, text: str, *, pnid: str):
     return await send_message(http, phone, text, phone_number_id=pnid)
 
 
+async def _seed_saved_address_gate(session: AsyncSession, *, conv_id: int, address: str):
+    """
+    Make the next turn land on the address-confirmation gate: a Customer row
+    with a saved address, plus a prior assistant message offering it.
+    """
+    from app.models.customer import Customer
+    from app.models.message import Message
+    from app.models.conversation import Conversation
+
+    conv = (await session.execute(
+        select(Conversation).where(Conversation.id == conv_id)
+    )).scalar_one()
+
+    customer = Customer(client_id=conv.client_id, phone=conv.phone_number, address=address)
+    session.add(customer)
+    session.add(Message(
+        conversation_id=conv_id, role="model",
+        content=f"Deliver to: {address}? (yes/change)",
+    ))
+    await session.commit()
+
+
 # ---------------------------------------------------------------------------
 # Scenario 1 — Address slot: junk inputs rejected, valid address accepted
 # ---------------------------------------------------------------------------
@@ -412,3 +434,50 @@ async def test_s7_happy_path_order_completes(replay_http, replay_session):
     assert len(orders) >= 1, "order must be created after confirm"
     assert orders[0].delivery_address is not None
     assert "mg road" in (orders[0].delivery_address or "").lower() or "42" in (orders[0].delivery_address or "")
+
+
+# ---------------------------------------------------------------------------
+# Scenario 8 — Address-confirmation gate: unclear replies must escalate,
+# not loop forever (FIX 2).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_s8_address_confirm_unclear_escalates_not_loops(replay_http, replay_session):
+    """
+    Repeated unclear replies ("Hi") at the saved-address yes/change gate must
+    advance the SAME slot_attempt_count used elsewhere for delivery_address
+    and escalate to a human once the cap is hit — not loop indefinitely.
+    """
+    from app.services.order_pipeline import _SLOT_ATTEMPT_ESCALATE
+
+    phone = _phone("080001")
+    pnid = _pnid("080001")
+    _, product = await _seed(
+        replay_session, phone=phone, pnid=pnid,
+        product_sku="AC001", product_name="Linen Saree", price=3200.0,
+        stock=5, payment_method="COD",
+    )
+    conv_id = await _prime_conv(
+        replay_session, phone=phone, product=product,
+        stage="order_collection",
+        pending_order_quantity=1,
+        customer_name="Anita",
+    )
+    await _seed_saved_address_gate(
+        replay_session, conv_id=conv_id, address="9 Lake View, Chennai 600001",
+    )
+
+    for i in range(1, _SLOT_ATTEMPT_ESCALATE):
+        await _msg(replay_http, phone, "Hi", pnid=pnid)
+        conv = await _get_conv(replay_session, conv_id)
+        assert conv.delivery_address is None, "unclear reply must not fill the address"
+        assert conv.slot_attempt_count == i, (
+            f"unclear reply #{i} should bump slot_attempt_count to {i}, got {conv.slot_attempt_count}"
+        )
+        assert conv.ai_enabled is True, "must not escalate before the cap"
+
+    # One more unclear reply hits the cap -> escalate to human, stop re-prompting.
+    await _msg(replay_http, phone, "Hi", pnid=pnid)
+    conv = await _get_conv(replay_session, conv_id)
+    assert conv.ai_enabled is False, "cap hit must hand off to a human"
+    assert conv.taken_over_note and "delivery_address" in conv.taken_over_note

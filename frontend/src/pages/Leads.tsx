@@ -90,7 +90,7 @@ export default function Leads() {
             placeholder="Search phone..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="pl-8 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-400 bg-white w-48"
+            className="pl-8 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-primary bg-white w-48"
           />
         </div>
         <div className="flex gap-1.5">
@@ -100,8 +100,8 @@ export default function Leads() {
               onClick={() => setFilter(f)}
               className={`px-3.5 py-1.5 rounded-lg text-sm font-medium capitalize transition-all duration-150 ${
                 filter === f
-                  ? "bg-indigo-600 text-white shadow-sm"
-                  : "bg-white border border-gray-200 text-gray-600 hover:border-indigo-300 hover:text-indigo-600"
+                  ? "bg-brand-primaryDark text-white shadow-sm"
+                  : "bg-white border border-gray-200 text-gray-600 hover:border-brand-primary/40 hover:text-brand-primaryDark"
               }`}
             >
               {filterLabels[f] ?? f}
@@ -143,7 +143,7 @@ export default function Leads() {
                     <select
                       value={lead.status}
                       onChange={(e) => handleStatusChange(lead.id, e.target.value)}
-                      className="text-xs border border-gray-200 rounded-lg px-2 py-1 text-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                      className="text-xs border border-gray-200 rounded-lg px-2 py-1 text-gray-600 focus:outline-none focus:ring-2 focus:ring-brand-primary"
                     >
                       {STATUSES.map((s) => (
                         <option key={s} value={s}>{filterLabels[s] ?? s}</option>
@@ -151,7 +151,7 @@ export default function Leads() {
                     </select>
                     <button
                       onClick={() => navigate("/conversations")}
-                      className="text-xs text-indigo-600 font-medium hover:underline whitespace-nowrap"
+                      className="text-xs text-brand-primaryDark font-medium hover:underline whitespace-nowrap"
                     >
                       View →
                     </button>

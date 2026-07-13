@@ -25,13 +25,13 @@ from app.db import get_db
 from app.models.conversation import Conversation
 from app.models.lead import Lead
 from app.models.message import Message
-from app.routers.auth import get_current_client
+from app.routers.auth import get_current_client, require_permission
 
 logger = logging.getLogger(__name__)
 router = APIRouter(
     prefix="/conversations",
     tags=["conversations"],
-    dependencies=[Depends(get_current_client)],
+    dependencies=[Depends(get_current_client), Depends(require_permission("manual_reply"))],
 )
 
 

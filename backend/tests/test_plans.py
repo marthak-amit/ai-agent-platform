@@ -163,7 +163,7 @@ def test_list_plans_endpoint_includes_price_and_channels(client):
     assert starter["channels"] == ["whatsapp"]
 
 
-def test_get_current_plan_returns_starter(client, mock_db, mock_settings):
+def test_get_current_plan_returns_starter(client, mock_db, mock_settings, make_test_user):
     """GET /plans/current returns starter for a new client."""
     from app.services.auth_service import create_access_token
 
@@ -173,7 +173,7 @@ def test_get_current_plan_returns_starter(client, mock_db, mock_settings):
         is_active=True, plan_slug="starter",
     )
     mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = existing
+    mock_result.scalar_one_or_none.return_value = make_test_user(existing)
     mock_db.execute.return_value = mock_result
 
     response = client.get("/plans/current", headers={"Authorization": f"Bearer {token}"})
@@ -189,7 +189,7 @@ def test_get_current_plan_requires_auth(client):
     assert response.status_code == 401
 
 
-def test_upgrade_plan_returns_200(client, mock_db, mock_settings):
+def test_upgrade_plan_returns_200(client, mock_db, mock_settings, make_test_user):
     """POST /plans/upgrade from starter to growth returns 200 with upgrade details."""
     from app.services.auth_service import create_access_token
 
@@ -199,7 +199,7 @@ def test_upgrade_plan_returns_200(client, mock_db, mock_settings):
         is_active=True, plan_slug="starter", daily_message_limit=100,
     )
     mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = existing
+    mock_result.scalar_one_or_none.return_value = make_test_user(existing)
     mock_db.execute.return_value = mock_result
     mock_db.refresh = AsyncMock(side_effect=lambda obj: None)
 
@@ -216,7 +216,7 @@ def test_upgrade_plan_returns_200(client, mock_db, mock_settings):
     assert "upgraded" in data["message"].lower()
 
 
-def test_upgrade_plan_downgrade_returns_400(client, mock_db, mock_settings):
+def test_upgrade_plan_downgrade_returns_400(client, mock_db, mock_settings, make_test_user):
     """POST /plans/upgrade with a downgrade returns 400."""
     from app.services.auth_service import create_access_token
 
@@ -226,7 +226,7 @@ def test_upgrade_plan_downgrade_returns_400(client, mock_db, mock_settings):
         is_active=True, plan_slug="pro", daily_message_limit=700,
     )
     mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = existing
+    mock_result.scalar_one_or_none.return_value = make_test_user(existing)
     mock_db.execute.return_value = mock_result
 
     response = client.post(
@@ -238,7 +238,7 @@ def test_upgrade_plan_downgrade_returns_400(client, mock_db, mock_settings):
     assert response.status_code == 400
 
 
-def test_upgrade_plan_unknown_slug_returns_400(client, mock_db, mock_settings):
+def test_upgrade_plan_unknown_slug_returns_400(client, mock_db, mock_settings, make_test_user):
     """POST /plans/upgrade with an unknown plan slug returns 400."""
     from app.services.auth_service import create_access_token
 
@@ -248,7 +248,7 @@ def test_upgrade_plan_unknown_slug_returns_400(client, mock_db, mock_settings):
         is_active=True, plan_slug="starter", daily_message_limit=100,
     )
     mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = existing
+    mock_result.scalar_one_or_none.return_value = make_test_user(existing)
     mock_db.execute.return_value = mock_result
 
     response = client.post(

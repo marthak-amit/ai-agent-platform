@@ -50,6 +50,22 @@ async def test_reply_to_comment_posts_to_correct_url(mock_httpx_client, mock_set
     assert "replies" in url
 
 
+async def test_send_private_reply_posts_to_messages_with_comment_id_recipient(mock_httpx_client, mock_settings):
+    """send_private_reply posts to /{ig_user_id}/messages with recipient.comment_id."""
+    from app.services.instagram_service import send_private_reply
+
+    mock_client, _ = mock_httpx_client
+    with patch("app.services.instagram_service.httpx.AsyncClient", return_value=mock_client):
+        await send_private_reply("IG_USER_123", "COMMENT_ID_789", "Check your DM 👀")
+
+    url = mock_client.post.call_args[0][0]
+    assert "IG_USER_123" in url
+    assert "messages" in url
+    payload = mock_client.post.call_args[1]["json"]
+    assert payload["recipient"] == {"comment_id": "COMMENT_ID_789"}
+    assert payload["message"] == {"text": "Check your DM 👀"}
+
+
 async def test_send_dm_raises_on_http_error(mock_settings):
     """send_dm propagates HTTPStatusError on 4xx/5xx."""
     from app.services.instagram_service import send_dm

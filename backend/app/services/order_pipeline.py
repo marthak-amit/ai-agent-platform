@@ -556,7 +556,7 @@ _AI_BYPASS_KEYWORDS: frozenset[str] = frozenset({
 })
 
 # ── Per-slot attempt cap constants (Improvement 1) ────────────────────────
-_SLOT_ATTEMPT_ESCAPE_HATCH = 4   # append escape hatch at this attempt number
+_SLOT_ATTEMPT_ESCAPE_HATCH = 3   # append escape hatch at this attempt number
 _SLOT_ATTEMPT_ESCALATE = 6       # stop LLM and escalate at this attempt number
 
 # ── Off-topic counter threshold (Improvement 2) ───────────────────────────
@@ -2451,6 +2451,10 @@ async def run_slot_state_machine(
                         conv.delivery_address = None
                         await conversation_service.update_order_field(db, conv.id, "summary_shown", False)
                         conv.summary_shown = False
+                        # Customer explicitly chose to retype — don't let stale
+                        # unclear-reply attempts from THIS gate carry over.
+                        await conversation_service.update_order_field(db, conv.id, "slot_attempt_count", 0)
+                        conv.slot_attempt_count = 0
                         await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
                         await conversation_service.save_message(db, conv.id, "assistant", _ac_ask)
                     except Exception as _ac_clr_exc:
@@ -2462,7 +2466,49 @@ async def run_slot_state_machine(
                     out.early_result = PipelineResult(text=_ac_ask)
                     return out
                 else:  # "unclear" — e.g. "Hi"
-                    _ac_reprompt = "Please reply *yes* to use this address, or *change* to enter a new one."
+                    # Same slot_attempt_count used for delivery_address elsewhere —
+                    # without this, unclear replies at this gate never advance the
+                    # cap and the customer can loop here forever.
+                    _ac_new_attempts = (conv.slot_attempt_count or 0) + 1
+                    conv.slot_attempt_count = _ac_new_attempts
+                    try:
+                        await conversation_service.update_order_field(db, conv.id, "slot_attempt_count", _ac_new_attempts)
+                    except Exception as _ac_inc_exc:
+                        logger.error("slot_attempt address-confirm-unclear increment: %s", _ac_inc_exc)
+                    logger.info(
+                        "Slot attempt (address-confirm unclear): conv=%s slot=delivery_address attempt=%d",
+                        conv.id, _ac_new_attempts,
+                    )
+                    _ac_lang_cap = getattr(conv, "last_customer_language", None) or language or "english"
+                    if _ac_new_attempts >= _SLOT_ATTEMPT_ESCALATE:
+                        # Escalate exactly like the slot-cap path below (Improvement 1):
+                        # stop re-prompting, hand off to a human.
+                        if _ac_lang_cap in ("hindi_roman", "hindi_devanagari", "hinglish"):
+                            _ac_reprompt = "Hamara team aapki madad karega. 👋\n\nPlease reply *yes* to use this address, or *change* to enter a new one."
+                        elif _ac_lang_cap in ("gujarati_roman", "gujarati_script"):
+                            _ac_reprompt = "Amari team tamne madad karse. 👋\n\nPlease reply *yes* to use this address, or *change* to enter a new one."
+                        else:
+                            _ac_reprompt = "Our team will assist you shortly. 👋\n\nPlease reply *yes* to use this address, or *change* to enter a new one."
+                        logger.warning(
+                            "SLOT cap: conv=%s slot=delivery_address attempts=%d — no LLM, escalating to human (address-confirm gate).",
+                            conv.id, _ac_new_attempts,
+                        )
+                        try:
+                            from app.models.conversation import Conversation as _ConvAcCap
+                            from sqlalchemy import select as _selAcCap
+                            _ac_cr = await db.execute(_selAcCap(_ConvAcCap).where(_ConvAcCap.id == conv.id).limit(1))
+                            _ac_cobj = _ac_cr.scalar_one_or_none()
+                            if _ac_cobj:
+                                _ac_cobj.ai_enabled = False
+                                _ac_cobj.taken_over_at = datetime.utcnow()
+                                _ac_cobj.taken_over_note = f"Slot cap: delivery_address x{_ac_new_attempts}"
+                                await db.commit()
+                        except Exception as _ac_esc_exc:
+                            logger.error("Address-confirm slot-cap escalation error: %s", _ac_esc_exc)
+                    else:
+                        _ac_reprompt = "Please reply *yes* to use this address, or *change* to enter a new one."
+                        if _ac_new_attempts >= _SLOT_ATTEMPT_ESCAPE_HATCH:
+                            _ac_reprompt += "\n\n(Reply 'cancel' to stop, or 'help' to reach our team.)"
                     try:
                         await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
                         await conversation_service.save_message(db, conv.id, "assistant", _ac_reprompt)
@@ -2778,6 +2824,10 @@ async def run_slot_state_machine(
                         _classified_intent = "AUTO_SWITCH_DONE"
                         _switch_resolved = True
                         logger.info("conv=%s NEW_PRODUCT auto-switched to %s (was %s)", conv.id, _new_sku_candidate, _old_pinned)
+                        logger.info(
+                            "event=product_type_changed conv=%s old_sku=%s new_sku=%s",
+                            conv.id, _old_pinned, _new_sku_candidate,
+                        )
                 else:
                     # No SKU found in message — treat as OTHER (re-ask slot)
                     _intent_override = "OTHER"
@@ -3263,6 +3313,38 @@ async def run_slot_state_machine(
     return out
 
 
+async def _find_cross_sell_candidate(
+    db, client, conv, pinned_sku: str | None
+) -> tuple[str | None, str | None]:
+    """
+    Return (name, formatted_price) for the most-recently-browsed SKU other
+    than the currently-pinned one, or (None, None) if there is no candidate.
+
+    Reads conv.browsed_skus (JSON list appended to on every product
+    switch/pin) and looks up the last entry that differs from pinned_sku.
+    """
+    if not client:
+        return None, None
+    import json as _json_cs
+
+    try:
+        _browsed = _json_cs.loads(getattr(conv, "browsed_skus", None) or "[]")
+    except Exception:
+        _browsed = []
+    _others = [s for s in _browsed if s != pinned_sku]
+    if not _others:
+        return None, None
+    try:
+        _cs_p = await catalogue_service.find_product_by_sku(db, client.id, _others[-1])
+    except Exception as exc:
+        import logging as _log
+        _log.getLogger(__name__).warning("cross-sell lookup failed: %s", exc)
+        return None, None
+    if _cs_p and getattr(_cs_p, "name", None):
+        return _cs_p.name, format_price(getattr(_cs_p, "price", 0) or 0)
+    return None, None
+
+
 # ---------------------------------------------------------------------------
 # SLICE 5 — order-summary text construction + confirm-prompt rendering
 # (relocated _render_order_reply, formerly webhook.py's single render
@@ -3400,22 +3482,8 @@ async def _render_order_reply(
         # Cross-sell: most-recently-browsed different SKU
         _cs_name: str | None = None
         _cs_price_fmt: str | None = None
-        if not getattr(conv, "summary_shown", False) and client:
-            import json as _json_cs
-            try:
-                _browsed = _json_cs.loads(getattr(conv, "browsed_skus", None) or "[]")
-            except Exception:
-                _browsed = []
-            _others = [s for s in _browsed if s != _pinned_sku]
-            if _others:
-                try:
-                    _cs_p = await _cs.find_product_by_sku(db, client.id, _others[-1])
-                    if _cs_p and getattr(_cs_p, "name", None):
-                        _cs_name = _cs_p.name
-                        _cs_price_fmt = format_price(getattr(_cs_p, "price", 0) or 0)
-                except Exception as exc:
-                    import logging as _log
-                    _log.getLogger(__name__).warning("cross-sell lookup failed: %s", exc)
+        if not getattr(conv, "summary_shown", False):
+            _cs_name, _cs_price_fmt = await _find_cross_sell_candidate(db, client, conv, _pinned_sku)
         if _cs_name and _cs_price_fmt:
             _tpl = "order_summary_variant_crosssell" if _variant_str else "order_summary_crosssell"
             _kw: dict = dict(product=_prod_name, qty=_qty, total=_total_fmt,
@@ -3461,7 +3529,13 @@ async def _render_order_reply(
             f"{_settings_r.catalogue_base_url}/{_cat_slug_r}"
             if _cat_slug_r else None
         )
-        _catalogue_line = f"🛍️ Browse more: {_cat_url_r}" if _cat_url_r else ""
+        _cs_name_r, _cs_price_r = await _find_cross_sell_candidate(db, client, conv, _pinned_sku)
+        if _cs_name_r and _cs_price_r and _cat_url_r:
+            _catalogue_line = f"🛍️ You might also like {_cs_name_r} ({_cs_price_r}) — {_cat_url_r}"
+        elif _cat_url_r:
+            _catalogue_line = f"🛍️ Browse more: {_cat_url_r}"
+        else:
+            _catalogue_line = ""
         _total_fmt = format_price(_total)
         if action == "confirm_paid_cod":
             return _gt(lang, "order_confirmed_cod",

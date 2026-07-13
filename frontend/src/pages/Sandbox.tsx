@@ -106,7 +106,7 @@ export function SandboxUI() {
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
-          <FlaskConical size={20} className="text-indigo-600" />
+          <FlaskConical size={20} className="text-brand-primaryDark" />
           <div>
             <h1 className="text-xl font-bold text-gray-900">Test Your Agent</h1>
             <p className="text-xs text-gray-400">Chat with your agent before going live</p>
@@ -180,7 +180,7 @@ export function SandboxUI() {
                   </span>
                 )}
                 {m.stage && (
-                  <span className="text-[10px] bg-indigo-50 text-indigo-600 rounded-full px-2 py-0.5">
+                  <span className="text-[10px] bg-brand-primary/5 text-brand-primaryDark rounded-full px-2 py-0.5">
                     🔍 {m.stage.replace(/_/g, " ")}
                   </span>
                 )}
@@ -237,12 +237,12 @@ export function SandboxUI() {
           onKeyDown={handleKeyDown}
           disabled={loading}
           placeholder="Type a message…"
-          className="flex-1 border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-50"
+          className="flex-1 border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary disabled:bg-gray-50"
         />
         <button
           onClick={() => sendMessage()}
           disabled={loading || !input.trim()}
-          className="bg-indigo-600 text-white rounded-xl px-4 py-2.5 hover:bg-indigo-700 disabled:opacity-40 transition-colors"
+          className="bg-brand-primaryDark text-white rounded-xl px-4 py-2.5 hover:bg-brand-primary/90 disabled:opacity-40 transition-colors"
         >
           <Send size={16} />
         </button>

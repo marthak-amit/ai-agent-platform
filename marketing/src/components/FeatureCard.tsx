@@ -11,11 +11,11 @@ export default function FeatureCard({ icon, title, description }: FeatureCardPro
   return (
     <motion.div
       className="rounded-2xl bg-white p-6 shadow-sm shadow-gray-900/5 ring-1 ring-gray-900/5"
-      whileHover={{ y: -4, boxShadow: "0 16px 32px -12px rgba(79, 70, 229, 0.18)" }}
+      whileHover={{ y: -4, boxShadow: "0 16px 32px -12px rgba(15, 139, 76, 0.18)" }}
       transition={{ duration: 0.15, ease: "easeOut" }}
     >
       {icon && (
-        <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-indigo-100 text-indigo-700">
+        <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-brand-primary/10 text-brand-primaryDark">
           {icon}
         </div>
       )}

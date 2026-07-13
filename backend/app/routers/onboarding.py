@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.models.client import BUSINESS_TYPES, Client
-from app.routers.auth import get_current_client
+from app.routers.auth import get_owner_client as get_current_client
 from app.services import onboarding_service
 
 logger = logging.getLogger(__name__)
