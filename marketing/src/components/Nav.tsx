@@ -1,56 +1,79 @@
 import { useEffect, useState } from "react";
-import { Link, NavLink } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { motion } from "framer-motion";
 import { DASHBOARD_LOGIN_URL, DASHBOARD_SIGNUP_URL } from "../config";
 import CTAButton from "./CTAButton";
 import Logo from "./Logo";
 
 const links = [
-  { to: "/features", label: "Features" },
-  { to: "/industries", label: "Industries" },
-  { to: "/pricing", label: "Pricing" },
-  { to: "/faq", label: "FAQ" },
+  { to: "/#features", label: "Features", section: "features" },
+  { to: "/#industries", label: "Industries", section: "industries" },
+  { to: "/#pricing", label: "Pricing", section: "pricing" },
+  { to: "/#faq", label: "FAQ", section: "faq" },
 ];
 
 export default function Nav() {
   const [open, setOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
+  const [activeSection, setActiveSection] = useState<string | null>(null);
+  const location = useLocation();
 
+  // Scroll-spy: the active section is the last one (in page order) whose top has
+  // scrolled past the reference line just below the sticky header.
   useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > 40);
+    const REFERENCE_LINE = 120;
+
+    const onScroll = () => {
+      setScrolled(window.scrollY > 40);
+
+      if (location.pathname !== "/") {
+        setActiveSection(null);
+        return;
+      }
+
+      let current: string | null = null;
+      for (const link of links) {
+        const el = document.getElementById(link.section);
+        if (el && el.getBoundingClientRect().top <= REFERENCE_LINE) {
+          current = link.section;
+        }
+      }
+      setActiveSection(current);
+    };
+
     onScroll();
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
-  }, []);
+  }, [location.pathname]);
 
   return (
-    <motion.header
-      className={`sticky top-0 z-50 border-b ${
+    <header
+      className={`sticky top-0 z-50 border-b transition-all duration-300 ${
         scrolled
-          ? "border-gray-200 bg-white/80 shadow-sm backdrop-blur-md"
+          ? "border-gray-200 bg-white/95 shadow-md backdrop-blur-md"
           : "border-transparent bg-white/90 backdrop-blur"
       }`}
-      animate={{ paddingTop: scrolled ? 2 : 0, paddingBottom: scrolled ? 2 : 0 }}
-      transition={{ duration: 0.2, ease: "easeOut" }}
     >
-      <nav className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 sm:px-6 lg:px-8">
+      <motion.nav
+        className="mx-auto flex max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8"
+        animate={{ paddingTop: scrolled ? 10 : 16, paddingBottom: scrolled ? 10 : 16 }}
+        transition={{ duration: 0.2, ease: "easeOut" }}
+      >
         <Link to="/" className="flex items-center gap-2 text-lg font-bold tracking-tight text-gray-900">
           <Logo className="h-11 w-auto" />
         </Link>
 
         <div className="hidden items-center gap-8 md:flex">
           {links.map((link) => (
-            <NavLink
+            <Link
               key={link.to}
               to={link.to}
-              className={({ isActive }) =>
-                `text-sm font-medium transition-colors hover:text-brand-primaryDark ${
-                  isActive ? "text-brand-primaryDark" : "text-gray-600"
-                }`
-              }
+              className={`text-sm font-medium transition-colors hover:text-brand-primaryDark ${
+                activeSection === link.section ? "text-brand-primaryDark" : "text-gray-600"
+              }`}
             >
               {link.label}
-            </NavLink>
+            </Link>
           ))}
         </div>
 
@@ -82,20 +105,22 @@ export default function Nav() {
             )}
           </svg>
         </button>
-      </nav>
+      </motion.nav>
 
       {open && (
         <div className="border-t border-gray-200 bg-white px-4 py-4 md:hidden">
           <div className="flex flex-col gap-4">
             {links.map((link) => (
-              <NavLink
+              <Link
                 key={link.to}
                 to={link.to}
                 onClick={() => setOpen(false)}
-                className="text-base font-medium text-gray-800"
+                className={`text-base font-medium ${
+                  activeSection === link.section ? "text-brand-primaryDark" : "text-gray-800"
+                }`}
               >
                 {link.label}
-              </NavLink>
+              </Link>
             ))}
             <a href={DASHBOARD_LOGIN_URL} className="text-base font-medium text-gray-800">
               Log in
@@ -109,6 +134,6 @@ export default function Nav() {
           </div>
         </div>
       )}
-    </motion.header>
+    </header>
   );
 }

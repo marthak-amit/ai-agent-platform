@@ -4,6 +4,7 @@ import SEO from "../components/SEO";
 import CTAButton from "../components/CTAButton";
 import ChatMockup from "../components/ChatMockup";
 import FeatureCard from "../components/FeatureCard";
+import FAQItem from "../components/FAQItem";
 import PricingCard, { type PricingPlan } from "../components/PricingCard";
 import BillingToggle, { type BillingCycle } from "../components/BillingToggle";
 import Reveal from "../components/motion/Reveal";
@@ -29,17 +30,39 @@ const steps = [
   },
 ];
 
-const capabilities = [
-  { title: "Chat-driven product browsing", description: "Customers explore your catalogue directly inside WhatsApp or Instagram chat." },
-  { title: "Variant selection", description: "Color, size, and material picked conversationally — no forms, no app to install." },
-  { title: "Full in-chat order collection", description: "Address, quantity, and order details collected without leaving the chat." },
-  { title: "COD / UPI / bank transfer", description: "Accept the payment methods your customers already trust." },
-  { title: "Order status & dispatch alerts", description: "Customers get automatic updates as their order moves and ships." },
-  { title: "Returning customer recognition", description: "SellerTalk24 remembers past conversations so regulars don't repeat themselves." },
-  { title: "Human takeover when needed", description: "Hand off to a real person any time the conversation needs a human touch." },
-  { title: "Daily owner briefing email", description: "A daily summary of orders, leads, and conversations in your inbox." },
-  { title: "Follow-up & re-engagement", description: "Automatic follow-ups bring browsing customers back to complete their order." },
-  { title: "WhatsApp broadcast campaigns", description: "Reach your customer list with new arrivals and offers." },
+const featureGroups = [
+  {
+    title: "Selling",
+    items: [
+      { title: "Catalogue browsing in chat", description: "Customers explore your products without leaving WhatsApp or Instagram." },
+      { title: "Variant selection", description: "Color, size, and material are handled conversationally, just like talking to a shop assistant." },
+      { title: "Full in-chat order collection", description: "Quantity, address, and order details captured directly in the conversation." },
+      { title: "Flexible payments", description: "COD, UPI, and bank transfer — the payment methods Indian shoppers already use." },
+    ],
+  },
+  {
+    title: "Operations",
+    items: [
+      { title: "Order status tracking", description: "Customers can check where their order is, without you lifting a finger." },
+      { title: "Dispatch notifications", description: "Automatic updates the moment an order ships." },
+      { title: "Daily owner briefing", description: "A daily email summarizing new orders, leads, and conversations." },
+    ],
+  },
+  {
+    title: "Growth",
+    items: [
+      { title: "Follow-ups & re-engagement", description: "Customers who browsed but didn't order get a gentle nudge back." },
+      { title: "WhatsApp broadcast campaigns", description: "Announce new arrivals or offers to your customer list." },
+      { title: "Multi-channel reach", description: "One catalogue, sold consistently across WhatsApp and Instagram." },
+    ],
+  },
+  {
+    title: "Control",
+    items: [
+      { title: "Human takeover", description: "Step into any conversation when a customer needs a real person." },
+      { title: "Abuse protection", description: "Built-in safeguards keep conversations on-topic and protect against misuse, without you needing to configure anything." },
+    ],
+  },
 ];
 
 const monthlyPlans: PricingPlan[] = [
@@ -79,9 +102,51 @@ const yearlyPlans: PricingPlan[] = monthlyPlans.map((plan) => ({
   cadence: undefined,
 }));
 
+const faqs = [
+  {
+    question: "What is SellerTalk24?",
+    answer:
+      "SellerTalk24 is an AI sales agent for fashion retailers in India. It runs inside WhatsApp and Instagram, helping customers browse your catalogue, pick variants like size and color, and place orders — all in chat.",
+  },
+  {
+    question: "Which channels does it support?",
+    answer:
+      "WhatsApp and Instagram are both live today. A website chat widget is also available on the Pro plan for stores that want chat on their own site.",
+  },
+  {
+    question: "How does setup work?",
+    answer:
+      "WhatsApp onboarding is assisted — our team sets up WhatsApp for you by configuring a Meta System User token on your behalf, rather than an instant self-serve connect button. We'll guide you through it during onboarding.",
+  },
+  {
+    question: "What languages does it support?",
+    answer: "SellerTalk24 can converse in English, Hindi, and Hinglish.",
+  },
+  {
+    question: "What payment methods are supported?",
+    answer: "Cash on delivery (COD), UPI, and bank transfer — set up per your preferences.",
+  },
+  {
+    question: "Is my data secure?",
+    answer:
+      "Conversations and order data are stored securely and scoped to your account only. We don't share your catalogue or customer data across merchants.",
+  },
+  {
+    question: "How do plans get activated?",
+    answer:
+      "Plan upgrades are currently activated manually by our team during onboarding rather than self-serve billing — book a demo and we'll get you set up on the right plan.",
+  },
+  {
+    question: "Who is SellerTalk24 for?",
+    answer:
+      "Fashion and apparel retailers in India selling over WhatsApp and Instagram — from independent boutiques to multi-store fashion brands.",
+  },
+];
+
 export default function Home() {
   const [cycle, setCycle] = useState<BillingCycle>("monthly");
   const plans = cycle === "monthly" ? monthlyPlans : yearlyPlans;
+  const [openQuestion, setOpenQuestion] = useState<string | null>(null);
   const reduceMotion = useReducedMotion();
 
   return (
@@ -195,20 +260,31 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Capabilities */}
-      <section className="bg-gray-50 py-20">
+      {/* Features */}
+      <section id="features" className="scroll-mt-24 bg-gray-50 py-20">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <Reveal as="div" className="text-center">
-            <span className="text-xs font-semibold uppercase tracking-widest text-brand-primaryDark">Capabilities</span>
-            <h2 className="mt-2 text-3xl font-bold tracking-tight text-gray-900">What SellerTalk24 does</h2>
+            <span className="text-xs font-semibold uppercase tracking-widest text-brand-primaryDark">Features</span>
+            <h2 className="mt-2 text-3xl font-bold tracking-tight text-gray-900">Everything SellerTalk24 does</h2>
+            <p className="mx-auto mt-4 max-w-xl text-gray-600">
+              Built specifically for how fashion retail actually sells in India.
+            </p>
           </Reveal>
-          <StaggerGroup className="mt-12 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-            {capabilities.map((cap) => (
-              <StaggerItem key={cap.title}>
-                <FeatureCard title={cap.title} description={cap.description} />
-              </StaggerItem>
+
+          <div className="mt-12 space-y-12">
+            {featureGroups.map((group) => (
+              <div key={group.title}>
+                <h3 className="text-xl font-semibold text-gray-900">{group.title}</h3>
+                <StaggerGroup className="mt-6 grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
+                  {group.items.map((item) => (
+                    <StaggerItem key={item.title}>
+                      <FeatureCard title={item.title} description={item.description} />
+                    </StaggerItem>
+                  ))}
+                </StaggerGroup>
+              </div>
             ))}
-          </StaggerGroup>
+          </div>
         </div>
       </section>
 
@@ -270,20 +346,55 @@ export default function Home() {
         </StaggerGroup>
       </section>
 
-      {/* Industry focus */}
-      <section className="bg-gradient-to-br from-brand-primary/5 via-white to-brand-primary/5 py-20">
-        <Reveal as="div" className="mx-auto max-w-7xl px-4 text-center sm:px-6 lg:px-8">
-          <h2 className="text-3xl font-bold tracking-tight text-gray-900">Built for Indian fashion retail</h2>
-          <p className="mx-auto mt-4 max-w-2xl text-gray-600">
-            Sarees, kurtis, lehengas, and everything in between — SellerTalk24 understands fashion
-            catalogues with variants like color, size, and fabric, and is built for India-first
-            payments like UPI and COD.
-          </p>
-        </Reveal>
+      {/* Industries */}
+      <section id="industries" className="scroll-mt-24 bg-gradient-to-br from-brand-primary/5 via-white to-brand-primary/5 py-20">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <Reveal as="div" className="text-center">
+            <span className="text-xs font-semibold uppercase tracking-widest text-brand-primaryDark">Industries</span>
+            <h2 className="mt-2 text-3xl font-bold tracking-tight text-gray-900">Built for fashion retail, first</h2>
+            <p className="mx-auto mt-4 max-w-2xl text-gray-600">
+              SellerTalk24 is purpose-built for how Indian fashion brands sell — variant-heavy
+              catalogues, WhatsApp-first customers, and UPI/COD payments.
+            </p>
+          </Reveal>
+
+          <Reveal as="div" className="mt-12 rounded-3xl bg-white p-8 ring-2 ring-brand-primary" delay={0.05}>
+            <h3 className="text-2xl font-bold text-gray-900">Fashion &amp; Apparel</h3>
+            <p className="mt-3 text-gray-700">
+              Sarees, kurtis, lehengas, suits, and more. SellerTalk24 understands color, size, and
+              fabric variants and helps customers pick exactly what they want — over chat, the way
+              they already shop.
+            </p>
+            <CTAButton to="/demo" className="mt-6">
+              Book a Demo
+            </CTAButton>
+          </Reveal>
+
+          <StaggerGroup className="mt-8 grid gap-6 sm:grid-cols-2">
+            <StaggerItem>
+              <div className="relative rounded-3xl bg-white p-8 opacity-70 ring-1 ring-gray-900/5">
+                <span className="absolute right-4 top-4 rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-600">
+                  Coming soon
+                </span>
+                <h3 className="text-xl font-semibold text-gray-900">Jewelry</h3>
+                <p className="mt-2 text-sm text-gray-600">Not yet supported — on our roadmap.</p>
+              </div>
+            </StaggerItem>
+            <StaggerItem>
+              <div className="relative rounded-3xl bg-white p-8 opacity-70 ring-1 ring-gray-900/5">
+                <span className="absolute right-4 top-4 rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-600">
+                  Coming soon
+                </span>
+                <h3 className="text-xl font-semibold text-gray-900">Accessories</h3>
+                <p className="mt-2 text-sm text-gray-600">Not yet supported — on our roadmap.</p>
+              </div>
+            </StaggerItem>
+          </StaggerGroup>
+        </div>
       </section>
 
       {/* Pricing */}
-      <section className="mx-auto max-w-7xl px-4 py-20 sm:px-6 lg:px-8">
+      <section id="pricing" className="scroll-mt-24 mx-auto max-w-7xl px-4 py-20 sm:px-6 lg:px-8">
         <Reveal as="div" className="text-center">
           <span className="text-xs font-semibold uppercase tracking-widest text-brand-primaryDark">Pricing</span>
           <h2 className="mt-2 text-3xl font-bold tracking-tight text-gray-900">Simple, transparent pricing</h2>
@@ -301,9 +412,42 @@ export default function Home() {
             </StaggerItem>
           ))}
         </StaggerGroup>
-        <p className="mt-6 text-center text-sm">
-          Need higher volume? <a href="/demo" className="font-semibold text-brand-primaryDark">Talk to us about Enterprise.</a>
+
+        <div className="mt-10 rounded-2xl border border-gray-200 bg-gray-50 p-8 text-center">
+          <h3 className="text-xl font-semibold text-gray-900">Enterprise</h3>
+          <p className="mt-2 text-gray-600">Custom message volume, dedicated onboarding, and priority support.</p>
+          <CTAButton to="/demo" className="mt-6">
+            Let's talk
+          </CTAButton>
+        </div>
+
+        <p className="mt-8 text-center text-sm text-gray-500">
+          Billing is currently set up manually by our team — plan upgrades are not yet self-serve.
         </p>
+      </section>
+
+      {/* FAQ */}
+      <section id="faq" className="scroll-mt-24 bg-gray-50 py-20">
+        <div className="mx-auto max-w-3xl px-4 sm:px-6 lg:px-8">
+          <Reveal as="div" className="text-center">
+            <span className="text-xs font-semibold uppercase tracking-widest text-brand-primaryDark">FAQ</span>
+            <h2 className="mt-2 text-3xl font-bold tracking-tight text-gray-900">Frequently asked questions</h2>
+          </Reveal>
+          <StaggerGroup className="mt-10">
+            {faqs.map((faq) => (
+              <StaggerItem key={faq.question}>
+                <FAQItem
+                  question={faq.question}
+                  answer={faq.answer}
+                  open={openQuestion === faq.question}
+                  onToggle={() =>
+                    setOpenQuestion((current) => (current === faq.question ? null : faq.question))
+                  }
+                />
+              </StaggerItem>
+            ))}
+          </StaggerGroup>
+        </div>
       </section>
 
       {/* Final CTA */}
@@ -319,7 +463,7 @@ export default function Home() {
           </p>
           <div className="mt-8 flex flex-wrap justify-center gap-4">
             <CTAButton to="/demo">Book a Demo</CTAButton>
-            <CTAButton to="/pricing" variant="secondary">
+            <CTAButton to="/#pricing" variant="secondary">
               Create your account
             </CTAButton>
           </div>

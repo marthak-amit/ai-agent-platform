@@ -44,7 +44,7 @@ export default function Terms() {
             <p className="mt-3">
               Plans are billed on a recurring basis (monthly or yearly, as selected) at the price shown on
               our{" "}
-              <a href="/pricing" className="text-brand-primaryDark underline">
+              <a href="/#pricing" className="text-brand-primaryDark underline">
                 Pricing page
               </a>{" "}
               at the time of purchase. [TODO: fill payment provider/billing mechanics — e.g. Razorpay
