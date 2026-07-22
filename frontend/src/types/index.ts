@@ -57,6 +57,8 @@ export interface ClientProfile {
   api_key: string | null;
 }
 
+export type EnhancedStatus = "pending" | "done" | "failed" | "flagged_color_mismatch" | null;
+
 export interface ProductVariant {
   id: number;
   color: string | null;
@@ -67,6 +69,19 @@ export interface ProductVariant {
   stock: number;
   is_active: boolean;
   image_url: string | null;
+  enhanced_image_url: string | null;
+  enhanced_status: EnhancedStatus;
+  enhanced_approved: boolean;
+  style_reference_id: number | null;
+  display_image_url: string | null;
+}
+
+export interface StyleReference {
+  id: number;
+  category: string;
+  style_type: "dummy" | "human_model" | "hanging";
+  reference_image_url: string;
+  description: string;
 }
 
 export interface Product {

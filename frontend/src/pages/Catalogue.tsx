@@ -13,8 +13,9 @@ import {
 } from "../api/client";
 import Layout from "../components/Layout";
 import type { Product, ProductVariant, StockLog } from "../types";
-import { Search, Plus, X, Package, AlertTriangle, Boxes, CheckCircle2, IndianRupee, Pencil, PackagePlus, Pause, Play, Trash2 } from "lucide-react";
+import { Search, Plus, X, Package, AlertTriangle, Boxes, CheckCircle2, IndianRupee, Pencil, PackagePlus, Pause, Play, Trash2, Sparkles } from "lucide-react";
 import { ColorDots, SizePills } from "../utils/variants";
+import PhotoEnhanceModal from "../components/PhotoEnhanceModal";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -97,6 +98,7 @@ interface VariantState {
   stockMatrix: Record<string, string>;
   useDiffPrice: boolean;
   priceMatrix: Record<string, string>;
+  imageUrls: Record<string, string>;
   fillAll: string;
   customColorName: string;
   customColorHex: string;
@@ -125,6 +127,7 @@ const EMPTY_VARIANT_STATE: VariantState = {
   stockMatrix: {},
   useDiffPrice: false,
   priceMatrix: {},
+  imageUrls: {},
   fillAll: "",
   customColorName: "",
   customColorHex: "#000000",
@@ -619,10 +622,87 @@ function VariantBuilder({ vs, setVs }: {
                   })}
                 </div>
               )}
+
+              {/* Step 6: Per-variant raw photo — required before that variant can be enhanced */}
+              {keys.length > 0 && (
+                <div className="mt-3 border-t border-gray-100 pt-3">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
+                    Step 6 — Variant Photos <span className="normal-case font-normal text-gray-400">(needed for photo enhancement)</span>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    {keys.map((k) => {
+                      const [c, s] = k.split("||");
+                      const label = [c, s].filter(Boolean).join(" / ");
+                      const url = vs.imageUrls[k];
+                      return (
+                        <VariantPhotoRow
+                          key={k}
+                          label={label}
+                          imageUrl={url}
+                          onUploaded={(uploadedUrl) =>
+                            setVs((prev) => ({ ...prev, imageUrls: { ...prev.imageUrls, [k]: uploadedUrl } }))
+                          }
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function VariantPhotoRow({
+  label,
+  imageUrl,
+  onUploaded,
+}: {
+  label: string;
+  imageUrl?: string;
+  onUploaded: (url: string) => void;
+}) {
+  const [uploading, setUploading] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  async function handleFile(f: File) {
+    setUploading(true);
+    try {
+      const url = await uploadProductImage(f);
+      onUploaded(url);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  const thumbSrc = imageUrl
+    ? (imageUrl.startsWith("http") || imageUrl.startsWith("blob:") ? imageUrl : `${API_BASE}${imageUrl}`)
+    : null;
+
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-xs text-gray-600 flex-1 truncate">{label || "Base variant"}</span>
+      <div className="w-9 h-9 rounded-lg bg-gray-100 overflow-hidden shrink-0 flex items-center justify-center">
+        {thumbSrc ? <img src={thumbSrc} alt={label} className="w-full h-full object-cover" /> : <Package size={14} className="text-gray-300" />}
+      </div>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        className="hidden"
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
+      />
+      <button
+        type="button"
+        onClick={() => inputRef.current?.click()}
+        disabled={uploading}
+        className="px-2.5 py-1 bg-gray-100 text-gray-600 rounded-lg text-xs font-medium hover:bg-gray-200 disabled:opacity-50 shrink-0"
+      >
+        {uploading ? "Uploading…" : imageUrl ? "Replace" : "Upload"}
+      </button>
     </div>
   );
 }
@@ -635,6 +715,7 @@ function ProductCard({
   onStock,
   onToggle,
   onDelete,
+  onEnhance,
   resolveImage,
 }: {
   product: Product;
@@ -642,6 +723,7 @@ function ProductCard({
   onStock: () => void;
   onToggle: () => void;
   onDelete: () => void;
+  onEnhance: () => void;
   resolveImage: (url: string) => string;
 }) {
   const imgSrc = p.image_url ? resolveImage(p.image_url) : null;
@@ -699,6 +781,11 @@ function ProductCard({
           <button onClick={onStock} title="Adjust stock" className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium text-gray-600 border border-gray-200 rounded-xl py-2 hover:border-emerald-300 hover:text-emerald-600 hover:bg-emerald-50 transition-all">
             <PackagePlus size={12} /> Stock
           </button>
+          {p.has_variants && p.variants.some((v) => v.is_active && v.image_url) && (
+            <button onClick={onEnhance} title="Enhance photos" className="w-8 h-8 shrink-0 flex items-center justify-center text-gray-500 border border-gray-200 rounded-xl hover:border-violet-300 hover:text-violet-600 hover:bg-violet-50 transition-all">
+              <Sparkles size={13} />
+            </button>
+          )}
           <button
             onClick={onToggle}
             title={p.is_active ? "Pause" : "Activate"}
@@ -732,7 +819,7 @@ export default function Catalogue() {
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive">("all");
   const [lowStockFilter, setLowStockFilter] = useState(false);
 
-  const [modal, setModal] = useState<"add" | "edit" | "stock" | null>(null);
+  const [modal, setModal] = useState<"add" | "edit" | "stock" | "photo" | null>(null);
   const [selected, setSelected] = useState<Product | null>(null);
   const [stockHistory, setStockHistory] = useState<StockLog[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
@@ -819,12 +906,14 @@ export default function Catalogue() {
       const sizes = [...new Set(activeVariants.map((v) => v.size).filter(Boolean))] as string[];
       const stockMatrix: Record<string, string> = {};
       const priceMatrix: Record<string, string> = {};
+      const imageUrls: Record<string, string> = {};
       const editVariantIds: Record<string, number> = {};
 
       activeVariants.forEach((v) => {
         const k = variantKey(v.color ?? undefined, v.size ?? undefined);
         stockMatrix[k] = String(v.stock);
         if (v.price != null) priceMatrix[k] = String(v.price);
+        if (v.image_url) imageUrls[k] = v.image_url;
         editVariantIds[k] = v.id;
       });
 
@@ -839,6 +928,7 @@ export default function Catalogue() {
         sizes,
         stockMatrix,
         priceMatrix,
+        imageUrls,
         useDiffPrice: hasDiffPrice,
         editVariantIds,
       });
@@ -879,6 +969,24 @@ export default function Catalogue() {
     setFormError(null);
   }
 
+  function openEnhance(p: Product) {
+    setSelected(p);
+    setModal("photo");
+  }
+
+  function handleVariantPhotoUpdated(updatedVariant: ProductVariant) {
+    setProducts((prev) =>
+      prev.map((p) =>
+        p.id !== selected?.id
+          ? p
+          : { ...p, variants: p.variants.map((v) => (v.id === updatedVariant.id ? { ...v, ...updatedVariant } : v)) }
+      )
+    );
+    setSelected((prev) =>
+      prev ? { ...prev, variants: prev.variants.map((v) => (v.id === updatedVariant.id ? { ...v, ...updatedVariant } : v)) } : prev
+    );
+  }
+
   function resolveImageUrl(url: string): string {
     if (!url) return "";
     if (url.startsWith("http")) return url;
@@ -904,6 +1012,7 @@ export default function Catalogue() {
         price: variantState.useDiffPrice && variantState.priceMatrix[k]
           ? parseFloat(variantState.priceMatrix[k]) || undefined
           : undefined,
+        image_url: variantState.imageUrls[k] || undefined,
       };
     });
   }
@@ -1138,6 +1247,7 @@ export default function Catalogue() {
               onStock={() => openStock(p)}
               onToggle={() => toggleActive(p)}
               onDelete={() => handleDelete(p)}
+              onEnhance={() => openEnhance(p)}
               resolveImage={resolveImageUrl}
             />
           ))}
@@ -1373,6 +1483,16 @@ export default function Catalogue() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ── Photo enhancement modal ────────────────────────────────────────── */}
+      {modal === "photo" && selected && (
+        <PhotoEnhanceModal
+          product={selected}
+          onClose={closeModal}
+          onVariantUpdated={handleVariantPhotoUpdated}
+          resolveImage={resolveImageUrl}
+        />
       )}
     </Layout>
   );

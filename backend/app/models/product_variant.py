@@ -10,6 +10,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
 
+VALID_ENHANCED_STATUSES = {"pending", "done", "failed", "flagged_color_mismatch"}
+
 
 class ProductVariant(Base):
     """
@@ -17,6 +19,13 @@ class ProductVariant(Base):
 
     Linked to the owning product via product_id and to the owning client via
     client_id. Used by catalogue_service to surface in-stock variant options.
+
+    Photo-enhancement fields (migration 0051): image_url always holds the
+    seller's original raw uploaded photo (the Gemini fusion input) and is
+    never overwritten by generation. enhanced_image_url/enhanced_status hold
+    the latest Gemini output and its QC state; enhanced_approved is the
+    seller's manual publish gate — display_image_url is the only field public
+    surfaces (storefront/catalog) should read.
     """
 
     __tablename__ = "product_variants"
@@ -37,8 +46,23 @@ class ProductVariant(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     image_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
+    # Photo enhancement (migration 0051)
+    enhanced_image_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    enhanced_status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    style_reference_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("style_references.id"), nullable=True
+    )
+    enhanced_approved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
     product: Mapped["Product"] = relationship("Product", back_populates="variants")
+
+    @property
+    def display_image_url(self) -> Optional[str]:
+        """Public-facing image: the approved enhanced photo, else the raw upload."""
+        if self.enhanced_status == "done" and self.enhanced_approved and self.enhanced_image_url:
+            return self.enhanced_image_url
+        return self.image_url

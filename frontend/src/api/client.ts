@@ -206,6 +206,41 @@ export async function searchProductBySku(sku: string) {
   return data;
 }
 
+// --- Photo enhancement ---
+
+export async function getStyleReferences(category: string, styleType?: string) {
+  const { data } = await api.get("/catalogue/style-references", {
+    params: { category, style_type: styleType },
+  });
+  return data;
+}
+
+export async function enhanceVariantPhoto(
+  productId: number,
+  variantId: number,
+  styleReferenceId: number,
+) {
+  const { data } = await api.post(
+    `/catalogue/products/${productId}/variants/${variantId}/enhance-photo`,
+    { style_reference_id: styleReferenceId },
+  );
+  return data;
+}
+
+export async function approveVariantPhoto(productId: number, variantId: number) {
+  const { data } = await api.post(
+    `/catalogue/products/${productId}/variants/${variantId}/approve-photo`,
+  );
+  return data;
+}
+
+export async function rejectVariantPhoto(productId: number, variantId: number) {
+  const { data } = await api.post(
+    `/catalogue/products/${productId}/variants/${variantId}/reject-photo`,
+  );
+  return data;
+}
+
 // --- Usage ---
 
 export async function getUsageStats() {

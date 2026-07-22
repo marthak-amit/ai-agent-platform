@@ -16,7 +16,9 @@ from app.models.message import Message
 from app.models.order import Order
 from app.models.payment import Payment
 from app.models.product import Product
+from app.models.style_reference import StyleReference
 from app.models.product_variant import ProductVariant
+from app.models.photo_generation_log import PhotoGenerationLog
 from app.models.restock_notification import RestockNotification
 from app.models.stock_log import StockLog
 from app.models.knowledge_base import KnowledgeBase
@@ -25,6 +27,7 @@ from app.models.user import User
 
 __all__ = [
     "Campaign", "CampaignRecipient", "Client", "Conversation", "Customer", "FollowUp",
-    "IgCommentReply", "KnowledgeBase", "Lead", "Message", "Order", "Payment", "Product",
-    "ProductVariant", "RestockNotification", "StockLog", "UsageLog", "User",
+    "IgCommentReply", "KnowledgeBase", "Lead", "Message", "Order", "Payment", "PhotoGenerationLog",
+    "Product", "ProductVariant", "RestockNotification", "StockLog", "StyleReference", "UsageLog",
+    "User",
 ]

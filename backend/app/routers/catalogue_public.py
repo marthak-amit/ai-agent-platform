@@ -56,7 +56,9 @@ def _variant_dict(v) -> dict:
         "price": v.price,
         "stock": v.stock,
         "is_active": v.is_active,
-        "image_url": v.image_url,
+        # display_image_url is the seller-approved enhanced photo when present,
+        # else the raw upload — never an unapproved/flagged enhanced photo.
+        "image_url": v.display_image_url,
     }
 
 

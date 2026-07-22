@@ -174,6 +174,7 @@ async def create_product_variants(
             size=v.get("size"),
             stock=v.get("stock", 0),
             price=v.get("price"),
+            image_url=v.get("image_url"),
         )
         db.add(pv)
         result.append(pv)
@@ -210,6 +211,8 @@ async def sync_product_variants(
             ev.stock = v.get("stock", 0)
             ev.price = v.get("price")
             ev.is_active = True
+            if v.get("image_url"):
+                ev.image_url = v.get("image_url")
             seen_ids.add(vid)
         else:
             pv = ProductVariant(
@@ -219,6 +222,7 @@ async def sync_product_variants(
                 size=v.get("size"),
                 stock=v.get("stock", 0),
                 price=v.get("price"),
+                image_url=v.get("image_url"),
             )
             db.add(pv)
 

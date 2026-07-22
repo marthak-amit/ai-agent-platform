@@ -50,6 +50,7 @@ class VariantIn(BaseModel):
     size: Optional[str] = None
     stock: int = 0
     price: Optional[float] = None
+    image_url: Optional[str] = None
 
 
 class ProductCreate(BaseModel):
@@ -113,6 +114,11 @@ class ProductVariantOut(BaseModel):
     stock: int
     is_active: bool = True
     image_url: Optional[str] = None
+    enhanced_image_url: Optional[str] = None
+    enhanced_status: Optional[str] = None
+    enhanced_approved: bool = False
+    style_reference_id: Optional[int] = None
+    display_image_url: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
