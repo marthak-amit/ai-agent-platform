@@ -1,7 +1,7 @@
 """
 WhatsApp Cloud API sender service.
 
-Sends text, image, and interactive (button/list) messages via the
+Sends text, image, document, and interactive (button/list) messages via the
 Meta Cloud API POST /v21.0/{phone_number_id}/messages endpoint.
 """
 
@@ -228,6 +228,57 @@ async def send_image_message(to_phone_number: str, image_url: str, caption: str 
         "to": to_phone_number,
         "type": "image",
         "image": image_payload,
+    }
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        return response.json()
+
+
+async def send_document_message(
+    to_phone_number: str, document_url: str, filename: str, caption: str | None = None
+) -> dict:
+    """
+    Send a document WhatsApp message (by public URL) to a recipient.
+
+    Used for PDF invoices. document_url must be a publicly reachable HTTPS
+    URL — Meta fetches it server-side rather than accepting a raw upload.
+
+    Args:
+        to_phone_number: Recipient phone number in E.164 format without '+'.
+        document_url:    Publicly reachable URL of the document to send.
+        filename:        Filename shown to the recipient, e.g. "Invoice-INV-7-0001.pdf".
+        caption:         Optional caption text shown under the document.
+
+    Returns:
+        The parsed JSON response dict from Meta API on success.
+
+    Raises:
+        httpx.HTTPStatusError: If Meta API returns a 4xx or 5xx response.
+    """
+    settings = get_settings()
+
+    url = (
+        f"{META_API_BASE_URL}/{META_API_VERSION}"
+        f"/{settings.whatsapp_phone_number_id}/messages"
+    )
+
+    headers = {
+        "Authorization": f"Bearer {settings.whatsapp_access_token}",
+        "Content-Type": "application/json",
+    }
+
+    document_payload: dict = {"link": document_url, "filename": filename}
+    if caption:
+        document_payload["caption"] = caption
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to_phone_number,
+        "type": "document",
+        "document": document_payload,
     }
 
     async with httpx.AsyncClient(timeout=15.0) as client:

@@ -7,6 +7,7 @@ message storage. Used by both the WhatsApp and Instagram webhook handlers.
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import select
@@ -213,6 +214,11 @@ async def update_stage(
     """
     Persist the latest conversation stage to the DB.
 
+    Also stamps flow_state_at to now — this is the single point every stage
+    change flows through, so it doubles as the "last flow-state update" clock
+    that handle_inbound_message's flow-state-expiry guard reads from
+    (see order_pipeline.py migration 0052).
+
     Args:
         db:              Active async DB session.
         conversation_id: PK of the Conversation row.
@@ -224,6 +230,7 @@ async def update_stage(
     conv = result.scalar_one_or_none()
     if conv:
         conv.current_stage = stage
+        conv.flow_state_at = datetime.now(timezone.utc)
         await db.commit()
 
 
@@ -276,6 +283,32 @@ async def update_order_field(
     conv = result.scalar_one_or_none()
     if conv:
         setattr(conv, field, value)
+        await db.commit()
+
+
+async def set_last_context(db: AsyncSession, conversation_id: int, product) -> None:
+    """
+    Single writer for Conversation.last_context / last_context_at.
+
+    Call every time a product is successfully resolved as the customer's
+    active product anywhere in the order flow (migration 0052). Powers
+    pronoun resolution ("is that available?", "still in stock?") in
+    handle_inbound_message's flow-state-expiry guard, which keeps this
+    snapshot usable for CONTEXT_TTL even after flow_state itself has reset —
+    do not add a second writer for these two columns elsewhere.
+    """
+    result = await db.execute(
+        select(Conversation).where(Conversation.id == conversation_id)
+    )
+    conv = result.scalar_one_or_none()
+    if conv:
+        conv.last_context = {
+            "product_id": product.id,
+            "sku": getattr(product, "sku", None),
+            "name": product.name,
+            "price": product.price,
+        }
+        conv.last_context_at = datetime.now(timezone.utc)
         await db.commit()
 
 

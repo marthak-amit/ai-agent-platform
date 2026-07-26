@@ -4,10 +4,13 @@ Import all ORM models here so Alembic's env.py finds them via Base.metadata.
 Order matters: import tables with no FKs first.
 """
 
+from app.models.plan import Plan
 from app.models.campaign import Campaign
 from app.models.campaign_recipient import CampaignRecipient
 from app.models.client import Client
+from app.models.client_monthly_usage import ClientMonthlyUsage
 from app.models.conversation import Conversation
+from app.models.cost_log import CostLogEntry
 from app.models.customer import Customer
 from app.models.follow_up import FollowUp
 from app.models.ig_comment_reply import IgCommentReply
@@ -26,8 +29,8 @@ from app.models.usage_log import UsageLog
 from app.models.user import User
 
 __all__ = [
-    "Campaign", "CampaignRecipient", "Client", "Conversation", "Customer", "FollowUp",
-    "IgCommentReply", "KnowledgeBase", "Lead", "Message", "Order", "Payment", "PhotoGenerationLog",
-    "Product", "ProductVariant", "RestockNotification", "StockLog", "StyleReference", "UsageLog",
-    "User",
+    "Campaign", "CampaignRecipient", "Client", "ClientMonthlyUsage", "Conversation", "CostLogEntry",
+    "Customer", "FollowUp", "IgCommentReply", "KnowledgeBase", "Lead", "Message", "Order", "Payment",
+    "PhotoGenerationLog", "Plan", "Product", "ProductVariant", "RestockNotification", "StockLog",
+    "StyleReference", "UsageLog", "User",
 ]

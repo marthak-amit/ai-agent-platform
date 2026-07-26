@@ -4,8 +4,17 @@ Per-conversation message cost logging.
 Tracks every inbound/outbound message for a conversation in memory and
 prints a cost report when an order is placed. Template replies cost ₹0;
 LLM replies are priced from the real token usage returned by Groq.
+
+Every entry is also persisted to the cost_log_entries table (see
+app/models/cost_log.py) so cost history survives restarts/deploys and is
+visible across multiple Railway workers — the in-memory _logs dict remains
+the source for print_report() since that only ever needs the current
+conversation's still-open order. Persistence is fire-and-forget: log()
+stays a plain sync function (its call sites don't await it), so the DB
+write runs as a background asyncio task and never blocks the caller.
 """
 
+import asyncio
 import logging
 
 logger = logging.getLogger(__name__)
@@ -73,7 +82,7 @@ def log(
     else:
         cost = 0.0
 
-    _logs.setdefault(conversation_id, []).append({
+    entry = {
         "direction": direction,
         "text": text or "",
         "path": path,
@@ -82,7 +91,33 @@ def log(
         "out_tok": out_tok,
         "cost": cost,
         "call_kind": call_kind if path == "LLM" else None,
-    })
+    }
+    _logs.setdefault(conversation_id, []).append(entry)
+
+    try:
+        asyncio.get_running_loop().create_task(_persist(conversation_id, entry))
+    except RuntimeError:
+        # No running event loop (e.g. a script/test calling log() outside
+        # asyncio) — in-memory log above still recorded it, just skip persistence.
+        pass
+
+
+async def _persist(conversation_id: int, entry: dict) -> None:
+    """
+    Write one entry to cost_log_entries. Fire-and-forget background task —
+    never raises into the caller; a failed persist only means that entry is
+    missing from the DB history, not a broken request.
+    """
+    try:
+        from app.db import _get_session_factory
+        from app.models.cost_log import CostLogEntry
+
+        factory = _get_session_factory()
+        async with factory() as db:
+            db.add(CostLogEntry(conversation_id=conversation_id, **entry))
+            await db.commit()
+    except Exception as exc:
+        logger.warning("cost_log persist failed for conv=%s: %s", conversation_id, exc)
 
 
 def print_report(conversation_id: int, order_number: str) -> None:

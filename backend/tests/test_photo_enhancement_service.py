@@ -1,11 +1,13 @@
 """Tests for app/services/photo_enhancement_service.py."""
 
 import io
+from datetime import date
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from PIL import Image
 
+from app.models.client import Client
 from app.models.product_variant import ProductVariant
 from app.models.style_reference import StyleReference
 from app.services import photo_enhancement_service as svc
@@ -118,13 +120,36 @@ def _style(style_id=5):
     )
 
 
+def _billing_client(client_id=1, image_quota=20, overage_price=8):
+    """
+    A Client with a current (non-elapsed) billing cycle, so
+    billing_service.check_image_quota_and_bill_overage's internal
+    ensure_current_cycle() no-ops without needing plan_cache seeded.
+    """
+    return Client(
+        id=client_id, email="x@y.com", hashed_password="h",
+        plan_slug="starter", plan_image_quota_snapshot=image_quota,
+        plan_image_overage_price_snapshot=overage_price,
+        billing_cycle_start=date.today(), plan_grandfathered=False,
+    )
+
+
+def _quota_check_results(used_this_month=0, **billing_client_kwargs):
+    """Two extra db.execute results consumed by _log_generation's overage check."""
+    client_result = MagicMock()
+    client_result.scalar_one_or_none.return_value = _billing_client(**billing_client_kwargs)
+    count_result = MagicMock()
+    count_result.scalar_one.return_value = used_this_month
+    return [client_result, count_result]
+
+
 async def test_generate_variant_photo_success_marks_done(db):
     """A successful Gemini call with matching colours ends enhanced_status='done'."""
     variant = _variant()
     style = _style()
     variant_result = MagicMock(); variant_result.scalar_one_or_none.return_value = variant
     style_result = MagicMock(); style_result.scalar_one_or_none.return_value = style
-    db.execute.side_effect = [variant_result, style_result]
+    db.execute.side_effect = [variant_result, style_result, *_quota_check_results()]
 
     raw = _png_bytes(size=(1000, 1000), noisy=True, color=(10, 200, 10))
     generated = _png_bytes(size=(1000, 1000), noisy=True, color=(10, 200, 10))
@@ -145,7 +170,7 @@ async def test_generate_variant_photo_flags_color_mismatch(db):
     style = _style()
     variant_result = MagicMock(); variant_result.scalar_one_or_none.return_value = variant
     style_result = MagicMock(); style_result.scalar_one_or_none.return_value = style
-    db.execute.side_effect = [variant_result, style_result]
+    db.execute.side_effect = [variant_result, style_result, *_quota_check_results()]
 
     raw = _png_bytes(size=(1000, 1000), noisy=True, color=(255, 0, 0))
     generated = _png_bytes(size=(1000, 1000), noisy=True, color=(0, 255, 255))
@@ -164,7 +189,7 @@ async def test_generate_variant_photo_retries_once_then_fails(db):
     style = _style()
     variant_result = MagicMock(); variant_result.scalar_one_or_none.return_value = variant
     style_result = MagicMock(); style_result.scalar_one_or_none.return_value = style
-    db.execute.side_effect = [variant_result, style_result]
+    db.execute.side_effect = [variant_result, style_result, *_quota_check_results()]
 
     raw = _png_bytes(size=(1000, 1000), noisy=True)
 
@@ -189,6 +214,32 @@ async def test_generate_variant_photo_rejects_low_quality_raw_image(db):
     with patch.object(svc, "_load_image_bytes", AsyncMock(return_value=small_raw)):
         with pytest.raises(svc.PhotoEnhancementError):
             await svc.generate_variant_photo(db, 1, 10, 100, 5)
+
+
+async def test_log_generation_tags_overage_row(db):
+    """_log_generation tags is_overage/overage_price_inr from billing_service's check."""
+    with patch.object(
+        svc.billing_service, "check_image_quota_and_bill_overage",
+        AsyncMock(return_value=(True, 6)),
+    ):
+        await svc._log_generation(db, 1, 10, 100, 5, "done", cost_usd=0.04)
+
+    logged = db.add.call_args[0][0]
+    assert logged.is_overage is True
+    assert logged.overage_price_inr == 6
+
+
+async def test_log_generation_no_overage_under_quota(db):
+    """_log_generation leaves is_overage False when under the plan's image_quota."""
+    with patch.object(
+        svc.billing_service, "check_image_quota_and_bill_overage",
+        AsyncMock(return_value=(False, None)),
+    ):
+        await svc._log_generation(db, 1, 10, 100, 5, "done", cost_usd=0.04)
+
+    logged = db.add.call_args[0][0]
+    assert logged.is_overage is False
+    assert logged.overage_price_inr is None
 
 
 async def test_generate_variant_photo_variant_not_found_raises(db):

@@ -97,6 +97,7 @@ async def call_tool_router(
     variant_info: dict,
     conversation_history: list[dict],
     product_name: str,
+    conversation_id: int | None = None,
 ) -> list[dict[str, Any]]:
     """
     Make ONE LLM call and return validated tool proposals.
@@ -108,6 +109,9 @@ async def call_tool_router(
         variant_info:         Variant metadata dict from catalogue_service.
         conversation_history: Last N turns as [{"role": str, "content": str}].
         product_name:         Display name of the pinned product (or "").
+        conversation_id:      PK of the Conversation row, for cost-log
+                               attribution. None skips cost logging (e.g. a
+                               caller that hasn't resolved a conversation yet).
 
     Returns:
         List of validated tool-call dicts, e.g. [{"tool": "set_slot", "args": {...}}].
@@ -161,6 +165,15 @@ async def call_tool_router(
             max_tokens=150,
             temperature=0,
         )
+
+        if conversation_id is not None and getattr(resp, "usage", None) is not None:
+            from app.services import cost_log
+            cost_log.log(
+                conversation_id, "IN", user_text,
+                path="LLM", model="llama-3.1-8b-instant",
+                in_tok=resp.usage.prompt_tokens, out_tok=resp.usage.completion_tokens,
+                call_kind="classify",
+            )
 
         raw = (resp.choices[0].message.content or "").strip()
 

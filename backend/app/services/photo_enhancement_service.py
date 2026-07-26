@@ -31,6 +31,7 @@ from app.config import get_settings
 from app.models.photo_generation_log import PhotoGenerationLog
 from app.models.product_variant import ProductVariant
 from app.models.style_reference import StyleReference
+from app.services import billing_service
 
 logger = logging.getLogger(__name__)
 
@@ -388,6 +389,9 @@ async def _log_generation(
     cost_usd: float,
 ) -> None:
     """Append one row to photo_generation_log for COGS tracking."""
+    is_overage, overage_price_inr = await billing_service.check_image_quota_and_bill_overage(
+        db, client_id
+    )
     db.add(PhotoGenerationLog(
         client_id=client_id,
         product_id=product_id,
@@ -395,6 +399,8 @@ async def _log_generation(
         style_reference_id=style_reference_id,
         status=status,
         cost_estimate_usd=cost_usd,
+        is_overage=is_overage,
+        overage_price_inr=overage_price_inr,
     ))
     await db.commit()
 

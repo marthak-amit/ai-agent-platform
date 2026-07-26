@@ -24,7 +24,7 @@ from app.models.conversation import Conversation
 from app.models.follow_up import FollowUp
 from app.models.lead import Lead
 from app.models.message import Message
-from app.services import conversation_service, gemini_service, instagram_service, whatsapp_service
+from app.services import conversation_service, gemini_service, instagram_service, messaging_window, whatsapp_service
 
 logger = logging.getLogger(__name__)
 
@@ -150,22 +150,25 @@ async def send_followups(db: AsyncSession) -> dict:
     send via WhatsApp, and persist every attempt (success or failure).
 
     A FollowUp row is written for both 'sent' and 'failed' outcomes so the
-    cooldown check prevents immediate retries on a failed delivery.
+    cooldown check prevents immediate retries on a failed delivery. Leads
+    outside Meta's 24h customer-service window are skipped entirely (no
+    FollowUp row) since no approved template exists yet to send them safely —
+    see messaging_window.is_within_free_text_window.
 
     Args:
         db: Active async DB session.
 
     Returns:
-        Dict with keys: sent (int), failed (int), total_eligible (int).
+        Dict with keys: sent (int), failed (int), total_eligible (int),
+        blocked_window (int) — eligible leads skipped because they're
+        outside the 24h free-text window and no template send path exists.
     """
     eligible = await get_eligible_leads(db)
     sent = 0
     failed = 0
+    blocked_window = 0
 
     for lead, last_msg_at in eligible:
-        message = await generate_followup_message(db, lead)
-        fu_status = "sent"
-
         # Determine channel from the lead's conversation
         channel = "whatsapp"
         conv_result = await db.execute(
@@ -174,6 +177,23 @@ async def send_followups(db: AsyncSession) -> dict:
         conv = conv_result.scalar_one_or_none()
         if conv:
             channel = conv.channel or "whatsapp"
+
+        # Meta rejects free-form business-initiated text more than 24h after
+        # the customer's last inbound message — only a pre-approved template
+        # is allowed past that point. No approved follow-up template exists
+        # yet, so outside the window we skip the send rather than risk a
+        # WABA violation.
+        if not await messaging_window.is_within_free_text_window(db, lead.conversation_id):
+            blocked_window += 1
+            logger.warning(
+                "event=followup_needs_template lead=%d phone=%s channel=%s — "
+                "outside 24h window, free-text send skipped.",
+                lead.id, lead.phone_number, channel,
+            )
+            continue
+
+        message = await generate_followup_message(db, lead)
+        fu_status = "sent"
 
         try:
             if channel == "instagram":
@@ -225,6 +245,7 @@ async def send_followups(db: AsyncSession) -> dict:
         "sent": sent,
         "failed": failed,
         "total_eligible": len(eligible),
+        "blocked_window": blocked_window,
     }
 
 

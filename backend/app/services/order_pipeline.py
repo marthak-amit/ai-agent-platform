@@ -25,16 +25,16 @@ import re
 import re as _re_addr
 import secrets
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
 from app.config import get_settings
-from app.services import catalogue_service, conversation_flow, conversation_service, customer_service
+from app.services import billing_service, catalogue_service, conversation_flow, conversation_service, customer_service
 from app.services import cost_log, escalation_service, gemini_service, lead_service, order_service, order_state_machine
 from app.services import language_service as _lang_svc, usage_service, vision_service, voice_service
 from app.services.delivery_service import get_delivery_time_str
-from app.services.language_templates import format_price
+from app.services.language_templates import format_price, get_template
 from app.services.order_state_machine import RenderError
 
 # NOTE: deliberately uses the webhook router's logger name (not __name__) so
@@ -353,6 +353,74 @@ def _build_availability_answer(
             return f"Sorry, {prod_name} is currently out of stock."
         return f"Yes, {prod_name} is available."
     return ""
+
+
+# Explicit new-purchase / product-switch phrasing — deliberately broad (the
+# actual gate against false positives is requiring a CONFIDENT catalogue
+# match via _find_confident_product_match, not this regex alone; see its
+# call sites).
+_PURCHASE_INTENT_RE = re.compile(
+    r"\b("
+    r"i want to (?:buy|order|get|have)|"
+    r"i'?d like to (?:buy|order|get)|"
+    r"i would like to (?:buy|order|get)|"
+    r"change (?:it |the order |my order )?to|"
+    r"switch (?:it |the order )?to|"
+    r"instead of|"
+    r"can i (?:get|have|order|buy)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def is_purchase_intent(text: str) -> bool:
+    """True when *text* expresses explicit new-purchase/switch intent ("I want to buy X", "change to X", "switch to X")."""
+    return bool(text) and bool(_PURCHASE_INTENT_RE.search(text))
+
+
+# Cancel-the-whole-order phrasing at payment stage. Deliberately a plain
+# keyword/phrase list (not an LLM classification) — same reasoning as
+# _PURCHASE_INTENT_RE: cheap, deterministic, and this is a payment-stage
+# guard where a false negative just falls through to the existing reminder
+# (safe) while a false positive cancels a real order (must stay low-risk).
+# Maintain as a flat constant list; extend with more phrasings as they show
+# up in logs rather than trying to cover everything up front.
+_CANCEL_INTENT_PATTERNS = (
+    "don't want", "dont want", "do not want",
+    "cancel", "not interested", "never mind", "nevermind", "stop",
+)
+_CANCEL_INTENT_RE = re.compile(
+    r"\b(" + "|".join(re.escape(p) for p in _CANCEL_INTENT_PATTERNS) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def is_cancel_intent(text: str) -> bool:
+    """True when *text* expresses intent to cancel/abandon the order ("I don't want this", "cancel", "never mind")."""
+    return bool(text) and bool(_CANCEL_INTENT_RE.search(text))
+
+
+async def _find_confident_product_match(db, client, user_text: str, exclude_sku: str | None):
+    """
+    Return a single, confidently-matched catalogue Product for *user_text*,
+    excluding *exclude_sku* (the currently pinned/active product) — or None.
+
+    Shared by the payment-stage cross-product aside-question answer (FIX 4)
+    and the mid-payment purchase-intent switch detector so both use the
+    identical scored-search matching rather than two independently-tuned
+    copies of the same lookup.
+    """
+    if not client:
+        return None
+    try:
+        _all_products = await catalogue_service.list_products(db, client.id)
+        _scored = catalogue_service.search_products_with_scores(_all_products, user_text, top_k=3)
+        for _score, _candidate in _scored:
+            if _score >= 3 and getattr(_candidate, "sku", None) != exclude_sku:
+                return _candidate
+    except Exception as exc:
+        logger.warning("Confident product match lookup failed: %s", exc)
+    return None
 
 
 # Matches "deliver(y) to/in <place>", "ship to <place>", "send to <place>".
@@ -888,14 +956,29 @@ async def run_cancel_in_payment_guard(
     record_usage,
 ) -> "PipelineResult | None":
     """
-    Cancel-in-payment guard: handle "cancel" tapped/typed while stage="payment"
-    (pending UPI confirmation) — cancels the pending_payment Order, resets
-    order slots, sets stage back to "greeting".
+    Cancel-in-payment guard: handle cancel-intent tapped/typed while
+    stage="payment" (pending UPI confirmation) or "awaiting_switch_confirm"
+    (mid-payment switch-confirm prompt still open) — cancels the
+    pending_payment Order, resets order slots, sets stage back to "greeting".
+
+    Matches on is_cancel_intent(), not just the literal "cancel" button
+    payload, so free-text phrasing ("I don't want this", "never mind") is
+    caught too — previously only an exact "cancel" fell through to here and
+    everything else silently re-showed the payment reminder.
+
+    Also covers "awaiting_switch_confirm" so a cancel-intent reply to the
+    switch-confirm prompt cancels the WHOLE order rather than being treated
+    as an unclear yes/no (which run_switch_confirm_guard would otherwise
+    interpret as "decline switch, keep original order"). This guard runs
+    before run_switch_confirm_guard, so it intercepts first.
 
     record_usage: the webhook module's _record_usage(db, client) callable,
     passed in rather than imported, since it stays defined in webhook.py.
     """
-    if not (user_text.lower().strip() == "cancel" and stored_stage == "payment"):
+    if not (
+        stored_stage in ("payment", "awaiting_switch_confirm")
+        and is_cancel_intent(user_text)
+    ):
         return None
 
     from app.models.order import Order as _PayCancelOrderModel
@@ -946,14 +1029,17 @@ async def run_cancel_in_payment_guard(
         _pc_reply = "Order cancel thai gayu. ✅ Koi biju kaam hoy to kaho!"
     else:
         _pc_reply = "Order cancelled. ✅ Anything else I can help you with?"
-    logger.info("conv=%s PAYMENT-STAGE CANCEL — order cancelled, slots reset, stage=greeting", conv.id)
+    logger.info(
+        "conv=%s PAYMENT-STAGE CANCEL (from stage=%s) — order cancelled, slots reset, stage=greeting",
+        conv.id, stored_stage,
+    )
     try:
         await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
         await conversation_service.save_message(db, conv.id, "assistant", _pc_reply)
     except Exception as exc:
         logger.error("Payment-stage cancel save error: %s", exc)
     try:
-        await record_usage(db, client)
+        await record_usage(db, client, conv)
     except Exception:
         pass
     return PipelineResult(text=_pc_reply)
@@ -1084,6 +1170,263 @@ async def run_duplicate_payment_word_guard(
 
 
 # ---------------------------------------------------------------------------
+# Mid-payment product-switch confirmation
+# ---------------------------------------------------------------------------
+# When the customer expresses new-purchase/switch intent ("I want to buy X")
+# while stage="payment" (see the is_purchase_intent branch inside the
+# payment-stage dispatch below), we do NOT silently overwrite the pending
+# order. Instead we stash the candidate SKU in interrupted_sku — the same
+# field the browsing-stage interrupt-switch flow already uses — set
+# current_stage to the 'awaiting_switch_confirm' micro-stage, and ask the
+# customer to confirm. This guard resolves that confirmation on the
+# customer's NEXT turn, entirely before detect_stage/SKU-pinning run, so it
+# never needs to teach the wider state machine about the new stage value.
+# ---------------------------------------------------------------------------
+
+async def run_switch_confirm_guard(
+    db, conv, client, sender_phone: str, user_text: str, wamid: "str | None", record_usage,
+) -> "PipelineResult | None":
+    """
+    Resolve a pending mid-payment switch-confirmation prompt.
+
+    Returns None (caller continues normal dispatch) whenever current_stage
+    isn't 'awaiting_switch_confirm' — i.e. on every ordinary turn.
+    """
+    if (getattr(conv, "current_stage", None) or "") != "awaiting_switch_confirm":
+        return None
+
+    _candidate_sku = getattr(conv, "interrupted_sku", None)
+    _lang = getattr(conv, "last_customer_language", None) or "english"
+    _confirm_yes = user_text.strip().lower() in {
+        "yes", "haan", "ha", "han", "ok", "okay", "sure", "y", "yep", "yeah",
+        "bilkul", "हाँ", "ہاں",
+    }
+
+    if _confirm_yes and _candidate_sku:
+        try:
+            await conversation_service.update_order_field(db, conv.id, "pending_product_sku", _candidate_sku)
+            conv.pending_product_sku = _candidate_sku
+            await conversation_service.update_order_field(db, conv.id, "interrupted_sku", None)
+            conv.interrupted_sku = None
+            await conversation_service.update_stage(db, conv.id, "payment")
+            conv.current_stage = "payment"
+        except Exception as exc:
+            logger.error("Switch-confirm yes error: %s", exc)
+        _render_action_sc = "show_payment"
+        logger.info("Switch confirmed: conv=%s → pending_product_sku=%s", conv.id, _candidate_sku)
+    else:
+        try:
+            await conversation_service.update_order_field(db, conv.id, "interrupted_sku", None)
+            conv.interrupted_sku = None
+            await conversation_service.update_stage(db, conv.id, "payment")
+            conv.current_stage = "payment"
+        except Exception as exc:
+            logger.error("Switch-confirm no/other error: %s", exc)
+        _render_action_sc = "reask_payment"
+        logger.info(
+            "Switch declined/unclear: conv=%s — kept pending_product_sku=%r",
+            conv.id, getattr(conv, "pending_product_sku", None),
+        )
+
+    try:
+        reply = await _render_order_reply(
+            action=_render_action_sc, conv=conv, db=db, client=client,
+            next_slot=None, variant_info={}, customer_profile=None,
+            available_stock=None, declined_saved_address=False, lang=_lang,
+        )
+    except RenderError as exc:
+        logger.error("Switch-confirm render error: %s", exc)
+        return PipelineResult(text=None, skip_send=True, status="render_error")
+
+    try:
+        await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+        await conversation_service.save_message(db, conv.id, "assistant", reply)
+    except Exception as exc:
+        logger.error("Switch-confirm save error: %s", exc)
+    try:
+        await record_usage(db, client, conv)
+    except Exception as exc:
+        logger.error("Usage tracking error (switch confirm): %s", exc)
+    return PipelineResult(text=reply)
+
+
+# ---------------------------------------------------------------------------
+# Flow-state / context expiry (migration 0052)
+# ---------------------------------------------------------------------------
+# flow_state (conv.current_stage + the order slots it drives) resets after
+# FLOW_STATE_TTL of silence, so a customer who vanishes mid-flow and returns
+# later is never dropped back into a stale step — e.g. re-shown/resumed an
+# old product pick or asked to keep paying for an order they've forgotten.
+#
+# last_context (the last product referenced) is a SEPARATE, longer-lived
+# snapshot (CONTEXT_TTL) kept alive specifically so pronoun references
+# ("that", "it", "still available?") keep resolving even once the active
+# flow itself has reset. conversation_service.set_last_context is the single
+# writer for those two columns — do not add a second one.
+# ---------------------------------------------------------------------------
+
+DEFAULT_FLOW_STATE_TTL = timedelta(hours=24)
+DEFAULT_CONTEXT_TTL = timedelta(days=5)
+
+# Fields cleared alongside current_stage on a flow-state reset — the same
+# field list already used by the existing cancel/post-order reset blocks
+# elsewhere in this module (see e.g. _pc_cancel_fields above). Kept as its
+# own constant so there is one place to update if that list changes.
+_FLOW_STATE_RESET_FIELDS = (
+    "pending_product_sku", "interrupted_sku", "pending_choice_skus",
+    "pending_order_quantity", "selected_color", "selected_size",
+    "selected_material", "customer_name", "delivery_address",
+    "payment_method", "summary_shown",
+)
+
+_GREETING_ONLY_PHRASES = frozenset({
+    "hi", "hello", "hey", "hii", "hiii", "helo", "hlo",
+    "namaste", "namaskar", "namaskte", "salam", "assalam", "kem cho", "hola",
+})
+
+# Matched via the compiled regex below (word-boundary, case-insensitive) so
+# bare "it"/"that" don't false-positive inside unrelated words.
+_REFERENCE_PRONOUN_PHRASES = (
+    "still available", "last one", "same one", "this one", "that one",
+    "the same", "this", "that", "it",
+)
+_REFERENCE_PRONOUN_RE = re.compile(
+    r"\b(" + "|".join(re.escape(p) for p in _REFERENCE_PRONOUN_PHRASES) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def is_greeting_only(text: str) -> bool:
+    """
+    True when *text* is nothing but a bare greeting ("hi", "Hello!", "  hii ")
+    — case-insensitive, punctuation-stripped, matched as the ENTIRE message
+    (not a substring), so "hi, is that available?" is NOT a bare greeting.
+    """
+    if not text:
+        return False
+    stripped = re.sub(r"[^\w\s]", "", text.lower())
+    stripped = re.sub(r"\s+", " ", stripped).strip()
+    return stripped in _GREETING_ONLY_PHRASES
+
+
+def has_reference_pronoun(text: str) -> bool:
+    """True when *text* refers back to a previously discussed product ("that", "it", "still available?")."""
+    return bool(text) and bool(_REFERENCE_PRONOUN_RE.search(text))
+
+
+def _flow_state_ttl(client) -> timedelta:
+    """Per-tenant FLOW_STATE_TTL override (client.flow_state_ttl_hours if set), else DEFAULT_FLOW_STATE_TTL."""
+    hours = getattr(client, "flow_state_ttl_hours", None) if client else None
+    return timedelta(hours=hours) if hours else DEFAULT_FLOW_STATE_TTL
+
+
+def _context_ttl(client) -> timedelta:
+    """Per-tenant CONTEXT_TTL override (client.context_ttl_days if set), else DEFAULT_CONTEXT_TTL."""
+    days = getattr(client, "context_ttl_days", None) if client else None
+    return timedelta(days=days) if days else DEFAULT_CONTEXT_TTL
+
+
+async def _reset_flow_state(db, conv) -> None:
+    """
+    Reset current_stage to 'greeting' and clear the order slots it drives.
+
+    Deliberately leaves last_context/last_context_at untouched — that
+    snapshot has its own, longer TTL (see module docstring above).
+    """
+    for _field_name in _FLOW_STATE_RESET_FIELDS:
+        _default = False if _field_name == "summary_shown" else None
+        try:
+            await conversation_service.update_order_field(db, conv.id, _field_name, _default)
+            setattr(conv, _field_name, _default)
+        except Exception as exc:
+            logger.error("Flow-state reset error (%s): %s", _field_name, exc)
+    try:
+        await conversation_service.update_stage(db, conv.id, "greeting")
+        conv.current_stage = "greeting"
+    except Exception as exc:
+        logger.error("Flow-state reset stage-update error: %s", exc)
+
+
+async def _send_fresh_greeting(
+    db, conv, client, sender_phone: str, user_text: str, wamid: "str | None", record_usage,
+) -> PipelineResult:
+    """
+    Deterministic fresh welcome + catalogue link, regenerated on every call
+    (never cached) — used when a bare greeting arrives while a stale/active
+    flow was in progress. Resets the flow rather than resuming whatever step
+    the customer was previously on.
+    """
+    settings = get_settings()
+    slug = getattr(client, "catalogue_slug", None) if client else None
+    catalogue_url = f"{settings.catalogue_base_url}/{slug}" if slug else settings.catalogue_base_url
+    business = (getattr(client, "business_name", None) or "our store") if client else "our store"
+    lang = (getattr(conv, "last_customer_language", None) or "english").lower()
+    reply = get_template(lang, "greeting_new", business=business, catalogue_url=catalogue_url)
+
+    _log_route(conv.id, "TEMPLATE", "flow_state_expiry_greeting_reset")
+    logger.info(
+        "Flow-state greeting reset: conv=%s sender=%s — fresh welcome, no flow resume.",
+        conv.id, sender_phone,
+    )
+    await _reset_flow_state(db, conv)
+    try:
+        await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+        await conversation_service.save_message(db, conv.id, "assistant", reply)
+    except Exception as exc:
+        logger.error("Fresh-greeting save error: %s", exc)
+    try:
+        await record_usage(db, client, conv)
+    except Exception as exc:
+        logger.error("Usage tracking error (fresh greeting): %s", exc)
+    return PipelineResult(text=reply)
+
+
+async def _resolve_last_context_reference(
+    db, conv, client, last_context: dict, user_text: str,
+    sender_phone: str, wamid: "str | None", record_usage,
+) -> "PipelineResult | None":
+    """
+    Answer a pronoun reference ("is that available?", "still in stock?")
+    directly from last_context's snapshot plus a fresh stock/price lookup —
+    no stage change, no flow restart.
+
+    Returns None (caller falls through to normal flow dispatch) when the
+    product can no longer be found, e.g. it was deleted since last_context
+    was captured.
+    """
+    sku = last_context.get("sku")
+    product = await catalogue_service.find_product_by_sku(db, client.id, sku) if (client and sku) else None
+    if product is None:
+        return None
+
+    lang = (getattr(conv, "last_customer_language", None) or "english").lower()
+    stock = getattr(product, "stock", None) or 0
+    if stock <= 0:
+        reply = get_template(lang, "out_of_stock", product=product.name)
+    else:
+        reply = get_template(
+            lang, "product_found",
+            name=product.name, price=int(round(product.price)), stock=stock,
+        )
+
+    _log_route(conv.id, "TEMPLATE", "last_context_pronoun_reference", extra=f"sku={sku}")
+    logger.info(
+        "Pronoun reference resolved from last_context: conv=%s sender=%s sku=%s — direct answer, no flow restart.",
+        conv.id, sender_phone, sku,
+    )
+    try:
+        await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+        await conversation_service.save_message(db, conv.id, "assistant", reply)
+    except Exception as exc:
+        logger.error("Last-context reference save error: %s", exc)
+    try:
+        await record_usage(db, client, conv)
+    except Exception as exc:
+        logger.error("Usage tracking error (last-context reference): %s", exc)
+    return PipelineResult(text=reply)
+
+
+# ---------------------------------------------------------------------------
 # SLICE 3 — SKU / product-name pinning + match
 # ---------------------------------------------------------------------------
 
@@ -1208,7 +1551,7 @@ async def run_sku_and_name_pinning(
                         except Exception as exc:
                             logger.error("OOS pin save error: %s", exc)
                         try:
-                            await record_usage(db, client)
+                            await record_usage(db, client, conv)
                         except Exception:
                             pass
                         out.early_result = PipelineResult(text=_oos_pin_reply)
@@ -1493,7 +1836,7 @@ async def run_sku_and_name_pinning(
                 except Exception:
                     pass
                 try:
-                    await record_usage(db, client)
+                    await record_usage(db, client, conv)
                 except Exception:
                     pass
                 out.early_result = PipelineResult(text=_reask_msg)
@@ -1824,7 +2167,7 @@ async def run_sku_and_name_pinning(
                             except Exception:
                                 pass
                             try:
-                                await record_usage(db, client)
+                                await record_usage(db, client, conv)
                             except Exception:
                                 pass
                             out.early_result = PipelineResult(text=_confirm_question)
@@ -2366,7 +2709,7 @@ async def run_slot_state_machine(
             except Exception as exc:
                 logger.error("AFC cancel save error: %s", exc)
             try:
-                await record_usage(db, client)
+                await record_usage(db, client, conv)
             except Exception:
                 pass
             out.early_result = PipelineResult(text=_cancel_reply)
@@ -2460,7 +2803,7 @@ async def run_slot_state_machine(
                     except Exception as _ac_clr_exc:
                         logger.error("Address-confirm change error: %s", _ac_clr_exc)
                     try:
-                        await record_usage(db, client)
+                        await record_usage(db, client, conv)
                     except Exception:
                         pass
                     out.early_result = PipelineResult(text=_ac_ask)
@@ -2515,7 +2858,7 @@ async def run_slot_state_machine(
                     except Exception:
                         pass
                     try:
-                        await record_usage(db, client)
+                        await record_usage(db, client, conv)
                     except Exception:
                         pass
                     out.early_result = PipelineResult(text=_ac_reprompt)
@@ -2561,7 +2904,7 @@ async def run_slot_state_machine(
                 except Exception:
                     pass
                 try:
-                    await record_usage(db, client)
+                    await record_usage(db, client, conv)
                 except Exception:
                     pass
                 out.early_result = PipelineResult(text=_cap_reply)
@@ -2605,7 +2948,7 @@ async def run_slot_state_machine(
                     except Exception:
                         pass
                     try:
-                        await record_usage(db, client)
+                        await record_usage(db, client, conv)
                     except Exception:
                         pass
                     out.early_result = PipelineResult(text=_ca_ask)
@@ -2706,7 +3049,7 @@ async def run_slot_state_machine(
                     except Exception:
                         pass
                     try:
-                        await record_usage(db, client)
+                        await record_usage(db, client, conv)
                     except Exception:
                         pass
                     out.early_result = PipelineResult(text=_aq_reply)
@@ -2902,7 +3245,7 @@ async def run_slot_state_machine(
                     except Exception:
                         pass
                     try:
-                        await record_usage(db, client)
+                        await record_usage(db, client, conv)
                     except Exception:
                         pass
                     out.early_result = PipelineResult(text=_ot_boundary_mo)
@@ -2935,7 +3278,7 @@ async def run_slot_state_machine(
                 except Exception as exc:
                     logger.error("OFF_TOPIC mid-order save error: %s", exc)
                 try:
-                    await record_usage(db, client)
+                    await record_usage(db, client, conv)
                 except Exception:
                     pass
                 out.early_result = PipelineResult(text=_ot_reply)
@@ -3163,7 +3506,7 @@ async def run_slot_state_machine(
                         except Exception:
                             pass
                         try:
-                            await record_usage(db, client)
+                            await record_usage(db, client, conv)
                         except Exception:
                             pass
                         out.early_result = PipelineResult(text=_addr_rej)
@@ -3477,6 +3820,14 @@ async def _render_order_reply(
                 f"show_summary: missing required field — "
                 f"name={_name!r} addr={_addr!r} pay={_pay!r} qty={_qty!r} (conv={conv.id})"
             )
+        # Show the actual UPI ID alongside the payment method so the customer
+        # doesn't have to wait for the separate payment-instructions message
+        # to know where to send money.
+        _pay_display = _pay
+        if _pay and _pay.upper() == "UPI":
+            _upi_for_summary = getattr(client, "upi_id", None) if client else None
+            if _upi_for_summary:
+                _pay_display = f"{_pay} ({_upi_for_summary})"
         _summary_delivery = get_delivery_time_str(_prod, client) or "3–7 business days"
         _total_fmt = format_price(_total)
         # Cross-sell: most-recently-browsed different SKU
@@ -3487,13 +3838,13 @@ async def _render_order_reply(
         if _cs_name and _cs_price_fmt:
             _tpl = "order_summary_variant_crosssell" if _variant_str else "order_summary_crosssell"
             _kw: dict = dict(product=_prod_name, qty=_qty, total=_total_fmt,
-                             name=_name, address=_addr, payment=_pay,
+                             name=_name, address=_addr, payment=_pay_display,
                              delivery_time=_summary_delivery,
                              cs_name=_cs_name, cs_price=_cs_price_fmt)
         else:
             _tpl = "order_summary_variant" if _variant_str else "order_summary"
             _kw = dict(product=_prod_name, qty=_qty, total=_total_fmt,
-                       name=_name, address=_addr, payment=_pay,
+                       name=_name, address=_addr, payment=_pay_display,
                        delivery_time=_summary_delivery)
         if _variant_str:
             _kw["variant"] = _variant_str
@@ -3708,6 +4059,14 @@ async def run_summary_confirmation(
                     max_tokens=60,
                     temperature=0.3,
                 )
+                if getattr(_afc_resp, "usage", None) is not None:
+                    cost_log.log(
+                        conv.id, "IN", user_text,
+                        path="LLM", model="llama-3.1-8b-instant",
+                        in_tok=_afc_resp.usage.prompt_tokens,
+                        out_tok=_afc_resp.usage.completion_tokens,
+                        call_kind="reply",
+                    )
                 _afc_q_answer = (_afc_resp.choices[0].message.content or "").strip()
             except Exception as _afc_llm_exc:
                 logger.warning("AFC cheap-model fallback failed: %s", _afc_llm_exc)
@@ -3738,7 +4097,7 @@ async def run_summary_confirmation(
         except Exception:
             pass
         try:
-            await record_usage(db, client)
+            await record_usage(db, client, conv)
         except Exception:
             pass
         out.early_result = PipelineResult(text=ai_reply)
@@ -4807,10 +5166,16 @@ def _get_system_prompt(client) -> str | None:
     return client.gemini_system_prompt if client else None
 
 
-async def _record_usage(db, client) -> None:
-    """Record one message in UsageLog for the resolved client (no-op if client is None)."""
+async def _record_usage(db, client, conv=None) -> None:
+    """
+    Record one message in UsageLog and one conversation-activity tick toward
+    the client's plan conv_limit (no-op if client is None; conv is optional
+    since not every call site has a resolved Conversation).
+    """
     if client:
         await usage_service.record_message(db, client)
+        if conv is not None:
+            await billing_service.record_conversation_activity(db, client, conv)
 
 
 async def _get_catalogue_context(db, client, user_text: str, conv=None) -> "tuple[str | None, list]":
@@ -5105,10 +5470,16 @@ async def handle_inbound_message(ctx: InboundContext) -> PipelineResult:
 
     # ── Cancel-in-payment guard ───────────────────────────────────────────────
     # When customer is in the "payment" stage (UPI: order created as
-    # pending_payment, waiting for paid confirmation) and taps the Cancel button,
-    # neither the AFC CANCEL block (needs stored=awaiting_final_confirmation) nor
-    # the CANCEL intent block (needs stage=order_collection) fires.  Handle it
-    # here as an early return: cancel the pending_payment order and go to greeting.
+    # pending_payment, waiting for paid confirmation) — or in the
+    # "awaiting_switch_confirm" micro-stage sitting on top of it — and taps
+    # the Cancel button or sends cancel-intent free text ("I don't want this",
+    # "never mind"), neither the AFC CANCEL block (needs
+    # stored=awaiting_final_confirmation) nor the CANCEL intent block (needs
+    # stage=order_collection) fires. Handle it here as an early return: cancel
+    # the pending_payment order and go to greeting. Runs BEFORE
+    # run_switch_confirm_guard below so a cancel-intent reply to the
+    # switch-confirm prompt cancels the whole order instead of being read as
+    # an unclear yes/no on the switch itself.
     _cancel_in_payment_result = await run_cancel_in_payment_guard(
         db, conv, client, sender_phone, user_text, wamid, _stored_stage, _record_usage,
     )
@@ -5146,6 +5517,72 @@ async def handle_inbound_message(ctx: InboundContext) -> PipelineResult:
     if _dup_payment_result is not None:
         return _dup_payment_result
 
+    # ── Flow-state / context expiry (migration 0052) ─────────────────────────
+    # Runs before any flow dispatch below so a STALE in-progress flow is never
+    # resumed. Gated on actual elapsed time (_flow_state_expired), NOT merely
+    # on "a flow happens to be active" — a bare "Hi" sent seconds after an
+    # active yes/no gate (e.g. the saved-address confirm prompt) is legacy,
+    # deliberately-pinned behavior: an unclear reply to be re-prompted by that
+    # gate's own logic, not a request to abandon the flow. Only once the gap
+    # actually exceeds FLOW_STATE_TTL does a greeting get to short-circuit
+    # into a full reset. See the "Flow-state / context expiry" section above
+    # for is_greeting_only / has_reference_pronoun / _reset_flow_state / TTL
+    # definitions.
+    _expiry_now = datetime.now(timezone.utc)
+    _pre_expiry_stage = _stored_stage
+    _flow_state_at = getattr(conv, "flow_state_at", None)
+    _flow_state_expired = (
+        _flow_state_at is not None
+        and (_expiry_now - _flow_state_at) > _flow_state_ttl(client)
+    )
+    if _flow_state_expired and _pre_expiry_stage != "greeting":
+        if message.type == "text" and is_greeting_only(user_text):
+            return await _send_fresh_greeting(
+                db, conv, client, sender_phone, user_text, wamid, _record_usage,
+            )
+        logger.info(
+            "Flow-state expired: conv=%s stage=%r age=%s > ttl=%s — resetting to greeting.",
+            conv.id, _pre_expiry_stage, _expiry_now - _flow_state_at, _flow_state_ttl(client),
+        )
+        await _reset_flow_state(db, conv)
+        _stored_stage = "greeting"
+
+    # ── Mid-payment switch-confirmation resolution ───────────────────────────
+    # Runs before SKU/name-pinning and before detect_stage so a "yes"/"no"
+    # reply to the switch-confirm prompt is never mistaken for a fresh SKU
+    # search — mirrors how the existing browsing-stage interrupted_sku
+    # confirmation also runs early, before any other name-match/SKU-pin logic.
+    _switch_confirm_result = await run_switch_confirm_guard(
+        db, conv, client, sender_phone, user_text, wamid, _record_usage,
+    )
+    if _switch_confirm_result is not None:
+        return _switch_confirm_result
+
+    # Gated on _is_availability_question too, not has_reference_pronoun alone —
+    # bare "it"/"that" appear in plenty of unrelated instructions ("change it
+    # to <address>", "cancel that order") that must keep going through their
+    # own existing handlers, not get hijacked into a product-status answer.
+    if (
+        message.type == "text"
+        and not is_greeting_only(user_text)
+        and has_reference_pronoun(user_text)
+        and _is_availability_question(user_text)
+    ):
+        _last_context = getattr(conv, "last_context", None)
+        _last_context_at = getattr(conv, "last_context_at", None)
+        if (
+            _last_context
+            and _last_context_at is not None
+            and (_expiry_now - _last_context_at) <= _context_ttl(client)
+        ):
+            _context_ref_result = await _resolve_last_context_reference(
+                db, conv, client, _last_context, user_text, sender_phone, wamid, _record_usage,
+            )
+            if _context_ref_result is not None:
+                return _context_ref_result
+            # Product from the snapshot no longer resolves (e.g. deleted) —
+            # fall through to normal flow dispatch below.
+
     settings = get_settings()
     delay = random.uniform(settings.min_reply_delay, settings.max_reply_delay)
     await asyncio.sleep(delay)
@@ -5177,6 +5614,24 @@ async def handle_inbound_message(ctx: InboundContext) -> PipelineResult:
     _pick_just_resolved = _pin_outcome.pick_just_resolved
     _p03_repinned = _pin_outcome.p03_repinned
     customer_profile = None
+
+    # Single write point for last_context/last_context_at (migration 0052):
+    # every branch inside run_sku_and_name_pinning that resolves a product
+    # converges on _pin_outcome.pinned_product, so hooking here — rather than
+    # at each individual "set pending_product_sku" call site inside that
+    # function — captures every one of them without duplicating this logic.
+    if pinned_product is not None:
+        try:
+            await conversation_service.set_last_context(db, conv.id, pinned_product)
+            conv.last_context = {
+                "product_id": pinned_product.id,
+                "sku": getattr(pinned_product, "sku", None),
+                "name": pinned_product.name,
+                "price": pinned_product.price,
+            }
+            conv.last_context_at = datetime.now(timezone.utc)
+        except Exception as exc:
+            logger.error("last_context update error: %s", exc)
 
     # ── Sales pipeline: stage → focused prompt ───────────────────────────────
     # Pass previous language so ambiguous single-word replies ("yes", "COD")
@@ -5325,6 +5780,7 @@ async def handle_inbound_message(ctx: InboundContext) -> PipelineResult:
                 variant_info=variant_info,
                 conversation_history=history_dicts,
                 product_name=_shadow_product_name,
+                conversation_id=conv.id,
             )
             logger.info(
                 "SHADOW conv=%s stage_kw=%r next_slot_kw=%r router_proposals=%s",
@@ -5573,7 +6029,7 @@ RULES:
         except Exception as exc:
             logger.error("Stage update error (catalogue): %s", exc)
         try:
-            await _record_usage(db, client)
+            await _record_usage(db, client, conv)
         except Exception as exc:
             logger.error("Usage tracking error (catalogue): %s", exc)
         return PipelineResult(text=_cat_reply)
@@ -5633,7 +6089,7 @@ RULES:
         except Exception as exc:
             logger.error("Greeting stage update error: %s", exc)
         try:
-            await _record_usage(db, client)
+            await _record_usage(db, client, conv)
         except Exception as exc:
             logger.error("Usage tracking error (greeting): %s", exc)
         return PipelineResult(text=_g_reply)
@@ -5685,7 +6141,7 @@ RULES:
                 except Exception:
                     pass
                 try:
-                    await _record_usage(db, client)
+                    await _record_usage(db, client, conv)
                 except Exception:
                     pass
                 return PipelineResult(text=_boundary_idle)
@@ -5728,7 +6184,7 @@ RULES:
             except Exception as exc:
                 logger.error("OFF_TOPIC idle save error: %s", exc)
             try:
-                await _record_usage(db, client)
+                await _record_usage(db, client, conv)
             except Exception:
                 pass
             return PipelineResult(text=_ot_idle_reply)
@@ -5799,7 +6255,7 @@ RULES:
         except Exception as exc:
             logger.error("Order status save error: %s", exc)
         try:
-            await _record_usage(db, client)
+            await _record_usage(db, client, conv)
         except Exception as exc:
             logger.error("Usage tracking error (order status): %s", exc)
         _log_route(conv.id, "TEMPLATE", "order_status_short_circuit", extra=f"found={bool(_os_order)}")
@@ -5849,6 +6305,14 @@ RULES:
                     image_bytes,
                     image_catalogue_context or "",
                 )
+                if ai_reply is None:
+                    # Vision call failed (already logged in vision_service) — fall
+                    # back to text-only handling for this message instead of
+                    # crashing or stalling the order flow.
+                    ai_reply = (
+                        "Image abhi process nahi ho payi 🙏 Aap product ka naam ya "
+                        "SKU type kar denge? Turant help karta/karti hoon."
+                    )
                 original_type = "image"
 
             # Parse MATCHED_SKU prefix emitted by vision_service prompt.
@@ -5994,21 +6458,11 @@ RULES:
                         # named-product catalogue match FIRST. _build_order_aside_answer's
                         # generic "price"/"total" branches always answer with the pinned
                         # product, so they must only run as a fallback or this never fires.
-                        if client:
-                            try:
-                                _pq_all = await catalogue_service.list_products(db, client.id)
-                                _pq_scored = catalogue_service.search_products_with_scores(
-                                    _pq_all, user_text, top_k=3
-                                )
-                                _pq_pinned = getattr(conv, "pending_product_sku", None)
-                                for _pq_sc, _pq_cp in _pq_scored:
-                                    if _pq_sc >= 3 and getattr(_pq_cp, "sku", None) != _pq_pinned:
-                                        _pq_answer = (
-                                            f"{_pq_cp.name} — ₹{int(getattr(_pq_cp, 'price', 0) or 0):,}."
-                                        )
-                                        break
-                            except Exception as _pqe:
-                                logger.warning("FIX4 payment cross-product lookup failed: %s", _pqe)
+                        _pq_cp = await _find_confident_product_match(
+                            db, client, user_text, getattr(conv, "pending_product_sku", None)
+                        )
+                        if _pq_cp is not None:
+                            _pq_answer = f"{_pq_cp.name} — ₹{int(getattr(_pq_cp, 'price', 0) or 0):,}."
 
                         # Issue A: KB takes priority over the deterministic fact table.
                         if not _pq_answer and client:
@@ -6054,10 +6508,56 @@ RULES:
                             except Exception:
                                 pass
                             try:
-                                await _record_usage(db, client)
+                                await _record_usage(db, client, conv)
                             except Exception:
                                 pass
                             return PipelineResult(text=_pq_reply)
+
+                    # New-purchase / product-switch intent during payment wait
+                    # ("I want to buy X", "switch to X") — must NOT silently
+                    # overwrite the pending order, and must NOT be swallowed by
+                    # the generic reminder fallback below. Ask explicitly and
+                    # stash the candidate in interrupted_sku (the same field
+                    # the browsing-stage interrupt-switch flow uses) + a
+                    # dedicated micro-stage, resolved by run_switch_confirm_guard
+                    # on the customer's next turn.
+                    if message.type == "text" and is_purchase_intent(user_text):
+                        _switch_candidate = await _find_confident_product_match(
+                            db, client, user_text, getattr(conv, "pending_product_sku", None)
+                        )
+                        if _switch_candidate is not None:
+                            _sw_cur_name = getattr(pinned_product, "name", None) or "your current product"
+                            _sw_qty = getattr(conv, "pending_order_quantity", 1) or 1
+                            _sw_cur_price = getattr(pinned_product, "price", 0) or 0
+                            _sw_cur_total = format_price(_sw_qty * _sw_cur_price)
+                            _switch_prompt = (
+                                f"You have a pending payment for {_sw_cur_name} ({_sw_cur_total}).\n"
+                                f"Switch to {_switch_candidate.name} instead? "
+                                "Reply 'yes' to switch or 'no' to keep current order."
+                            )
+                            try:
+                                await conversation_service.update_order_field(
+                                    db, conv.id, "interrupted_sku", _switch_candidate.sku
+                                )
+                                conv.interrupted_sku = _switch_candidate.sku
+                                await conversation_service.update_stage(db, conv.id, "awaiting_switch_confirm")
+                                conv.current_stage = "awaiting_switch_confirm"
+                            except Exception as exc:
+                                logger.error("Payment-stage switch-candidate stash error: %s", exc)
+                            logger.info(
+                                "Payment-stage purchase intent: conv=%s candidate=%s — awaiting switch confirm.",
+                                conv.id, _switch_candidate.sku,
+                            )
+                            try:
+                                await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+                                await conversation_service.save_message(db, conv.id, "assistant", _switch_prompt)
+                            except Exception:
+                                pass
+                            try:
+                                await _record_usage(db, client, conv)
+                            except Exception:
+                                pass
+                            return PipelineResult(text=_switch_prompt)
 
                     # Payment stage always re-shows UPI instructions until PAID.
                     # (PAID detection is an early-return above; we only reach here
@@ -6306,7 +6806,7 @@ RULES:
                 logger.error("Customer language update error: %s", exc)
 
     try:
-        await _record_usage(db, client)
+        await _record_usage(db, client, conv)
     except Exception as exc:
         logger.error("Usage tracking error: %s", exc)
 

@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -148,6 +149,26 @@ class Conversation(Base):
     # Improvement 3: per-phone/day LLM budget (migration 0042)
     llm_calls_today: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default="0")
     llm_calls_date: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)  # UTC date "YYYY-MM-DD"
+
+    # Flow-state / context expiry (migration 0052). flow_state_at is stamped
+    # every time current_stage is persisted (see conversation_service.update_stage)
+    # so handle_inbound_message can detect a stale in-progress flow and reset it
+    # instead of resuming it. last_context/last_context_at are a SEPARATE, longer-
+    # lived snapshot of the last product referenced — kept alive across a
+    # flow_state reset so pronoun references ("that", "it", "still available?")
+    # keep resolving even after the active flow itself has gone stale.
+    flow_state_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_context: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    last_context_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # "YYYY-MM" of the last billing period in which this conversation's activity
+    # was counted toward the client's plan conv_limit (migration 0053). Prevents
+    # the same conversation being counted twice within one billing month.
+    usage_counted_period: Mapped[Optional[str]] = mapped_column(String(7), nullable=True)
 
     messages: Mapped[list[Message]] = relationship(
         "Message", back_populates="conversation", order_by="Message.created_at"

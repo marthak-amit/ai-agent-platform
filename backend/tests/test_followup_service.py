@@ -215,10 +215,13 @@ async def test_send_followups_sends_all_eligible(mock_db):
     ), patch(
         "app.services.followup_service.whatsapp_service.send_text_message",
         new=AsyncMock(return_value={"messages": [{"id": "wamid.x"}]}),
+    ), patch(
+        "app.services.followup_service.messaging_window.is_within_free_text_window",
+        new=AsyncMock(return_value=True),
     ):
         result = await send_followups(mock_db)
 
-    assert result == {"sent": 2, "failed": 0, "total_eligible": 2}
+    assert result == {"sent": 2, "failed": 0, "total_eligible": 2, "blocked_window": 0}
     assert mock_db.add.call_count == 2
     assert mock_db.commit.call_count == 2
 
@@ -254,10 +257,13 @@ async def test_send_followups_records_failure_on_whatsapp_error(mock_db):
     ), patch(
         "app.services.followup_service.whatsapp_service.send_text_message",
         new=send_mock,
+    ), patch(
+        "app.services.followup_service.messaging_window.is_within_free_text_window",
+        new=AsyncMock(return_value=True),
     ):
         result = await send_followups(mock_db)
 
-    assert result == {"sent": 1, "failed": 1, "total_eligible": 2}
+    assert result == {"sent": 1, "failed": 1, "total_eligible": 2, "blocked_window": 0}
 
     # Both attempts should still write a FollowUp row
     assert mock_db.add.call_count == 2
@@ -280,7 +286,7 @@ async def test_send_followups_returns_zeros_when_no_eligible(mock_db):
     ):
         result = await send_followups(mock_db)
 
-    assert result == {"sent": 0, "failed": 0, "total_eligible": 0}
+    assert result == {"sent": 0, "failed": 0, "total_eligible": 0, "blocked_window": 0}
     mock_db.add.assert_not_called()
     mock_db.commit.assert_not_called()
 
@@ -306,6 +312,9 @@ async def test_send_followups_correct_phone_number_used(mock_db):
     ), patch(
         "app.services.followup_service.whatsapp_service.send_text_message",
         new=wa_mock,
+    ), patch(
+        "app.services.followup_service.messaging_window.is_within_free_text_window",
+        new=AsyncMock(return_value=True),
     ):
         await send_followups(mock_db)
 
@@ -313,6 +322,40 @@ async def test_send_followups_correct_phone_number_used(mock_db):
         to_phone_number="919988776655",
         message_text="Hello!",
     )
+
+
+@pytest.mark.asyncio
+async def test_send_followups_blocks_outside_24h_window(mock_db):
+    """
+    Leads outside Meta's 24h free-text window are skipped entirely: no send
+    attempt, no FollowUp row, counted under blocked_window instead.
+    """
+    from app.services.followup_service import send_followups
+
+    lead = _make_lead(1, "919900000001")
+
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+
+    mock_db.execute.return_value = MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+    wa_mock = AsyncMock()
+
+    with patch(
+        "app.services.followup_service.get_eligible_leads",
+        new=AsyncMock(return_value=[(lead, now - timedelta(hours=30))]),
+    ), patch(
+        "app.services.followup_service.whatsapp_service.send_text_message",
+        new=wa_mock,
+    ), patch(
+        "app.services.followup_service.messaging_window.is_within_free_text_window",
+        new=AsyncMock(return_value=False),
+    ):
+        result = await send_followups(mock_db)
+
+    assert result == {"sent": 0, "failed": 0, "total_eligible": 1, "blocked_window": 1}
+    wa_mock.assert_not_called()
+    mock_db.add.assert_not_called()
+    mock_db.commit.assert_not_called()
 
 
 # ── get_stats ─────────────────────────────────────────────────────────────────

@@ -5,7 +5,7 @@ import Footer from "./components/Footer";
 
 /** Scrolls the window to the top (or to a #hash target) whenever the route changes. */
 function ScrollToTop() {
-  const { pathname, hash } = useLocation();
+  const { pathname, hash, key } = useLocation();
 
   useEffect(() => {
     if (hash) {
@@ -16,7 +16,9 @@ function ScrollToTop() {
       }
     }
     window.scrollTo(0, 0);
-  }, [pathname, hash]);
+    // `key` changes on every navigation, even re-clicking a link to the same
+    // hash, so this still scrolls when the URL string itself doesn't change.
+  }, [pathname, hash, key]);
 
   return null;
 }

@@ -100,3 +100,44 @@ async def test_send_image_message_success(mock_httpx_client, mock_settings):
     assert payload["image"]["link"] == "https://example.com/product.jpg"
     assert payload["image"]["caption"] == "Designer Lehenga — ₹6,500"
     assert payload["to"] == "919999999999"
+
+
+async def test_send_document_message_success(mock_httpx_client, mock_settings):
+    """send_document_message posts a document payload with link, filename, and caption."""
+    from app.services.whatsapp_service import send_document_message
+
+    mock_client, _ = mock_httpx_client
+
+    with patch("app.services.whatsapp_service.httpx.AsyncClient", return_value=mock_client):
+        result = await send_document_message(
+            "919999999999",
+            "https://example.com/invoices/order_invoice_1.pdf",
+            filename="Invoice-INV-1-0001.pdf",
+            caption="🧾 Invoice for order ORD-2026-0001",
+        )
+
+    assert result == {"messages": [{"id": "wamid.reply123"}]}
+
+    payload = mock_client.post.call_args[1]["json"]
+    assert payload["type"] == "document"
+    assert payload["document"]["link"] == "https://example.com/invoices/order_invoice_1.pdf"
+    assert payload["document"]["filename"] == "Invoice-INV-1-0001.pdf"
+    assert payload["document"]["caption"] == "🧾 Invoice for order ORD-2026-0001"
+    assert payload["to"] == "919999999999"
+
+
+async def test_send_document_message_without_caption_omits_key(mock_httpx_client, mock_settings):
+    """send_document_message omits the caption key entirely when none is given."""
+    from app.services.whatsapp_service import send_document_message
+
+    mock_client, _ = mock_httpx_client
+
+    with patch("app.services.whatsapp_service.httpx.AsyncClient", return_value=mock_client):
+        await send_document_message(
+            "919999999999",
+            "https://example.com/invoices/order_invoice_1.pdf",
+            filename="Invoice-INV-1-0001.pdf",
+        )
+
+    payload = mock_client.post.call_args[1]["json"]
+    assert "caption" not in payload["document"]

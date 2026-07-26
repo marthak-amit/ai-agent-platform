@@ -1,15 +1,17 @@
 import { ViteReactSSG } from "vite-react-ssg";
 import App from "./App";
 import Home from "./pages/Home";
-import SectionRedirect from "./components/SectionRedirect";
-import BookDemo from "./pages/BookDemo";
-import Terms from "./pages/Terms";
-import Privacy from "./pages/Privacy";
-import RefundPolicy from "./pages/RefundPolicy";
-import Contact from "./pages/Contact";
-import NotFound from "./pages/NotFound";
+import Features from "./pages/Features";
+import Industries from "./pages/Industries";
+import Pricing from "./pages/Pricing";
+import Faq from "./pages/Faq";
 import "./index.css";
 
+// Booking (Calendly widget) and legal boilerplate are visited far less often
+// than the core marketing pages, and aren't part of the cross-linked
+// Features/Industries/Pricing/FAQ journey — code-split them out of the main
+// bundle via vite-react-ssg's route-level `lazy`, which (unlike React.lazy)
+// is awaited during SSG so prerendered HTML is still complete.
 export const createRoot = ViteReactSSG({
   routes: [
     {
@@ -17,56 +19,34 @@ export const createRoot = ViteReactSSG({
       element: <App />,
       children: [
         { index: true, element: <Home /> },
+        { path: "pricing", element: <Pricing /> },
+        { path: "features", element: <Features /> },
+        { path: "industries", element: <Industries /> },
+        { path: "faq", element: <Faq /> },
         {
-          path: "pricing",
-          element: (
-            <SectionRedirect
-              section="pricing"
-              title="Pricing — SellerTalk24"
-              description="Simple, transparent pricing for SellerTalk24's WhatsApp & Instagram AI sales agent for fashion retailers in India."
-              path="/pricing"
-            />
-          ),
+          path: "demo",
+          lazy: async () => ({ Component: (await import("./pages/BookDemo")).default }),
         },
         {
-          path: "features",
-          element: (
-            <SectionRedirect
-              section="features"
-              title="Features — SellerTalk24"
-              description="Everything SellerTalk24's AI sales agent does for fashion retailers: selling, operations, growth, and control."
-              path="/features"
-            />
-          ),
+          path: "terms",
+          lazy: async () => ({ Component: (await import("./pages/Terms")).default }),
         },
         {
-          path: "industries",
-          element: (
-            <SectionRedirect
-              section="industries"
-              title="Industries — SellerTalk24"
-              description="SellerTalk24 is built first for fashion & apparel retailers in India, with more categories on the way."
-              path="/industries"
-            />
-          ),
+          path: "privacy",
+          lazy: async () => ({ Component: (await import("./pages/Privacy")).default }),
         },
         {
-          path: "faq",
-          element: (
-            <SectionRedirect
-              section="faq"
-              title="FAQ — SellerTalk24"
-              description="Answers to common questions about SellerTalk24: channels, setup, languages, payments, security, and plans."
-              path="/faq"
-            />
-          ),
+          path: "refund-policy",
+          lazy: async () => ({ Component: (await import("./pages/RefundPolicy")).default }),
         },
-        { path: "demo", element: <BookDemo /> },
-        { path: "terms", element: <Terms /> },
-        { path: "privacy", element: <Privacy /> },
-        { path: "refund-policy", element: <RefundPolicy /> },
-        { path: "contact", element: <Contact /> },
-        { path: "*", element: <NotFound /> },
+        {
+          path: "contact",
+          lazy: async () => ({ Component: (await import("./pages/Contact")).default }),
+        },
+        {
+          path: "*",
+          lazy: async () => ({ Component: (await import("./pages/NotFound")).default }),
+        },
       ],
     },
   ],

@@ -92,8 +92,52 @@ async def mark_order_paid(
     except Exception as exc:
         logger.warning("mark_order_paid: owner notification failed for %s: %s", order.order_number, exc)
 
+    # Invoice generation + send — best-effort, must never affect the paid
+    # transition above (which has already committed).
+    try:
+        await _generate_and_send_invoice(db, order, client)
+    except Exception as exc:
+        logger.warning("mark_order_paid: invoice generation failed for %s: %s", order.order_number, exc)
+
     logger.info("mark_order_paid: order %s → paid, stock deducted.", order.order_number)
     return True
+
+
+async def _generate_and_send_invoice(db: AsyncSession, order: Order, client) -> None:
+    """
+    Generate a branded PDF invoice for a paid/confirmed order, store it, and
+    send it as a WhatsApp document to the customer (WhatsApp orders only —
+    Instagram's customer_phone is an IGSID, not a real phone number).
+    """
+    from app.models.conversation import Conversation
+    from app.services import invoice_service, whatsapp_service
+
+    invoice_number = await invoice_service.generate_invoice_number(db, order.client_id)
+    logo_bytes = await invoice_service.load_client_logo_bytes(client)
+    pdf_bytes = invoice_service.generate_order_invoice(order, client, invoice_number, logo_bytes)
+    invoice_url = invoice_service.save_order_invoice_pdf(order.id, pdf_bytes)
+
+    order.invoice_number = invoice_number
+    order.invoice_url = invoice_url
+    await db.commit()
+
+    channel = None
+    if order.conversation_id:
+        conv_result = await db.execute(
+            select(Conversation).where(Conversation.id == order.conversation_id)
+        )
+        conv = conv_result.scalar_one_or_none()
+        channel = conv.channel if conv else None
+
+    if channel == "whatsapp":
+        await whatsapp_service.send_document_message(
+            to_phone_number=order.customer_phone,
+            document_url=invoice_url,
+            filename=f"Invoice-{invoice_number}.pdf",
+            caption=f"🧾 Invoice for order {order.order_number}",
+        )
+
+    logger.info("Invoice %s generated for order %s.", invoice_number, order.order_number)
 
 
 async def create_order(

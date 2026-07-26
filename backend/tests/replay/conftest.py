@@ -119,7 +119,10 @@ async def _clean_replay_db(replay_db_url):
         table_names = await conn.run_sync(
             lambda sync_conn: sa.inspect(sync_conn).get_table_names()
         )
-        tables = [t for t in table_names if t != "alembic_version"]
+        # `plans` is reference/config data seeded once by the migration
+        # (like alembic_version), not per-test state — truncating it would
+        # leave every test's first plan lookup querying an empty table.
+        tables = [t for t in table_names if t not in ("alembic_version", "plans")]
         if tables:
             quoted = ", ".join(f'"{t}"' for t in tables)
             await conn.execute(sa.text(f"TRUNCATE TABLE {quoted} RESTART IDENTITY CASCADE"))
@@ -339,6 +342,10 @@ async def replay_http(replay_db_url, _clean_replay_db, monkeypatch):
     monkeypatch.setattr(
         "app.services.whatsapp_service.send_button_message",
         mock.AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "app.services.whatsapp_service.send_document_message",
+        mock.AsyncMock(return_value=None),
     )
     monkeypatch.setattr(
         "app.services.gemini_service.generate_reply",

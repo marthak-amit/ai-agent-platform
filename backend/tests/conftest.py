@@ -8,6 +8,65 @@ from unittest.mock import AsyncMock, MagicMock
 
 from app.config import Settings, get_settings
 from app.db import get_db
+from app.services import plan_cache
+
+
+@pytest.fixture(autouse=True)
+def _reset_plan_cache():
+    """Clear the in-process plan cache before/after every test (it's a module global)."""
+    plan_cache.invalidate()
+    yield
+    plan_cache.invalidate()
+
+
+def make_test_plans() -> list:
+    """Build the 3 seeded Plan ORM rows in-memory, matching migration 0053's seed data."""
+    from app.models.plan import Plan
+
+    return [
+        Plan(
+            plan_id="starter", name="Starter", price_inr=1499, conv_limit=700,
+            image_quota=20, image_overage_price=8, daily_msg_limit=100,
+            channels=["whatsapp"], campaign_allowed=False, campaign_max_recipients=0,
+            campaign_monthly_limit=0, tier_order=0, description="Starter plan.",
+            is_active=True,
+        ),
+        Plan(
+            plan_id="growth", name="Growth", price_inr=3999, conv_limit=2000,
+            image_quota=50, image_overage_price=6, daily_msg_limit=300,
+            channels=["whatsapp", "instagram"], campaign_allowed=True,
+            campaign_max_recipients=500, campaign_monthly_limit=1, tier_order=1,
+            description="Growth plan.", is_active=True,
+        ),
+        Plan(
+            plan_id="pro", name="Pro", price_inr=9999, conv_limit=6000,
+            image_quota=100, image_overage_price=5, daily_msg_limit=700,
+            channels=["whatsapp", "instagram", "website"], campaign_allowed=True,
+            campaign_max_recipients=99999, campaign_monthly_limit=99999, tier_order=2,
+            description="Pro plan.", is_active=True,
+        ),
+    ]
+
+
+@pytest.fixture
+def seeded_plans():
+    """
+    Pre-populate the plan_cache module cache directly, bypassing the DB.
+
+    Any test exercising plan-dependent code (plan_service, billing_service,
+    campaign_service guards, the /plans or /admin/plans routes) should
+    request this fixture instead of mocking db.execute for plan lookups —
+    plan_cache checks its own dict before ever calling db.execute, so
+    pre-loading it here means those code paths never touch mock_db at all.
+    """
+    from datetime import datetime, timezone
+
+    plans = make_test_plans()
+    plan_cache._cache.clear()
+    for p in plans:
+        plan_cache._cache[p.plan_id] = plan_cache._plan_to_dict(p)
+    plan_cache._loaded_at = datetime.now(timezone.utc)
+    yield plan_cache._cache
 
 
 @pytest.fixture

@@ -1,18 +1,38 @@
 """
-GST invoice PDF generation service.
+Invoice PDF generation service.
 
-Generates a compliant Indian GST Tax Invoice as a PDF using ReportLab.
-GST rate is fixed at 5% (HSN 5007 — woven fabrics of silk / textile default).
+Two independent invoice styles live here:
+- generate_gst_invoice(): compliant Indian GST Tax Invoice for the Razorpay/
+  UPI QR Payment flow (app/routers/payment.py). GST rate fixed at 5%.
+- generate_order_invoice(): branded order-confirmation invoice for the
+  order_pipeline/order_service flow (app/models/order.py). No GST math —
+  formats exactly what's already captured on the Order row.
+
+Both render with ReportLab and are saved as local files under backend/invoices/,
+served via the /invoices StaticFiles mount (app/main.py).
 """
 
 from __future__ import annotations
 
 import io
+import os
 from datetime import datetime
+from typing import Optional
 
+import httpx
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import get_settings
+from app.models.order import Order
+
+# Same directory/convention as app/routers/payment.py's _INVOICES_DIR.
+_INVOICES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "invoices")
+_UPLOADS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
 
 
 def generate_gst_invoice(
@@ -143,3 +163,241 @@ def generate_gst_invoice(
     c.save()
     buffer.seek(0)
     return buffer.getvalue()
+
+
+# ── Order confirmation invoice ────────────────────────────────────────────────
+
+async def generate_invoice_number(db: AsyncSession, client_id: int) -> str:
+    """
+    Return the next sequential invoice number for a client: INV-{client_id}-{seq}.
+
+    Sequence is per-client (unlike Order.order_number, which is global) —
+    counts existing invoiced orders for this client and adds one.
+
+    Args:
+        db:        Active async DB session.
+        client_id: Owning client's primary key.
+
+    Returns:
+        Invoice number string, e.g. "INV-7-0001".
+    """
+    result = await db.execute(
+        select(func.count()).select_from(Order).where(
+            Order.client_id == client_id,
+            Order.invoice_number.isnot(None),
+        )
+    )
+    count = result.scalar_one() or 0
+    return f"INV-{client_id}-{str(count + 1).zfill(4)}"
+
+
+async def load_client_logo_bytes(client) -> Optional[bytes]:
+    """
+    Best-effort fetch of a client's logo image bytes for embedding in a PDF.
+
+    Never raises — a missing or unreachable logo must not block invoice
+    generation. Handles both locally-stored ("/uploads/...") and externally
+    hosted (http/https) logo_url values.
+
+    Args:
+        client: Client ORM instance.
+
+    Returns:
+        Raw image bytes, or None if no logo is set or it can't be loaded.
+    """
+    logo_url = getattr(client, "logo_url", None)
+    if not logo_url:
+        return None
+
+    try:
+        if logo_url.startswith("/uploads/"):
+            filepath = os.path.join(_UPLOADS_DIR, os.path.basename(logo_url))
+            if not os.path.exists(filepath):
+                return None
+            with open(filepath, "rb") as f:
+                return f.read()
+
+        if logo_url.startswith("http://") or logo_url.startswith("https://"):
+            async with httpx.AsyncClient(timeout=10.0) as http_client:
+                response = await http_client.get(logo_url)
+                response.raise_for_status()
+                return response.content
+    except Exception:
+        return None
+
+    return None
+
+
+def _variant_line(order: Order) -> str:
+    """Join non-empty variant fields into a display string, e.g. 'Blue / M'."""
+    parts = [p for p in [order.variant_color, order.variant_size, order.variant_material] if p]
+    return " / ".join(parts)
+
+
+def _payment_status_line(order: Order) -> str:
+    """Human-readable payment status, e.g. 'Cash on Delivery' or 'Paid via UPI'."""
+    if order.payment_method == "COD":
+        return "Paid on Delivery (Cash)" if order.payment_status == "paid" else "Cash on Delivery"
+    return "Paid via UPI" if order.payment_status == "paid" else f"Payment pending ({order.payment_method})"
+
+
+def generate_order_invoice(
+    order: Order,
+    client,
+    invoice_number: str,
+    logo_bytes: Optional[bytes] = None,
+) -> bytes:
+    """
+    Generate a branded order-confirmation invoice PDF and return it as bytes.
+
+    Formats data already captured on the Order/Client rows — no GST math,
+    no new data entry. Delivery is always shown as Free (no delivery-fee
+    concept exists in this platform today). The itemized table has exactly
+    one row, matching the Order model (one product per order).
+
+    Args:
+        order:          Order ORM instance (paid or COD-confirmed).
+        client:         Owning Client ORM instance (for branding/footer).
+        invoice_number: Pre-generated sequential number, e.g. "INV-7-0001".
+        logo_bytes:     Optional raw logo image bytes (see load_client_logo_bytes).
+
+    Returns:
+        PDF content as bytes.
+    """
+    from app.services.delivery_service import get_delivery_time_str
+    from app.services.language_templates import format_price
+
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+
+    # ── Header: logo + business info ──────────────────────────────────────────
+    text_x = 50
+    if logo_bytes:
+        try:
+            logo_reader = ImageReader(io.BytesIO(logo_bytes))
+            c.drawImage(
+                logo_reader, 50, height - 105, width=55, height=55,
+                preserveAspectRatio=True, mask="auto",
+            )
+            text_x = 115
+        except Exception:
+            text_x = 50
+
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(text_x, height - 50, client.business_name or "")
+    c.setFont("Helvetica", 10)
+    y_header = height - 68
+    if getattr(client, "business_address", None):
+        c.drawString(text_x, y_header, client.business_address)
+        y_header -= 14
+    if getattr(client, "gst_number", None):
+        c.drawString(text_x, y_header, f"GSTIN: {client.gst_number}")
+
+    # ── Divider ───────────────────────────────────────────────────────────────
+    c.setStrokeColor(colors.HexColor("#4F46E5"))
+    c.setLineWidth(1.5)
+    c.line(50, height - 118, width - 50, height - 118)
+
+    # ── Invoice title + number ────────────────────────────────────────────────
+    c.setFont("Helvetica-Bold", 14)
+    c.setFillColor(colors.HexColor("#4F46E5"))
+    c.drawString(50, height - 138, "INVOICE")
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica", 10)
+    c.drawString(380, height - 138, f"Invoice #: {invoice_number}")
+    c.drawString(380, height - 153, f"Order #: {order.order_number}")
+    order_date = order.created_at.strftime("%d/%m/%Y") if order.created_at else datetime.now().strftime("%d/%m/%Y")
+    c.drawString(380, height - 168, f"Date: {order_date}")
+
+    # ── Bill To ───────────────────────────────────────────────────────────────
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(50, height - 185, "Bill To:")
+    c.setFont("Helvetica", 10)
+    c.drawString(50, height - 200, order.customer_name)
+    c.drawString(50, height - 215, order.customer_phone)
+    c.drawString(50, height - 230, (order.delivery_address or "")[:70])
+
+    # ── Table header ─────────────────────────────────────────────────────────
+    y = height - 265
+    c.setFillColor(colors.HexColor("#F3F4F6"))
+    c.rect(50, y - 5, width - 100, 20, fill=1, stroke=0)
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(55,  y + 5, "Product")
+    c.drawString(255, y + 5, "Variant")
+    c.drawString(340, y + 5, "Qty")
+    c.drawString(380, y + 5, "Unit Price")
+    c.drawString(470, y + 5, "Total")
+
+    # ── Table row (Order = one product per row) ──────────────────────────────
+    y -= 20
+    c.setFont("Helvetica", 10)
+    c.drawString(55,  y, order.product_name[:32])
+    c.drawString(255, y, _variant_line(order)[:20] or "—")
+    c.drawString(340, y, str(order.quantity))
+    c.drawString(380, y, format_price(order.unit_price))
+    c.drawString(470, y, format_price(order.total_amount))
+
+    # ── Totals ────────────────────────────────────────────────────────────────
+    y -= 18
+    c.setLineWidth(0.5)
+    c.line(360, y + 4, width - 50, y + 4)
+    y -= 14
+    c.setFont("Helvetica", 10)
+    c.drawString(370, y, "Subtotal:")
+    c.drawString(470, y, format_price(order.total_amount))
+    y -= 16
+    c.drawString(370, y, "Delivery:")
+    c.drawString(470, y, "Free")
+    y -= 6
+    c.line(360, y, width - 50, y)
+    y -= 16
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(370, y, "TOTAL:")
+    c.drawString(470, y, format_price(order.total_amount))
+
+    # ── Delivery estimate + payment status ────────────────────────────────────
+    y -= 30
+    c.setFont("Helvetica", 10)
+    c.drawString(50, y, f"Estimated delivery: {get_delivery_time_str(client=client)}")
+    y -= 16
+    c.drawString(50, y, f"Payment status: {_payment_status_line(order)}")
+
+    # ── Footer ────────────────────────────────────────────────────────────────
+    footer_contact = getattr(client, "phone", None) or getattr(client, "whatsapp_number", None)
+    if footer_contact:
+        c.setFont("Helvetica", 9)
+        c.drawString(50, 55, f"Contact: {footer_contact}")
+    c.setFont("Helvetica-Bold", 9)
+    c.setFillColor(colors.HexColor("#6B7280"))
+    c.drawString(50, 40, "This is a computer-generated invoice and does not require a signature.")
+
+    c.save()
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def save_order_invoice_pdf(order_id: int, pdf_bytes: bytes) -> str:
+    """
+    Write an order-invoice PDF to local disk and return its absolute URL.
+
+    Uses the same backend/invoices/ directory as the Payment/GST invoice
+    flow, with a distinct filename prefix to avoid collisions.
+
+    Args:
+        order_id:  Order row ID (used in the filename).
+        pdf_bytes: PDF content to write.
+
+    Returns:
+        Absolute URL built from settings.backend_public_url, e.g.
+        "https://app.example.com/invoices/order_invoice_42.pdf".
+    """
+    os.makedirs(_INVOICES_DIR, exist_ok=True)
+    filename = f"order_invoice_{order_id}.pdf"
+    filepath = os.path.join(_INVOICES_DIR, filename)
+    with open(filepath, "wb") as f:
+        f.write(pdf_bytes)
+
+    settings = get_settings()
+    return f"{settings.backend_public_url}/invoices/{filename}"

@@ -17,50 +17,57 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.campaign import Campaign
 from app.models.campaign_recipient import CampaignRecipient
-from app.services import whatsapp_service
+from app.services import plan_cache, whatsapp_service
 
 logger = logging.getLogger(__name__)
 
 # ── Plan limits ───────────────────────────────────────────────────────────────
-
-_PLAN_LIMITS: dict[str, dict] = {
-    "starter": {"allowed": False, "max_recipients": 0,   "monthly_campaigns": 0},
-    "growth":  {"allowed": True,  "max_recipients": 500,  "monthly_campaigns": 1},
-    "pro":     {"allowed": True,  "max_recipients": 99999, "monthly_campaigns": 99999},
-}
+# Campaign caps live on the `plans` table (campaign_allowed/campaign_max_
+# recipients/campaign_monthly_limit) — read through plan_cache so admin
+# updates take effect without a redeploy.
 
 
-def check_plan_allows_campaigns(plan_slug: str) -> None:
+async def _campaign_limits(db: AsyncSession, plan_slug: str) -> dict:
+    """Return the campaign-related fields of a plan, defaulting to starter."""
+    plan = await plan_cache.get_plan(db, plan_slug) or await plan_cache.get_plan(db, "starter")
+    return plan
+
+
+async def check_plan_allows_campaigns(db: AsyncSession, plan_slug: str) -> None:
     """
     Raise ValueError if the plan does not allow campaigns.
 
     Args:
+        db:        Active async DB session.
         plan_slug: Client's current plan slug.
 
     Raises:
         ValueError: Descriptive message for the HTTP layer to forward.
     """
-    limits = _PLAN_LIMITS.get(plan_slug, _PLAN_LIMITS["starter"])
-    if not limits["allowed"]:
+    limits = await _campaign_limits(db, plan_slug)
+    if not limits["campaign_allowed"]:
         raise ValueError(
             "Broadcast campaigns require the Growth or Pro plan. "
             "Upgrade your plan to send campaigns."
         )
 
 
-def check_recipient_limit(plan_slug: str, recipient_count: int) -> None:
+async def check_recipient_limit(
+    db: AsyncSession, plan_slug: str, recipient_count: int
+) -> None:
     """
     Raise ValueError if recipient_count exceeds the plan's per-campaign cap.
 
     Args:
+        db:              Active async DB session.
         plan_slug:       Client's current plan slug.
         recipient_count: Number of recipients to add.
 
     Raises:
         ValueError: If the count would exceed the plan's max_recipients.
     """
-    limits = _PLAN_LIMITS.get(plan_slug, _PLAN_LIMITS["starter"])
-    cap = limits["max_recipients"]
+    limits = await _campaign_limits(db, plan_slug)
+    cap = limits["campaign_max_recipients"]
     if cap >= 99999:
         return  # Pro — unlimited
     if recipient_count > cap:
@@ -71,15 +78,15 @@ def check_recipient_limit(plan_slug: str, recipient_count: int) -> None:
 
 
 async def check_monthly_campaign_limit(
-    plan_slug: str, client_id: int, db: AsyncSession
+    db: AsyncSession, plan_slug: str, client_id: int
 ) -> None:
     """
     Raise ValueError if the client has already hit their monthly campaign quota.
 
     Args:
+        db:        Active async DB session.
         plan_slug: Client's current plan slug.
         client_id: Client row ID.
-        db:        Active async DB session.
 
     Raises:
         ValueError: If monthly quota is exhausted.
@@ -87,8 +94,8 @@ async def check_monthly_campaign_limit(
     from sqlalchemy import func
     from datetime import date
 
-    limits = _PLAN_LIMITS.get(plan_slug, _PLAN_LIMITS["starter"])
-    monthly_cap = limits["monthly_campaigns"]
+    limits = await _campaign_limits(db, plan_slug)
+    monthly_cap = limits["campaign_monthly_limit"]
     if monthly_cap >= 99999:
         return  # Pro — unlimited
 

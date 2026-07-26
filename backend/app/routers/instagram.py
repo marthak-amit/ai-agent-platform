@@ -192,7 +192,7 @@ async def receive_instagram_event(
         )
 
     plan_slug = await _get_active_client_plan(db)
-    if not plan_service.plan_allows_channel(plan_slug, "instagram"):
+    if not await plan_service.plan_allows_channel(db, plan_slug, "instagram"):
         logger.info(
             "Instagram webhook skipped: plan '%s' does not include Instagram.", plan_slug
         )

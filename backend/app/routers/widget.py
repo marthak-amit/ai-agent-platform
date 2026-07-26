@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.models.client import Client
 from app.services import (
+    billing_service,
     catalogue_service,
     conversation_service,
     gemini_service,
@@ -96,19 +97,20 @@ async def _get_client_by_api_key(db: AsyncSession, api_key: str) -> Client:
     return client
 
 
-def _require_website_plan(client: Client) -> None:
+async def _require_website_plan(db: AsyncSession, client: Client) -> None:
     """
     Raise 403 if the client's plan does not include the website channel.
 
     The website widget is available on the Pro plan only.
 
     Args:
+        db:     Active async DB session.
         client: Resolved Client instance.
 
     Raises:
         HTTPException 403: If plan does not allow "website".
     """
-    if not plan_service.plan_allows_channel(client.plan_slug, "website"):
+    if not await plan_service.plan_allows_channel(db, client.plan_slug, "website"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
@@ -147,7 +149,7 @@ async def widget_message(
         HTTPException 403: If the client's plan does not include website.
     """
     client = await _get_client_by_api_key(db, body.api_key)
-    _require_website_plan(client)
+    await _require_website_plan(db, client)
 
     session_id = body.session_id or str(uuid.uuid4())
 
@@ -182,6 +184,7 @@ async def widget_message(
 
     try:
         await usage_service.record_message(db, client)
+        await billing_service.record_conversation_activity(db, client, conv)
     except Exception as exc:
         logger.error("Usage tracking error on widget: %s", exc)
 

@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://sellertalk24.com/sitemap.xml

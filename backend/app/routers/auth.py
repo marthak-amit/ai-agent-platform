@@ -14,6 +14,7 @@ header on every protected request.
 
 import logging
 import re
+from datetime import date
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -25,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.models.client import Client
 from app.models.user import User
-from app.services import auth_service
+from app.services import auth_service, plan_cache
 
 
 def _generate_slug(business_name: str) -> str:
@@ -347,13 +348,19 @@ async def register(
         suffix += 1
 
     hashed_password = auth_service.hash_password(body.password)
+    starter_plan = await plan_cache.get_plan(db, "starter")
     client = Client(
         email=body.email,
         hashed_password=hashed_password,
         business_name=body.business_name,
         phone=body.phone,
         plan_slug="starter",
-        daily_message_limit=100,
+        daily_message_limit=starter_plan["daily_msg_limit"],
+        plan_conv_limit_snapshot=starter_plan["conv_limit"],
+        plan_price_snapshot=starter_plan["price_inr"],
+        plan_image_quota_snapshot=starter_plan["image_quota"],
+        plan_image_overage_price_snapshot=starter_plan["image_overage_price"],
+        billing_cycle_start=date.today(),
         catalogue_slug=slug,
     )
     db.add(client)

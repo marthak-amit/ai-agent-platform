@@ -20,16 +20,16 @@ export default function Footer() {
           <div>
             <h3 className="text-sm font-semibold text-gray-900">Product</h3>
             <ul className="mt-3 space-y-2 text-sm text-gray-600">
-              <li><Link to="/#features" className="hover:text-brand-primaryDark">Features</Link></li>
-              <li><Link to="/#pricing" className="hover:text-brand-primaryDark">Pricing</Link></li>
-              <li><Link to="/#industries" className="hover:text-brand-primaryDark">Industries</Link></li>
+              <li><Link to="/features" className="hover:text-brand-primaryDark">Features</Link></li>
+              <li><Link to="/pricing" className="hover:text-brand-primaryDark">Pricing</Link></li>
+              <li><Link to="/industries" className="hover:text-brand-primaryDark">Industries</Link></li>
             </ul>
           </div>
 
           <div>
             <h3 className="text-sm font-semibold text-gray-900">Company</h3>
             <ul className="mt-3 space-y-2 text-sm text-gray-600">
-              <li><Link to="/#faq" className="hover:text-brand-primaryDark">FAQ</Link></li>
+              <li><Link to="/faq" className="hover:text-brand-primaryDark">FAQ</Link></li>
               <li><Link to="/demo" className="hover:text-brand-primaryDark">Book a Demo</Link></li>
               <li><Link to="/contact" className="hover:text-brand-primaryDark">Contact</Link></li>
             </ul>

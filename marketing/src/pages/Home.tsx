@@ -1,147 +1,27 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { motion, useReducedMotion } from "framer-motion";
-import SEO from "../components/SEO";
+import SEO, { SITE_URL } from "../components/SEO";
 import CTAButton from "../components/CTAButton";
 import ChatMockup from "../components/ChatMockup";
 import FeatureCard from "../components/FeatureCard";
 import FAQItem from "../components/FAQItem";
-import PricingCard, { type PricingPlan } from "../components/PricingCard";
+import PricingCard from "../components/PricingCard";
 import BillingToggle, { type BillingCycle } from "../components/BillingToggle";
 import Reveal from "../components/motion/Reveal";
 import { StaggerGroup, StaggerItem } from "../components/motion/StaggerGroup";
 import { DASHBOARD_SIGNUP_URL } from "../config";
+import { steps, featureGroups, monthlyPlans, yearlyPlans, faqs } from "../content/site";
 
-const steps = [
-  {
-    title: "Customer messages",
-    description: "A shopper messages your WhatsApp or Instagram with a question or a product they saw.",
-  },
-  {
-    title: "AI engages & shows products",
-    description: "SellerTalk24 replies instantly, understands what they're looking for, and shares matching products from your catalogue.",
-  },
-  {
-    title: "Customer picks size/color & confirms",
-    description: "The AI walks them through variants — size, color, material — and confirms what they want to order.",
-  },
-  {
-    title: "Order placed, paid & tracked",
-    description: "Order details are captured, payment is collected (UPI/COD/bank transfer), and dispatch status is sent automatically.",
-  },
-];
-
-const featureGroups = [
-  {
-    title: "Selling",
-    items: [
-      { title: "Catalogue browsing in chat", description: "Customers explore your products without leaving WhatsApp or Instagram." },
-      { title: "Variant selection", description: "Color, size, and material are handled conversationally, just like talking to a shop assistant." },
-      { title: "Full in-chat order collection", description: "Quantity, address, and order details captured directly in the conversation." },
-      { title: "Flexible payments", description: "COD, UPI, and bank transfer — the payment methods Indian shoppers already use." },
-    ],
-  },
-  {
-    title: "Operations",
-    items: [
-      { title: "Order status tracking", description: "Customers can check where their order is, without you lifting a finger." },
-      { title: "Dispatch notifications", description: "Automatic updates the moment an order ships." },
-      { title: "Daily owner briefing", description: "A daily email summarizing new orders, leads, and conversations." },
-    ],
-  },
-  {
-    title: "Growth",
-    items: [
-      { title: "Follow-ups & re-engagement", description: "Customers who browsed but didn't order get a gentle nudge back." },
-      { title: "WhatsApp broadcast campaigns", description: "Announce new arrivals or offers to your customer list." },
-      { title: "Multi-channel reach", description: "One catalogue, sold consistently across WhatsApp and Instagram." },
-    ],
-  },
-  {
-    title: "Control",
-    items: [
-      { title: "Human takeover", description: "Step into any conversation when a customer needs a real person." },
-      { title: "Abuse protection", description: "Built-in safeguards keep conversations on-topic and protect against misuse, without you needing to configure anything." },
-    ],
-  },
-];
-
-const monthlyPlans: PricingPlan[] = [
-  {
-    name: "Starter",
-    price: "₹1,499",
-    cadence: "/mo",
-    limit: "~800 conversations/mo",
-    channels: "Instagram",
-    badges: ["IG"],
-    features: ["Order flow (cart → address → confirm)"],
-  },
-  {
-    name: "Growth",
-    price: "₹3,499",
-    cadence: "/mo",
-    limit: "~2,000 conversations/mo",
-    channels: "WhatsApp + Instagram",
-    badges: ["WA", "IG"],
-    features: ["Order flow (cart → address → confirm)", "Broadcast / marketing templates"],
-    highlighted: true,
-  },
-  {
-    name: "Pro",
-    price: "₹6,999",
-    cadence: "/mo",
-    limit: "~6,000 conversations/mo",
-    channels: "WhatsApp + Instagram + Website widget",
-    badges: ["WA", "IG"],
-    features: ["Order flow (cart → address → confirm)", "Broadcast / marketing templates", "Priority support"],
-  },
-];
-
-const yearlyPlans: PricingPlan[] = monthlyPlans.map((plan) => ({
-  ...plan,
-  price: "Contact us",
-  cadence: undefined,
-}));
-
-const faqs = [
-  {
-    question: "What is SellerTalk24?",
-    answer:
-      "SellerTalk24 is an AI sales agent for fashion retailers in India. It runs inside WhatsApp and Instagram, helping customers browse your catalogue, pick variants like size and color, and place orders — all in chat.",
-  },
-  {
-    question: "Which channels does it support?",
-    answer:
-      "WhatsApp and Instagram are both live today. A website chat widget is also available on the Pro plan for stores that want chat on their own site.",
-  },
-  {
-    question: "How does setup work?",
-    answer:
-      "WhatsApp onboarding is assisted — our team sets up WhatsApp for you by configuring a Meta System User token on your behalf, rather than an instant self-serve connect button. We'll guide you through it during onboarding.",
-  },
-  {
-    question: "What languages does it support?",
-    answer: "SellerTalk24 can converse in English, Hindi, and Hinglish.",
-  },
-  {
-    question: "What payment methods are supported?",
-    answer: "Cash on delivery (COD), UPI, and bank transfer — set up per your preferences.",
-  },
-  {
-    question: "Is my data secure?",
-    answer:
-      "Conversations and order data are stored securely and scoped to your account only. We don't share your catalogue or customer data across merchants.",
-  },
-  {
-    question: "How do plans get activated?",
-    answer:
-      "Plan upgrades are currently activated manually by our team during onboarding rather than self-serve billing — book a demo and we'll get you set up on the right plan.",
-  },
-  {
-    question: "Who is SellerTalk24 for?",
-    answer:
-      "Fashion and apparel retailers in India selling over WhatsApp and Instagram — from independent boutiques to multi-store fashion brands.",
-  },
-];
+const organizationJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "Organization",
+  name: "SellerTalk24",
+  url: SITE_URL,
+  logo: `${SITE_URL}/og-image.png`,
+  description:
+    "AI sales agent for WhatsApp, Instagram, and website chat, built for fashion retailers in India.",
+};
 
 export default function Home() {
   const [cycle, setCycle] = useState<BillingCycle>("monthly");
@@ -155,6 +35,7 @@ export default function Home() {
         title="SellerTalk24 — Turn WhatsApp & Instagram Chats Into Orders for Fashion Brands"
         description="SellerTalk24 is an AI sales agent for Indian fashion retailers that browses, sells, and collects orders directly inside WhatsApp and Instagram chats."
         path="/"
+        jsonLd={organizationJsonLd}
       />
 
       {/* Hero */}
@@ -267,7 +148,11 @@ export default function Home() {
             <span className="text-xs font-semibold uppercase tracking-widest text-brand-primaryDark">Features</span>
             <h2 className="mt-2 text-3xl font-bold tracking-tight text-gray-900">Everything SellerTalk24 does</h2>
             <p className="mx-auto mt-4 max-w-xl text-gray-600">
-              Built specifically for how fashion retail actually sells in India.
+              Built specifically for how fashion retail actually sells in India. See the{" "}
+              <Link to="/features" className="font-semibold text-brand-primaryDark underline">
+                full feature breakdown
+              </Link>
+              .
             </p>
           </Reveal>
 
@@ -278,7 +163,7 @@ export default function Home() {
                 <StaggerGroup className="mt-6 grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
                   {group.items.map((item) => (
                     <StaggerItem key={item.title}>
-                      <FeatureCard title={item.title} description={item.description} />
+                      <FeatureCard title={item.title} description={item.description} headingLevel="h4" />
                     </StaggerItem>
                   ))}
                 </StaggerGroup>
@@ -354,7 +239,11 @@ export default function Home() {
             <h2 className="mt-2 text-3xl font-bold tracking-tight text-gray-900">Built for fashion retail, first</h2>
             <p className="mx-auto mt-4 max-w-2xl text-gray-600">
               SellerTalk24 is purpose-built for how Indian fashion brands sell — variant-heavy
-              catalogues, WhatsApp-first customers, and UPI/COD payments.
+              catalogues, WhatsApp-first customers, and UPI/COD payments. See{" "}
+              <Link to="/industries" className="font-semibold text-brand-primaryDark underline">
+                all supported industries
+              </Link>
+              .
             </p>
           </Reveal>
 
@@ -394,18 +283,22 @@ export default function Home() {
       </section>
 
       {/* Pricing */}
-      <section id="pricing" className="scroll-mt-24 mx-auto max-w-7xl px-4 py-20 sm:px-6 lg:px-8">
+      <section id="pricing" className="scroll-mt-24 mx-auto max-w-7xl px-4 pb-20 pt-10 sm:px-6 lg:px-8">
         <Reveal as="div" className="text-center">
           <span className="text-xs font-semibold uppercase tracking-widest text-brand-primaryDark">Pricing</span>
           <h2 className="mt-2 text-3xl font-bold tracking-tight text-gray-900">Simple, transparent pricing</h2>
         </Reveal>
         <Reveal as="p" className="mx-auto mt-3 max-w-xl text-center text-sm text-gray-600" delay={0.05}>
-          Plans are activated by our team during onboarding.
+          Plans are activated by our team during onboarding. See the{" "}
+          <Link to="/pricing" className="font-semibold text-brand-primaryDark underline">
+            full pricing page
+          </Link>{" "}
+          for plan comparisons.
         </Reveal>
         <Reveal as="div" className="mt-6" delay={0.1}>
           <BillingToggle value={cycle} onChange={setCycle} />
         </Reveal>
-        <StaggerGroup className="mt-12 grid gap-6 sm:grid-cols-3">
+        <StaggerGroup className="mt-8 grid gap-6 sm:grid-cols-3">
           {plans.map((plan) => (
             <StaggerItem key={plan.name}>
               <PricingCard plan={plan} />
@@ -413,7 +306,7 @@ export default function Home() {
           ))}
         </StaggerGroup>
 
-        <div className="mt-10 rounded-2xl border border-gray-200 bg-gray-50 p-8 text-center">
+        <div className="mt-6 rounded-2xl border border-gray-200 bg-gray-50 p-8 text-center">
           <h3 className="text-xl font-semibold text-gray-900">Enterprise</h3>
           <p className="mt-2 text-gray-600">Custom message volume, dedicated onboarding, and priority support.</p>
           <CTAButton to="/demo" className="mt-6">
@@ -421,7 +314,7 @@ export default function Home() {
           </CTAButton>
         </div>
 
-        <p className="mt-8 text-center text-sm text-gray-500">
+        <p className="mt-6 text-center text-sm text-gray-500">
           Billing is currently set up manually by our team — plan upgrades are not yet self-serve.
         </p>
       </section>
@@ -432,6 +325,13 @@ export default function Home() {
           <Reveal as="div" className="text-center">
             <span className="text-xs font-semibold uppercase tracking-widest text-brand-primaryDark">FAQ</span>
             <h2 className="mt-2 text-3xl font-bold tracking-tight text-gray-900">Frequently asked questions</h2>
+            <p className="mx-auto mt-4 max-w-xl text-gray-600">
+              More questions? Visit the{" "}
+              <Link to="/faq" className="font-semibold text-brand-primaryDark underline">
+                full FAQ page
+              </Link>
+              .
+            </p>
           </Reveal>
           <StaggerGroup className="mt-10">
             {faqs.map((faq) => (

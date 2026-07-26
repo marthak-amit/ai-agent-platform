@@ -2,9 +2,20 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Self-hosted, latin-subset variable font (weights 400-800) — replaces the
+   Google Fonts CSS/gstatic round-trip. font-display: swap avoids invisible
+   text while it loads. */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url("/fonts/inter-var-latin.woff2") format("woff2");
+}
+
 :root {
   --color-primary: #25D366;
-  --color-primary-dark: #0F8B4C;
+  --color-primary-dark: #0C6F3D;
   --color-secondary: #1A2E44;
   --color-bg: #F7F9F8;
   --color-bg-dark: #1F2937;

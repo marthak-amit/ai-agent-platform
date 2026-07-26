@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     secret_key: str = "change-me-in-production"
     admin_secret_key: str = "change-me-admin-secret"
     catalogue_base_url: str = "https://agentlyai.in/shop"
+    # This backend's own publicly reachable base URL (e.g. the Railway domain),
+    # used to build fully-qualified links (invoice PDFs) that Meta's WhatsApp
+    # API can fetch. Empty in local dev — invoice links simply won't be
+    # fetchable by WhatsApp until this is set.
+    backend_public_url: str = ""
     # AgentlyAI team's own WhatsApp number (E.164, no '+'), notified on new
     # marketing-site demo leads. Unset = notification silently skipped.
     internal_lead_notify_number: str = ""

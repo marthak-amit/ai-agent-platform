@@ -5,9 +5,12 @@ interface FeatureCardProps {
   icon?: ReactNode;
   title: string;
   description: string;
+  /** Heading level for `title`, so it nests correctly under the group heading in each page's outline. Defaults to h3. */
+  headingLevel?: "h3" | "h4";
 }
 
-export default function FeatureCard({ icon, title, description }: FeatureCardProps) {
+export default function FeatureCard({ icon, title, description, headingLevel = "h3" }: FeatureCardProps) {
+  const Heading = headingLevel;
   return (
     <motion.div
       className="rounded-2xl bg-white p-6 shadow-sm shadow-gray-900/5 ring-1 ring-gray-900/5"
@@ -19,7 +22,7 @@ export default function FeatureCard({ icon, title, description }: FeatureCardPro
           {icon}
         </div>
       )}
-      <h3 className="text-base font-semibold text-gray-900">{title}</h3>
+      <Heading className="text-base font-semibold text-gray-900">{title}</Heading>
       <p className="mt-2 text-sm text-gray-600">{description}</p>
     </motion.div>
   );

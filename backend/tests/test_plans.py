@@ -1,8 +1,13 @@
 """
 Tests for app/services/plan_service.py and app/routers/plans.py.
+
+Plan config now lives in the `plans` DB table (see app/models/plan.py) and
+is read through plan_cache — tests use the `seeded_plans` fixture to
+pre-load the cache with the standard starter/growth/pro rows, bypassing
+the DB entirely for plan lookups.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -12,139 +17,144 @@ from app.services import plan_service
 
 # ── plan_service unit tests ───────────────────────────────────────────────────
 
-def test_list_plans_returns_three_plans():
+async def test_list_plans_returns_three_plans(seeded_plans, mock_db):
     """list_plans returns all three plans in tier order."""
-    plans = plan_service.list_plans()
+    plans = await plan_service.list_plans(mock_db)
     assert len(plans) == 3
-    assert [p["slug"] for p in plans] == ["starter", "growth", "pro"]
+    assert [p["plan_id"] for p in plans] == ["starter", "growth", "pro"]
 
 
-def test_plan_prices():
+async def test_plan_prices(seeded_plans, mock_db):
     """Each plan has the correct INR price."""
-    plans = {p["slug"]: p for p in plan_service.list_plans()}
-    assert plans["starter"]["price_inr"] == 999
-    assert plans["growth"]["price_inr"] == 1999
-    assert plans["pro"]["price_inr"] == 3999
+    plans = {p["plan_id"]: p for p in await plan_service.list_plans(mock_db)}
+    assert plans["starter"]["price_inr"] == 1499
+    assert plans["growth"]["price_inr"] == 3999
+    assert plans["pro"]["price_inr"] == 9999
 
 
-def test_plan_daily_limits():
+async def test_plan_conv_and_image_limits(seeded_plans, mock_db):
+    """Each plan enforces the correct conv_limit, image_quota, and overage rate."""
+    plans = {p["plan_id"]: p for p in await plan_service.list_plans(mock_db)}
+    assert (plans["starter"]["conv_limit"], plans["starter"]["image_quota"], plans["starter"]["image_overage_price"]) == (700, 20, 8)
+    assert (plans["growth"]["conv_limit"], plans["growth"]["image_quota"], plans["growth"]["image_overage_price"]) == (2000, 50, 6)
+    assert (plans["pro"]["conv_limit"], plans["pro"]["image_quota"], plans["pro"]["image_overage_price"]) == (6000, 100, 5)
+
+
+async def test_plan_daily_limits(seeded_plans, mock_db):
     """Each plan enforces the correct daily message limit."""
-    plans = {p["slug"]: p for p in plan_service.list_plans()}
+    plans = {p["plan_id"]: p for p in await plan_service.list_plans(mock_db)}
     assert plans["starter"]["daily_msg_limit"] == 100
     assert plans["growth"]["daily_msg_limit"] == 300
     assert plans["pro"]["daily_msg_limit"] == 700
 
 
-def test_plan_channels():
+async def test_plan_channels(seeded_plans, mock_db):
     """Starter has WhatsApp only; growth adds Instagram; pro adds website."""
-    plans = {p["slug"]: p for p in plan_service.list_plans()}
+    plans = {p["plan_id"]: p for p in await plan_service.list_plans(mock_db)}
     assert plans["starter"]["channels"] == ["whatsapp"]
     assert set(plans["growth"]["channels"]) == {"whatsapp", "instagram"}
     assert set(plans["pro"]["channels"]) == {"whatsapp", "instagram", "website"}
 
 
-def test_get_plan_returns_dict():
-    """get_plan returns the correct plan dict for known slugs."""
-    assert plan_service.get_plan("starter")["name"] == "Starter"
-    assert plan_service.get_plan("growth")["name"] == "Growth"
-    assert plan_service.get_plan("pro")["name"] == "Pro"
+async def test_get_plan_returns_dict(seeded_plans, mock_db):
+    """get_plan returns the correct plan dict for known plan ids."""
+    assert (await plan_service.get_plan(mock_db, "starter"))["name"] == "Starter"
+    assert (await plan_service.get_plan(mock_db, "growth"))["name"] == "Growth"
+    assert (await plan_service.get_plan(mock_db, "pro"))["name"] == "Pro"
 
 
-def test_get_plan_unknown_returns_none():
-    """get_plan returns None for unknown slugs."""
-    assert plan_service.get_plan("enterprise") is None
+async def test_get_plan_unknown_returns_none(seeded_plans, mock_db):
+    """get_plan returns None for unknown plan ids."""
+    assert await plan_service.get_plan(mock_db, "enterprise") is None
 
 
 # ── plan_allows_channel ───────────────────────────────────────────────────────
 
-def test_starter_allows_whatsapp_only():
+async def test_starter_allows_whatsapp_only(seeded_plans, mock_db):
     """Starter plan allows whatsapp but blocks instagram and website."""
-    assert plan_service.plan_allows_channel("starter", "whatsapp") is True
-    assert plan_service.plan_allows_channel("starter", "instagram") is False
-    assert plan_service.plan_allows_channel("starter", "website") is False
+    assert await plan_service.plan_allows_channel(mock_db, "starter", "whatsapp") is True
+    assert await plan_service.plan_allows_channel(mock_db, "starter", "instagram") is False
+    assert await plan_service.plan_allows_channel(mock_db, "starter", "website") is False
 
 
-def test_growth_allows_whatsapp_and_instagram():
+async def test_growth_allows_whatsapp_and_instagram(seeded_plans, mock_db):
     """Growth plan allows whatsapp and instagram but blocks website."""
-    assert plan_service.plan_allows_channel("growth", "whatsapp") is True
-    assert plan_service.plan_allows_channel("growth", "instagram") is True
-    assert plan_service.plan_allows_channel("growth", "website") is False
+    assert await plan_service.plan_allows_channel(mock_db, "growth", "whatsapp") is True
+    assert await plan_service.plan_allows_channel(mock_db, "growth", "instagram") is True
+    assert await plan_service.plan_allows_channel(mock_db, "growth", "website") is False
 
 
-def test_pro_allows_all_channels():
+async def test_pro_allows_all_channels(seeded_plans, mock_db):
     """Pro plan allows all three channels."""
-    assert plan_service.plan_allows_channel("pro", "whatsapp") is True
-    assert plan_service.plan_allows_channel("pro", "instagram") is True
-    assert plan_service.plan_allows_channel("pro", "website") is True
+    assert await plan_service.plan_allows_channel(mock_db, "pro", "whatsapp") is True
+    assert await plan_service.plan_allows_channel(mock_db, "pro", "instagram") is True
+    assert await plan_service.plan_allows_channel(mock_db, "pro", "website") is True
 
 
-def test_unknown_plan_defaults_to_starter_permissions():
-    """Unknown plan slug falls back to starter permissions."""
-    assert plan_service.plan_allows_channel("unknown_plan", "instagram") is False
-    assert plan_service.plan_allows_channel("unknown_plan", "whatsapp") is True
+async def test_unknown_plan_defaults_to_starter_permissions(seeded_plans, mock_db):
+    """Unknown plan id falls back to starter permissions."""
+    assert await plan_service.plan_allows_channel(mock_db, "unknown_plan", "instagram") is False
+    assert await plan_service.plan_allows_channel(mock_db, "unknown_plan", "whatsapp") is True
 
 
 # ── upgrade_plan ──────────────────────────────────────────────────────────────
 
-async def test_upgrade_starter_to_growth():
-    """Upgrading from starter to growth updates plan_slug and daily_message_limit."""
+async def test_upgrade_starter_to_growth(seeded_plans, mock_db):
+    """Upgrading from starter to growth refreshes plan_slug and all snapshot fields."""
     client = Client(id=1, email="x@y.com", hashed_password="h", plan_slug="starter", daily_message_limit=100)
-    db = AsyncMock()
-    db.commit = AsyncMock()
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
 
-    result = await plan_service.upgrade_plan(db, client, "growth")
+    result = await plan_service.upgrade_plan(mock_db, client, "growth")
 
     assert client.plan_slug == "growth"
     assert client.daily_message_limit == 300
-    assert result["slug"] == "growth"
-    db.commit.assert_called_once()
+    assert client.plan_conv_limit_snapshot == 2000
+    assert client.plan_price_snapshot == 3999
+    assert client.plan_image_quota_snapshot == 50
+    assert client.plan_image_overage_price_snapshot == 6
+    assert client.plan_grandfathered is False
+    assert result["plan_id"] == "growth"
+    mock_db.commit.assert_called()
 
 
-async def test_upgrade_starter_to_pro():
+async def test_upgrade_starter_to_pro(seeded_plans, mock_db):
     """Upgrading directly from starter to pro is allowed."""
     client = Client(id=1, email="x@y.com", hashed_password="h", plan_slug="starter", daily_message_limit=100)
-    db = AsyncMock()
-    db.commit = AsyncMock()
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
 
-    result = await plan_service.upgrade_plan(db, client, "pro")
+    result = await plan_service.upgrade_plan(mock_db, client, "pro")
 
     assert client.plan_slug == "pro"
     assert client.daily_message_limit == 700
-    assert result["slug"] == "pro"
+    assert client.plan_conv_limit_snapshot == 6000
+    assert result["plan_id"] == "pro"
 
 
-async def test_upgrade_same_plan_raises():
+async def test_upgrade_same_plan_raises(seeded_plans, mock_db):
     """Upgrading to the current plan raises ValueError."""
     client = Client(id=1, email="x@y.com", hashed_password="h", plan_slug="growth", daily_message_limit=300)
-    db = AsyncMock()
 
     with pytest.raises(ValueError, match="not an upgrade"):
-        await plan_service.upgrade_plan(db, client, "growth")
+        await plan_service.upgrade_plan(mock_db, client, "growth")
 
 
-async def test_downgrade_raises():
+async def test_downgrade_raises(seeded_plans, mock_db):
     """Attempting a downgrade raises ValueError."""
     client = Client(id=1, email="x@y.com", hashed_password="h", plan_slug="pro", daily_message_limit=700)
-    db = AsyncMock()
 
     with pytest.raises(ValueError, match="not an upgrade"):
-        await plan_service.upgrade_plan(db, client, "starter")
+        await plan_service.upgrade_plan(mock_db, client, "starter")
 
 
-async def test_upgrade_unknown_plan_raises():
-    """Upgrading to an unknown slug raises ValueError."""
+async def test_upgrade_unknown_plan_raises(seeded_plans, mock_db):
+    """Upgrading to an unknown plan id raises ValueError."""
     client = Client(id=1, email="x@y.com", hashed_password="h", plan_slug="starter", daily_message_limit=100)
-    db = AsyncMock()
 
     with pytest.raises(ValueError, match="Unknown plan"):
-        await plan_service.upgrade_plan(db, client, "enterprise")
+        await plan_service.upgrade_plan(mock_db, client, "enterprise")
 
 
 # ── plans router tests ────────────────────────────────────────────────────────
 
-def test_list_plans_endpoint_returns_200(client):
+def test_list_plans_endpoint_returns_200(client, seeded_plans):
     """GET /plans returns 200 with three plans (no auth required)."""
     response = client.get("/plans")
     assert response.status_code == 200
@@ -154,16 +164,19 @@ def test_list_plans_endpoint_returns_200(client):
     assert slugs == ["starter", "growth", "pro"]
 
 
-def test_list_plans_endpoint_includes_price_and_channels(client):
-    """GET /plans includes price_inr and channels for each plan."""
+def test_list_plans_endpoint_includes_price_and_channels(client, seeded_plans):
+    """GET /plans includes price_inr, conv_limit, image_quota, and channels for each plan."""
     response = client.get("/plans")
     assert response.status_code == 200
     starter = next(p for p in response.json() if p["slug"] == "starter")
-    assert starter["price_inr"] == 999
+    assert starter["price_inr"] == 1499
+    assert starter["conv_limit"] == 700
+    assert starter["image_quota"] == 20
+    assert starter["image_overage_price"] == 8
     assert starter["channels"] == ["whatsapp"]
 
 
-def test_get_current_plan_returns_starter(client, mock_db, mock_settings, make_test_user):
+def test_get_current_plan_returns_starter(client, mock_db, mock_settings, make_test_user, seeded_plans):
     """GET /plans/current returns starter for a new client."""
     from app.services.auth_service import create_access_token
 
@@ -180,16 +193,16 @@ def test_get_current_plan_returns_starter(client, mock_db, mock_settings, make_t
 
     assert response.status_code == 200
     assert response.json()["slug"] == "starter"
-    assert response.json()["price_inr"] == 999
+    assert response.json()["price_inr"] == 1499
 
 
-def test_get_current_plan_requires_auth(client):
+def test_get_current_plan_requires_auth(client, seeded_plans):
     """GET /plans/current returns 401 without a token."""
     response = client.get("/plans/current")
     assert response.status_code == 401
 
 
-def test_upgrade_plan_returns_200(client, mock_db, mock_settings, make_test_user):
+def test_upgrade_plan_returns_200(client, mock_db, mock_settings, make_test_user, seeded_plans):
     """POST /plans/upgrade from starter to growth returns 200 with upgrade details."""
     from app.services.auth_service import create_access_token
 
@@ -216,7 +229,7 @@ def test_upgrade_plan_returns_200(client, mock_db, mock_settings, make_test_user
     assert "upgraded" in data["message"].lower()
 
 
-def test_upgrade_plan_downgrade_returns_400(client, mock_db, mock_settings, make_test_user):
+def test_upgrade_plan_downgrade_returns_400(client, mock_db, mock_settings, make_test_user, seeded_plans):
     """POST /plans/upgrade with a downgrade returns 400."""
     from app.services.auth_service import create_access_token
 
@@ -238,7 +251,7 @@ def test_upgrade_plan_downgrade_returns_400(client, mock_db, mock_settings, make
     assert response.status_code == 400
 
 
-def test_upgrade_plan_unknown_slug_returns_400(client, mock_db, mock_settings, make_test_user):
+def test_upgrade_plan_unknown_slug_returns_400(client, mock_db, mock_settings, make_test_user, seeded_plans):
     """POST /plans/upgrade with an unknown plan slug returns 400."""
     from app.services.auth_service import create_access_token
 
@@ -260,7 +273,7 @@ def test_upgrade_plan_unknown_slug_returns_400(client, mock_db, mock_settings, m
     assert response.status_code == 400
 
 
-def test_upgrade_plan_requires_auth(client):
+def test_upgrade_plan_requires_auth(client, seeded_plans):
     """POST /plans/upgrade returns 401 without a token."""
     response = client.post("/plans/upgrade", json={"plan_slug": "growth"})
     assert response.status_code == 401
@@ -268,8 +281,10 @@ def test_upgrade_plan_requires_auth(client):
 
 # ── Instagram plan guard tests ────────────────────────────────────────────────
 
-def test_instagram_webhook_blocked_on_starter(client, mock_db):
+def test_instagram_webhook_blocked_on_starter(client, mock_db, seeded_plans):
     """POST /instagram returns plan_restricted when client is on starter plan."""
+    from unittest.mock import patch
+
     with patch(
         "app.routers.instagram._verify_instagram_signature",
         return_value=True,
@@ -287,8 +302,10 @@ def test_instagram_webhook_blocked_on_starter(client, mock_db):
     assert response.json()["status"] == "plan_restricted"
 
 
-def test_instagram_webhook_allowed_on_growth(client, mock_db):
+def test_instagram_webhook_allowed_on_growth(client, mock_db, seeded_plans):
     """POST /instagram proceeds past the plan guard on growth plan."""
+    from unittest.mock import patch
+
     with patch(
         "app.routers.instagram._verify_instagram_signature",
         return_value=True,
@@ -310,8 +327,10 @@ def test_instagram_webhook_allowed_on_growth(client, mock_db):
     assert response.json()["status"] == "parse_error"
 
 
-def test_instagram_webhook_allowed_on_pro(client, mock_db):
+def test_instagram_webhook_allowed_on_pro(client, mock_db, seeded_plans):
     """POST /instagram proceeds past the plan guard on pro plan."""
+    from unittest.mock import patch
+
     with patch(
         "app.routers.instagram._verify_instagram_signature",
         return_value=True,

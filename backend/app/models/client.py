@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Optional
 
-from sqlalchemy import Boolean, DateTime, Integer, JSON, String, Text, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -65,8 +65,27 @@ class Client(Base):
     api_key: Mapped[Optional[str]] = mapped_column(String, unique=True, nullable=True)
 
     # Plan and usage limits
-    plan_slug: Mapped[str] = mapped_column(String, default="starter")
+    # plan_slug is a real FK to plans.plan_id (kept its historical column name
+    # to avoid touching every existing call site + the frontend contract).
+    plan_slug: Mapped[str] = mapped_column(
+        String, ForeignKey("plans.plan_id"), default="starter"
+    )
     daily_message_limit: Mapped[int] = mapped_column(Integer, default=100)
+
+    # Snapshot of the plan's conv/price/image terms at the start of the
+    # client's current billing cycle — invoices stay correct even if the
+    # live plan definition changes later. Refreshed by billing_service on
+    # cycle rollover (unless plan_grandfathered) or immediately on upgrade.
+    plan_conv_limit_snapshot: Mapped[int] = mapped_column(Integer, default=700, nullable=False)
+    plan_price_snapshot: Mapped[int] = mapped_column(Integer, default=1499, nullable=False)
+    plan_image_quota_snapshot: Mapped[int] = mapped_column(Integer, default=20, nullable=False)
+    plan_image_overage_price_snapshot: Mapped[int] = mapped_column(Integer, default=8, nullable=False)
+    billing_cycle_start: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    # True = enforcement keeps using the snapshot terms indefinitely instead
+    # of refreshing from the live plan on cycle rollover.
+    plan_grandfathered: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # "YYYY-MM" of the last conv-limit 80% nudge sent, so it fires once per cycle.
+    conv_limit_warned_period: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     # GST / invoicing fields
     gst_number: Mapped[Optional[str]] = mapped_column(String, nullable=True)

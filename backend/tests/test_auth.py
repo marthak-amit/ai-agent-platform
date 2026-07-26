@@ -85,7 +85,7 @@ async def test_get_current_user_rejects_invite_token(mock_settings):
 # --- auth router tests ---
 
 
-def test_register_creates_client(client, mock_db):
+def test_register_creates_client(client, mock_db, seeded_plans):
     """POST /auth/register creates a new client and returns 201."""
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = None
@@ -107,7 +107,7 @@ def test_register_creates_client(client, mock_db):
     assert data["business_name"] == "Test Biz"
 
 
-def test_register_creates_owner_user(client, mock_db):
+def test_register_creates_owner_user(client, mock_db, seeded_plans):
     """POST /auth/register also creates the first (Owner) User for the business."""
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = None
@@ -125,7 +125,7 @@ def test_register_creates_owner_user(client, mock_db):
     assert current_user["is_owner"] is True
 
 
-def test_register_without_phone(client, mock_db):
+def test_register_without_phone(client, mock_db, seeded_plans):
     """POST /auth/register succeeds when phone is omitted."""
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = None

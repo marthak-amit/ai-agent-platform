@@ -11,6 +11,8 @@ Endpoints:
 - PUT  /admin/clients/{id}/suspend — suspend a client account
 - PUT  /admin/clients/{id}/activate— activate a suspended client account
 - GET  /admin/revenue              — monthly revenue breakdown by plan
+- GET  /admin/plans                — all plans, including inactive ones
+- PUT  /admin/plans/{plan_id}      — update a plan's price/limits/overage rate
 """
 
 import logging
@@ -24,7 +26,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db import get_db
-from app.services import admin_service
+from app.schemas.plan import PlanAdminOut, PlanUpdateRequest
+from app.services import admin_service, plan_cache
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -246,3 +249,81 @@ async def revenue_breakdown(
         RevenueOut with month, total_revenue_inr, and per-plan breakdown.
     """
     return await admin_service.get_revenue_breakdown(db)
+
+
+@router.get(
+    "/plans",
+    response_model=list[PlanAdminOut],
+    dependencies=[Depends(require_admin)],
+)
+async def list_all_plans(
+    db: AsyncSession = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """
+    Return every plan, including inactive ones, in tier order.
+
+    Requires X-Admin-Key header.
+
+    Returns:
+        List of PlanAdminOut objects.
+    """
+    return await plan_cache.get_all_plans(db)
+
+
+@router.put(
+    "/plans/{plan_id}",
+    response_model=PlanAdminOut,
+    dependencies=[Depends(require_admin)],
+)
+async def update_plan(
+    plan_id: str,
+    body: PlanUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Update a plan's price, limits, channels, or overage rate.
+
+    Takes effect immediately for new signups. Existing clients pick up the
+    change on their next billing cycle rollover (or immediately if they
+    upgrade) — never retroactively mid-cycle, unless separately upgraded.
+    Invalidates the in-process plan cache so the change is visible without
+    a redeploy.
+
+    Requires X-Admin-Key header.
+
+    Args:
+        plan_id: Target plan's primary key (e.g. "starter").
+        body:    Fields to update; unset fields are left unchanged.
+        db:      Injected async DB session.
+
+    Returns:
+        The updated plan as a dict (validated against PlanAdminOut).
+
+    Raises:
+        HTTPException 404: If plan_id does not exist.
+    """
+    updates = body.model_dump(exclude_unset=True, exclude_none=True)
+    try:
+        plan = await admin_service.update_plan(db, plan_id, updates)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    logger.info("Admin updated plan '%s': %s", plan_id, updates)
+    return {
+        "plan_id": plan.plan_id,
+        "name": plan.name,
+        "price_inr": plan.price_inr,
+        "conv_limit": plan.conv_limit,
+        "image_quota": plan.image_quota,
+        "image_overage_price": plan.image_overage_price,
+        "daily_msg_limit": plan.daily_msg_limit,
+        "channels": plan.channels,
+        "campaign_allowed": plan.campaign_allowed,
+        "campaign_max_recipients": plan.campaign_max_recipients,
+        "campaign_monthly_limit": plan.campaign_monthly_limit,
+        "tier_order": plan.tier_order,
+        "description": plan.description,
+        "is_active": plan.is_active,
+        "created_at": plan.created_at,
+        "updated_at": plan.updated_at,
+    }

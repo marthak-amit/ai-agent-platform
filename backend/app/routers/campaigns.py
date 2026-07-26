@@ -165,9 +165,9 @@ async def create_campaign(
         HTTPException 403: If the client's plan doesn't allow campaigns.
     """
     try:
-        campaign_service.check_plan_allows_campaigns(current_client.plan_slug or "starter")
+        await campaign_service.check_plan_allows_campaigns(db, current_client.plan_slug or "starter")
         await campaign_service.check_monthly_campaign_limit(
-            current_client.plan_slug or "starter", current_client.id, db
+            db, current_client.plan_slug or "starter", current_client.id
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
@@ -279,8 +279,8 @@ async def add_recipients(
         added = await campaign_service.import_recipients_from_conversations(campaign, db)
     elif body.recipients:
         try:
-            campaign_service.check_recipient_limit(
-                current_client.plan_slug or "starter", len(body.recipients)
+            await campaign_service.check_recipient_limit(
+                db, current_client.plan_slug or "starter", len(body.recipients)
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
