@@ -1104,24 +1104,47 @@ def _extract_size_token(text: str, available_sizes: list[str]) -> str | None:
     return None
 
 
-def _maybe_capture_quantity(conversation, text: str, available_stock: int | None) -> None:
+def _maybe_capture_quantity(
+    conversation,
+    text: str,
+    available_stock: int | None,
+    consumed_tokens: tuple[str, ...] = (),
+) -> None:
     """
     Scan text for a quantity digit and fill it in-memory if not already set
     and the value is within available_stock. Used so "red XL 2 pieces" fills
     quantity alongside color/size in the same turn instead of re-asking.
+
+    consumed_tokens: values already consumed as ANOTHER slot in this same
+    message (e.g. the size just extracted). Numeric sizes are common in this
+    catalogue ("38", "40"), so without this a customer answering the size
+    question with "40" had that one token counted as BOTH size=40 and
+    quantity=40 — producing a 40-piece order they never asked for. Each
+    consumed token cancels only its FIRST occurrence, so "40 size, 2 pieces"
+    still correctly yields size=40 + quantity=2.
     """
     if getattr(conversation, "pending_order_quantity", None):
         return
-    match = re.search(r"\b(\d{1,4})\b", text)
-    if not match:
+
+    remaining = list(re.findall(r"\b(\d{1,4})\b", text))
+    for consumed in consumed_tokens:
+        token = str(consumed).strip().lower()
+        for i, candidate in enumerate(remaining):
+            if candidate.lower() == token:
+                del remaining[i]
+                break
+
+    for candidate in remaining:
+        qty = int(candidate)
+        if qty < 1:
+            continue
+        if available_stock is not None and qty > available_stock:
+            continue
+        conversation.pending_order_quantity = qty
+        logger.info(
+            "Multi-slot: quantity=%d captured alongside another slot in one message", qty
+        )
         return
-    qty = int(match.group(1))
-    if qty < 1:
-        return
-    if available_stock is not None and qty > available_stock:
-        return
-    conversation.pending_order_quantity = qty
-    logger.info("Multi-slot: quantity=%d captured alongside another slot in one message", qty)
 
 
 def extract_order_field(
@@ -1195,6 +1218,7 @@ def extract_order_field(
                 # given — apply directly to the in-memory conversation object;
                 # it persists with the next commit in this request, same as
                 # any other ORM mutation.
+                _consumed: tuple[str, ...] = ()
                 if vi.get("needs_size"):
                     canonical_size = _extract_size_token(text, vi.get("available_sizes", []))
                     if canonical_size and not getattr(conversation, "selected_size", None):
@@ -1203,7 +1227,12 @@ def extract_order_field(
                             "Multi-slot: size=%r captured alongside color=%r in one message",
                             canonical_size, color,
                         )
-                _maybe_capture_quantity(conversation, text, available_stock)
+                    if canonical_size:
+                        # A numeric size ("40") must not be re-read as quantity.
+                        _consumed = (canonical_size,)
+                _maybe_capture_quantity(
+                    conversation, text, available_stock, consumed_tokens=_consumed
+                )
                 return ("selected_color", color)
         return None
 
@@ -1219,7 +1248,11 @@ def extract_order_field(
         for token in words:
             canonical = size_map.get(token.lower())
             if canonical:
-                _maybe_capture_quantity(conversation, text, available_stock)
+                # The token just consumed as the size must not also be read as
+                # a quantity — numeric sizes ("38"/"40") made "40" mean both.
+                _maybe_capture_quantity(
+                    conversation, text, available_stock, consumed_tokens=(token, canonical),
+                )
                 return ("selected_size", canonical)
         return None
 

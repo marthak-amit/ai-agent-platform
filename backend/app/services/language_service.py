@@ -191,7 +191,7 @@ def get_language_instruction(lang: str) -> str:
             "Clean, simple, professional English only — no exceptions.\n"
             "\n"
             "Example reply:\n"
-            '"The Banarasi Silk Saree is priced at ₹2,450 and currently in stock. '
+            '"Product XYZ001 is priced at ₹999 and currently in stock. '
             'Would you like to place an order?"'
         )
 
@@ -201,7 +201,7 @@ def get_language_instruction(lang: str) -> str:
             "YOU MUST reply in Hindi Devanagari script ONLY.\n"
             "Use 'जी' (ji) naturally as a respectful honorific.\n"
             "Example reply:\n"
-            '"बनारसी सिल्क साड़ी की कीमत ₹2,450 है जी। '
+            '"प्रोडक्ट XYZ001 की कीमत ₹999 है जी। '
             "18 पीस उपलब्ध हैं। क्या आप ऑर्डर करना चाहेंगे?"
             '"'
         )
@@ -216,7 +216,7 @@ def get_language_instruction(lang: str) -> str:
             "Use 'ji' naturally as a respectful suffix in Hinglish.\n"
             "Example: 'Haan ji, available hai.' / 'Zaroor ji!'\n"
             "Example reply:\n"
-            '"Haan ji! Banarasi Silk Saree ₹2,450 mein available hai. '
+            '"Haan ji! Product XYZ001 ₹999 mein available hai. '
             "18 pieces stock mein hain. "
             'Order karna chahenge?"'
         )
@@ -233,7 +233,7 @@ def get_language_instruction(lang: str) -> str:
             "  Payment:  'Payment UPI કે COD?'\n"
             "  Confirm:  'શું બધું સાચું છે? Confirm કરો?'\n"
             "Example reply:\n"
-            '"હા જી! બનારસી સિલ્ક સાડીની કિંમત ₹2,450 છે. '
+            '"હા જી! પ્રોડક્ટ XYZ001 ની કિંમત ₹999 છે. '
             "18 પીસ ઉપલબ્ધ છે. ઓર્ડર કરવા માંગો છો?"
             '"'
         )
@@ -251,7 +251,7 @@ def get_language_instruction(lang: str) -> str:
             "  Confirm:  'Shu badhu sahi chhe? Confirm karo?'\n"
             "Example: 'Haa ji, available che.'\n"
             "Example reply:\n"
-            '"Haa ji! Banarasi Silk Saree ₹2,450 ni che. '
+            '"Haa ji! Product XYZ001 ₹999 ni che. '
             "18 pieces available che. "
             'Order karva maango cho?"'
         )
@@ -261,7 +261,7 @@ def get_language_instruction(lang: str) -> str:
         "LANGUAGE: Reply in Hinglish (friendly Hindi-English mix).\n"
         "Use 'ji' naturally as a respectful suffix.\n"
         "Example reply:\n"
-        '"Haan ji! Banarasi Silk Saree ₹2,450 mein available hai. '
+        '"Haan ji! Product XYZ001 ₹999 mein available hai. '
         "Stock bhi hai. "
         'Order karein?"'
     )

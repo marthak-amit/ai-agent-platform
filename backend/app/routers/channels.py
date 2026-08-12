@@ -14,13 +14,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.config import get_settings
 from app.models.client import Client
 from app.routers.auth import get_owner_client as get_current_client
-from app.services import whatsapp_service
+from app.services import outbound
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/channels", tags=["channels"])
-
-META_API_VERSION = "v21.0"
-META_API_BASE_URL = "https://graph.facebook.com"
 
 
 @router.post("/test-whatsapp", status_code=status.HTTP_200_OK)
@@ -58,28 +55,17 @@ async def test_whatsapp(
             detail="WhatsApp credentials not configured. Save Phone Number ID and Access Token first.",
         )
 
-    url = f"{META_API_BASE_URL}/{META_API_VERSION}/{phone_number_id}/messages"
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-    }
     # Normalise phone: strip leading + so Meta gets E.164 digits only.
     to_phone = phone.lstrip("+")
-    payload = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": to_phone,
-        "type": "text",
-        "text": {
-            "preview_url": False,
-            "body": "Hello! Your AI agent is connected and working correctly. This is a test message from your Vision+ dashboard.",
-        },
-    }
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as http:
-            response = await http.post(url, headers=headers, json=payload)
-            response.raise_for_status()
+        await outbound.send_owner_text(
+            to_phone,
+            "Hello! Your AI agent is connected and working correctly. "
+            "This is a test message from your Vision+ dashboard.",
+            phone_number_id=phone_number_id,
+            access_token=access_token,
+        )
     except httpx.HTTPStatusError as exc:
         logger.error("WhatsApp test failed: %s", exc.response.text)
         raise HTTPException(

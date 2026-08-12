@@ -726,7 +726,7 @@ async def test_scenario11_broken_image_url_does_not_abort_pin(
             response=mock.MagicMock(status_code=400),
         )
 
-    monkeypatch.setattr("app.services.whatsapp_service.send_image_message", _fail_image)
+    monkeypatch.setattr("app.services.whatsapp_service._raw_send_image_message", _fail_image)
 
     resp = await _msg(replay_http, phone, "KU76326", pnid=pnid, wamid=f"wamid.s11.{int(time.time())}")
     assert resp.status_code == 200, f"Webhook must return 200 even when image send fails: {resp.status_code}"

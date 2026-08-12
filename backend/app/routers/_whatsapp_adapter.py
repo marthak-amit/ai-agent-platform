@@ -1,9 +1,10 @@
 """
 WhatsApp adapter — translates a channel-neutral PipelineResult ("SendInstruction")
-into the exact whatsapp_service calls webhook.py used to build inline.
+into gated outbound.* sends (send_gate-checked wrappers over the raw
+whatsapp_service transport).
 
 SLICE 8 of the webhook.py strangler-fig refactor. This is the ONLY place
-whatsapp_service.send_text_message / send_button_message / send_list_message
+outbound.send_text / send_buttons / send_list
 are called for the main reply path — order_pipeline.py decides WHAT to send
 (buttons vs list vs text, which buttons, what body text) as plain data;
 this module decides HOW to actually deliver that on WhatsApp (nonce encoding,
@@ -20,7 +21,8 @@ from __future__ import annotations
 
 import logging
 
-from app.services import whatsapp_service
+from app.services import outbound
+from app.services.send_gate import MessageKind
 from app.services.order_pipeline import PipelineResult, _encode_btn, _rotate_nonce
 
 logger = logging.getLogger("app.routers.webhook")
@@ -51,12 +53,16 @@ async def send_pipeline_result(
     if result.skip_send:
         return
 
+    _gate_kw = dict(
+        kind=MessageKind.PIPELINE_REPLY,
+        db=db,
+        client_id=getattr(conv, "client_id", None),
+        conversation_id=conv.id,
+    )
+
     for _pre in (result.pre_texts or []):
         try:
-            await whatsapp_service.send_text_message(
-                to_phone_number=sender_phone,
-                message_text=_pre,
-            )
+            await outbound.send_text(sender_phone, _pre, **_gate_kw)
         except Exception:
             pass
 
@@ -71,24 +77,22 @@ async def send_pipeline_result(
         return action
 
     if result.buttons and pid:
-        sent = await whatsapp_service.send_button_message(
-            to_phone_number=sender_phone,
-            body_text=result.text,
-            buttons=[{"id": _nb(b.id), "title": b.title} for b in result.buttons],
+        sent = await outbound.send_buttons(
+            sender_phone,
+            result.text,
+            [{"id": _nb(b.id), "title": b.title} for b in result.buttons],
             phone_number_id=pid,
+            **_gate_kw,
         )
         if not sent:
-            await whatsapp_service.send_text_message(
-                to_phone_number=sender_phone,
-                message_text=result.text,
-            )
+            await outbound.send_text(sender_phone, result.text, **_gate_kw)
     elif result.list_options and pid:
-        sent = await whatsapp_service.send_list_message(
-            to_phone_number=sender_phone,
-            header_text=result.list_header or "Choose an option",
-            body_text=result.text,
-            button_text=result.list_button_text or "View options",
-            sections=[{
+        sent = await outbound.send_list(
+            sender_phone,
+            result.list_header or "Choose an option",
+            result.text,
+            result.list_button_text or "View options",
+            [{
                 "title": "Options",
                 "rows": [
                     {
@@ -100,27 +104,20 @@ async def send_pipeline_result(
                 ],
             }],
             phone_number_id=pid,
+            **_gate_kw,
         )
         if not sent:
-            await whatsapp_service.send_text_message(
-                to_phone_number=sender_phone,
-                message_text=result.text,
-            )
+            await outbound.send_text(sender_phone, result.text, **_gate_kw)
     else:
-        await whatsapp_service.send_text_message(
-            to_phone_number=sender_phone,
-            message_text=result.text,
-        )
+        await outbound.send_text(sender_phone, result.text, **_gate_kw)
 
     # Deferred product images — sent AFTER the main text/buttons/list, mirroring
     # webhook.py's original end-of-request image queue (a failed image send must
     # never abort the pin path or block the text, which has already been sent).
     for _img_url, _img_caption in (result.images or []):
         try:
-            await whatsapp_service.send_image_message(
-                to_phone_number=sender_phone,
-                image_url=_img_url,
-                caption=_img_caption,
+            await outbound.send_image(
+                sender_phone, _img_url, _img_caption, **_gate_kw,
             )
         except Exception as _img_exc:
             logger.error("Product image send error (non-fatal): %s", _img_exc)

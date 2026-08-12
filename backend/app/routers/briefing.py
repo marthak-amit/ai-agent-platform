@@ -52,11 +52,8 @@ async def send_briefing_now(
     briefing = await briefing_service.generate_daily_briefing(current_client.id, db)
 
     try:
-        from app.services import whatsapp_service
-        await whatsapp_service.send_text_message(
-            to_phone_number=current_client.phone,
-            message_text=briefing,
-        )
+        from app.services import outbound
+        await outbound.send_owner_text(current_client.phone, briefing)
     except Exception as exc:
         logger.error("send-now WhatsApp delivery failed: %s", exc)
         raise HTTPException(

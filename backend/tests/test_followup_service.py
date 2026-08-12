@@ -213,7 +213,7 @@ async def test_send_followups_sends_all_eligible(mock_db):
         "app.services.followup_service.generate_followup_message",
         new=AsyncMock(return_value="Test follow-up message"),
     ), patch(
-        "app.services.followup_service.whatsapp_service.send_text_message",
+        "app.services.outbound.send_text",
         new=AsyncMock(return_value={"messages": [{"id": "wamid.x"}]}),
     ), patch(
         "app.services.followup_service.messaging_window.is_within_free_text_window",
@@ -255,7 +255,7 @@ async def test_send_followups_records_failure_on_whatsapp_error(mock_db):
         "app.services.followup_service.generate_followup_message",
         new=AsyncMock(return_value="Follow-up text"),
     ), patch(
-        "app.services.followup_service.whatsapp_service.send_text_message",
+        "app.services.outbound.send_text",
         new=send_mock,
     ), patch(
         "app.services.followup_service.messaging_window.is_within_free_text_window",
@@ -310,7 +310,7 @@ async def test_send_followups_correct_phone_number_used(mock_db):
         "app.services.followup_service.generate_followup_message",
         new=AsyncMock(return_value="Hello!"),
     ), patch(
-        "app.services.followup_service.whatsapp_service.send_text_message",
+        "app.services.outbound.send_text",
         new=wa_mock,
     ), patch(
         "app.services.followup_service.messaging_window.is_within_free_text_window",
@@ -318,10 +318,9 @@ async def test_send_followups_correct_phone_number_used(mock_db):
     ):
         await send_followups(mock_db)
 
-    wa_mock.assert_called_once_with(
-        to_phone_number="919988776655",
-        message_text="Hello!",
-    )
+    wa_mock.assert_called_once()
+    assert wa_mock.call_args.args[0] == "919988776655"
+    assert wa_mock.call_args.args[1] == "Hello!"
 
 
 @pytest.mark.asyncio
@@ -344,7 +343,7 @@ async def test_send_followups_blocks_outside_24h_window(mock_db):
         "app.services.followup_service.get_eligible_leads",
         new=AsyncMock(return_value=[(lead, now - timedelta(hours=30))]),
     ), patch(
-        "app.services.followup_service.whatsapp_service.send_text_message",
+        "app.services.outbound.send_text",
         new=wa_mock,
     ), patch(
         "app.services.followup_service.messaging_window.is_within_free_text_window",

@@ -1,9 +1,13 @@
 """
-Instagram Cloud API sender service.
+Instagram Cloud API sender service — RAW transport layer.
 
 Sends DMs, quick replies, product images, and comment replies via the Meta
-Graph API. Used by the Instagram webhook handler (comment-to-DM flow) and by
-app/routers/_instagram_adapter.py (main order-pipeline reply path).
+Graph API.
+
+IMPORTANT: every function here is module-private (`_raw_*`) on purpose.
+Nothing in app/ may call these directly except app/services/outbound.py,
+which wraps each one behind send_gate.check_send(). See
+tests/test_send_gate_guard.py.
 """
 
 import logging
@@ -18,7 +22,7 @@ META_API_BASE_URL = "https://graph.facebook.com"
 logger = logging.getLogger(__name__)
 
 
-async def send_dm(ig_user_id: str, recipient_igsid: str, message_text: str) -> dict:
+async def _raw_send_dm(ig_user_id: str, recipient_igsid: str, message_text: str) -> dict:
     """
     Send a direct message to an Instagram user.
 
@@ -53,7 +57,7 @@ async def send_dm(ig_user_id: str, recipient_igsid: str, message_text: str) -> d
         return response.json()
 
 
-async def send_quick_replies(
+async def _raw_send_quick_replies(
     ig_user_id: str, recipient_igsid: str, message_text: str, quick_replies: list[dict]
 ) -> bool:
     """
@@ -107,7 +111,7 @@ async def send_quick_replies(
         return response.status_code == 200
 
 
-async def send_image(ig_user_id: str, recipient_igsid: str, image_url: str) -> dict:
+async def _raw_send_image(ig_user_id: str, recipient_igsid: str, image_url: str) -> dict:
     """
     Send a product image (by public URL) to an Instagram user.
 
@@ -150,7 +154,7 @@ async def send_image(ig_user_id: str, recipient_igsid: str, image_url: str) -> d
         return response.json()
 
 
-async def reply_to_comment(
+async def _raw_reply_to_comment(
     ig_user_id: str, comment_id: str, message_text: str
 ) -> dict:
     """
@@ -181,7 +185,7 @@ async def reply_to_comment(
         return response.json()
 
 
-async def send_private_reply(ig_user_id: str, comment_id: str, message_text: str) -> dict:
+async def _raw_send_private_reply(ig_user_id: str, comment_id: str, message_text: str) -> dict:
     """
     Send a Private Reply DM to a comment — Meta's mechanism for messaging a
     commenter with no existing DM thread (regular send_dm requires one).

@@ -24,7 +24,8 @@ from app.models.conversation import Conversation
 from app.models.follow_up import FollowUp
 from app.models.lead import Lead
 from app.models.message import Message
-from app.services import conversation_service, gemini_service, instagram_service, messaging_window, whatsapp_service
+from app.services import conversation_service, gemini_service, messaging_window, outbound
+from app.services.send_gate import MessageKind
 
 logger = logging.getLogger(__name__)
 
@@ -205,19 +206,38 @@ async def send_followups(db: AsyncSession) -> dict:
                 client = client_result.scalar_one_or_none() if client_result else None
                 ig_user_id = getattr(client, "instagram_account_id", None) if client else None
                 if ig_user_id:
-                    await instagram_service.send_dm(
-                        ig_user_id=ig_user_id,
-                        recipient_igsid=lead.phone_number,
-                        message_text=message,
+                    _result = await outbound.ig_send_dm(
+                        ig_user_id,
+                        lead.phone_number,
+                        message,
+                        kind=MessageKind.FOLLOWUP,
+                        db=db,
+                        client_id=getattr(conv, "client_id", None) if conv else None,
+                        conversation_id=lead.conversation_id,
                     )
                 else:
                     raise ValueError("No instagram_account_id for client — cannot send Instagram follow-up.")
             else:
-                await whatsapp_service.send_text_message(
-                    to_phone_number=lead.phone_number,
-                    message_text=message,
+                _result = await outbound.send_text(
+                    lead.phone_number,
+                    message,
+                    kind=MessageKind.FOLLOWUP,
+                    db=db,
+                    client_id=getattr(conv, "client_id", None) if conv else None,
+                    conversation_id=lead.conversation_id,
                 )
-            sent += 1
+            if _result is None:
+                # Send gate refused (opt-out / block / 24h window closed with
+                # no approved template) — recorded as blocked, never retried
+                # as free-form. The gate, not this engine, is the enforcer.
+                blocked_window += 1
+                fu_status = "suppressed"
+                logger.warning(
+                    "event=followup_suppressed lead=%d phone=%s channel=%s — send gate refused.",
+                    lead.id, lead.phone_number, channel,
+                )
+            else:
+                sent += 1
         except Exception as exc:
             logger.error(
                 "Follow-up send failed for lead %d (%s, channel=%s): %s",

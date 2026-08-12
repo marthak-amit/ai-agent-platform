@@ -109,13 +109,13 @@ async def test_sends_nudge_when_6h_idle_order_collection(mock_db):
         "app.services.catalogue_service.find_product_by_sku",
         new=AsyncMock(return_value=None),
     ), patch(
-        "app.services.whatsapp_service.send_text_message",
+        "app.services.outbound.send_text",
         new=AsyncMock(return_value={"messages": [{"id": "wamid.x"}]}),
     ) as send_mock:
         await _send_abandoned_intent_followups(mock_db)
 
     send_mock.assert_called_once()
-    assert send_mock.call_args.kwargs["to_phone_number"] == conv.phone_number
+    assert send_mock.call_args.args[0] == conv.phone_number
     assert conv.last_followup_sku == "PR100"
     assert conv.followup_sent_at is not None
 
@@ -134,7 +134,7 @@ async def test_skips_when_idle_under_6h(mock_db):
     ]
 
     with patch(
-        "app.services.whatsapp_service.send_text_message",
+        "app.services.outbound.send_text",
         new=AsyncMock(),
     ) as send_mock:
         await _send_abandoned_intent_followups(mock_db)
@@ -156,7 +156,7 @@ async def test_skips_and_flags_when_idle_over_24h(mock_db, caplog):
     ]
 
     with patch(
-        "app.services.whatsapp_service.send_text_message",
+        "app.services.outbound.send_text",
         new=AsyncMock(),
     ) as send_mock, caplog.at_level("WARNING"):
         await _send_abandoned_intent_followups(mock_db)
@@ -187,13 +187,13 @@ async def test_payment_stage_resends_upi_instructions(mock_db):
         "app.services.catalogue_service.find_product_by_sku",
         new=AsyncMock(return_value=None),
     ), patch(
-        "app.services.whatsapp_service.send_text_message",
+        "app.services.outbound.send_text",
         new=AsyncMock(return_value={}),
     ) as send_mock:
         await _send_abandoned_intent_followups(mock_db)
 
     send_mock.assert_called_once()
-    sent_text = send_mock.call_args.kwargs["message_text"]
+    sent_text = send_mock.call_args.args[1]
     assert order.order_number in sent_text
     assert client.upi_id in sent_text
 
@@ -215,7 +215,7 @@ async def test_payment_stage_skips_when_no_pending_order(mock_db):
     ]
 
     with patch(
-        "app.services.whatsapp_service.send_text_message",
+        "app.services.outbound.send_text",
         new=AsyncMock(),
     ) as send_mock:
         await _send_abandoned_intent_followups(mock_db)
@@ -243,17 +243,17 @@ async def test_instagram_channel_uses_send_dm(mock_db):
         "app.services.catalogue_service.find_product_by_sku",
         new=AsyncMock(return_value=None),
     ), patch(
-        "app.services.instagram_service.send_dm",
+        "app.services.outbound.ig_send_dm",
         new=AsyncMock(return_value={}),
     ) as dm_mock, patch(
-        "app.services.whatsapp_service.send_text_message",
+        "app.services.outbound.send_text",
         new=AsyncMock(),
     ) as wa_mock:
         await _send_abandoned_intent_followups(mock_db)
 
     dm_mock.assert_called_once()
-    assert dm_mock.call_args.kwargs["ig_user_id"] == "ig-business-123"
-    assert dm_mock.call_args.kwargs["recipient_igsid"] == conv.phone_number
+    assert dm_mock.call_args.args[0] == "ig-business-123"
+    assert dm_mock.call_args.args[1] == conv.phone_number
     wa_mock.assert_not_called()
 
 
@@ -270,7 +270,7 @@ async def test_cooldown_skips_recent_followup(mock_db):
     mock_db.execute.side_effect = [_candidates_result([conv])]
 
     with patch(
-        "app.services.whatsapp_service.send_text_message",
+        "app.services.outbound.send_text",
         new=AsyncMock(),
     ) as send_mock:
         await _send_abandoned_intent_followups(mock_db)
@@ -288,7 +288,7 @@ async def test_same_sku_repeat_skipped(mock_db):
     mock_db.execute.side_effect = [_candidates_result([conv])]
 
     with patch(
-        "app.services.whatsapp_service.send_text_message",
+        "app.services.outbound.send_text",
         new=AsyncMock(),
     ) as send_mock:
         await _send_abandoned_intent_followups(mock_db)

@@ -92,7 +92,7 @@ def test_submit_public_demo_lead_skips_notify_when_unset(client, mock_db, monkey
         leads_router, "get_settings", lambda: _FakeSettings(internal_lead_notify_number="")
     )
     send_mock = AsyncMock()
-    monkeypatch.setattr(leads_router.whatsapp_service, "send_text_message", send_mock)
+    monkeypatch.setattr("app.services.whatsapp_service._raw_send_text_message", send_mock)
 
     response = client.post(
         "/leads/public",
@@ -111,7 +111,7 @@ def test_submit_public_demo_lead_sends_notify_when_configured(client, mock_db, m
         lambda: _FakeSettings(internal_lead_notify_number="919999999999"),
     )
     send_mock = AsyncMock()
-    monkeypatch.setattr(leads_router.whatsapp_service, "send_text_message", send_mock)
+    monkeypatch.setattr("app.services.whatsapp_service._raw_send_text_message", send_mock)
 
     response = client.post(
         "/leads/public",
@@ -143,7 +143,7 @@ def test_submit_public_demo_lead_notify_failure_does_not_fail_request(client, mo
         lambda: _FakeSettings(internal_lead_notify_number="919999999999"),
     )
     send_mock = AsyncMock(side_effect=RuntimeError("Meta API down"))
-    monkeypatch.setattr(leads_router.whatsapp_service, "send_text_message", send_mock)
+    monkeypatch.setattr("app.services.whatsapp_service._raw_send_text_message", send_mock)
 
     response = client.post(
         "/leads/public",
@@ -163,7 +163,7 @@ def test_submit_public_demo_lead_honeypot_never_notifies(client, mock_db, monkey
         lambda: _FakeSettings(internal_lead_notify_number="919999999999"),
     )
     send_mock = AsyncMock()
-    monkeypatch.setattr(leads_router.whatsapp_service, "send_text_message", send_mock)
+    monkeypatch.setattr("app.services.whatsapp_service._raw_send_text_message", send_mock)
 
     response = client.post(
         "/leads/public",

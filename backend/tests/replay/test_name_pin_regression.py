@@ -457,7 +457,7 @@ async def test_pinned_then_yes_starts_order(replay_http, replay_session, monkeyp
     await replay_session.refresh(conv)
 
     monkeypatch.setattr(
-        "app.services.whatsapp_service.send_text_message",
+        "app.services.whatsapp_service._raw_send_text_message",
         mock.AsyncMock(return_value=None),
     )
     monkeypatch.setattr(
@@ -491,3 +491,83 @@ async def test_pinned_then_yes_starts_order(replay_http, replay_session, monkeyp
         f"\n[NMP-04] test_pinned_then_yes_starts_order: "
         f"stage={conv_row.current_stage!r} sku={conv_row.pending_product_sku!r} ✓"
     )
+
+
+# ---------------------------------------------------------------------------
+# test_gujarati_fallback_reply_stays_gujarati
+#
+# Captured bug: a customer's FIRST message ever ("તમે સારી વેચો છો?" — Gujarati
+# script, no product named) got an English "Which item are you interested in?"
+# reply. Root cause: the browsing-safety-net guard (order_pipeline.py, fires
+# when the AI leaks transactional phrasing in a browsing stage) built its
+# fallback reply as a hardcoded English f-string, ignoring the language
+# detected for the current turn entirely. On a customer's first-ever message,
+# conv.last_customer_language is still None, so any code that reads only
+# that column (and not the freshly detected `language`) silently defaults to
+# English on turn one — regardless of what script the customer actually used.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_gujarati_fallback_reply_stays_gujarati(replay_http, replay_session, monkeypatch):
+    """
+    A Gujarati-script message with no named product must still get a
+    Gujarati-localized fallback reply when the browsing-safety guard fires —
+    never the hardcoded English "Which item are you interested in?" deflect.
+    """
+    phone = _phone("05")
+    pnid = _pnid("05")
+    client, product = await _seed_kanjivaram(replay_session, phone=phone, pnid=pnid)
+    await _fresh_conv(replay_session, phone=phone, client_id=client.id)
+
+    # AI leaks transactional phrasing → triggers the browsing-safety guard.
+    # No product is named in the customer's message, so no SKU gets pinned —
+    # this hits the guard's "no pinned product" fallback branch, which is
+    # exactly the branch that was hardcoded to English.
+    monkeypatch.setattr(
+        "app.services.gemini_service.generate_reply",
+        mock.AsyncMock(return_value=(
+            "Sure! What is your delivery address? Please pay ₹500 via UPI ID: test@upi."
+        )),
+    )
+
+    captured = capture_all(monkeypatch)
+
+    resp = await send_message(
+        replay_http, phone,
+        "તમે સારી વેચો છો?",  # "Do you sell good things?" — Gujarati script
+        wamid=_wamid("05a"),
+        phone_number_id=pnid,
+    )
+    assert resp.status_code == 200, resp.text
+    assert captured, "No reply was sent"
+
+    reply = captured[-1]
+    reply_lower = reply.lower()
+
+    assert "which item" not in reply_lower, (
+        f"Fallback guard must not fall back to the hardcoded English deflect "
+        f"for a Gujarati-script first message. Got: {reply!r}"
+    )
+    assert "i'd be happy to help" not in reply_lower, (
+        f"Fallback guard reply is still the hardcoded English string. Got: {reply!r}"
+    )
+    # The Gujarati "which_item" template (language_templates.GUJARATI_TEMPLATES)
+    # renders "... Tamne kayu item joiye chhe?" — assert on its distinctive tail.
+    assert "kayu item joiye chhe" in reply_lower, (
+        f"Reply must use the Gujarati which_item template. Got: {reply!r}"
+    )
+
+    # Confirm the conversation's persisted language was actually set from this
+    # turn's detection (gujarati_script), not left at the "english" default.
+    from app.models.conversation import Conversation
+    conv_r = await replay_session.execute(
+        select(Conversation)
+        .where(Conversation.phone_number == phone)
+        .execution_options(populate_existing=True)
+    )
+    conv_row = conv_r.scalar_one()
+    assert conv_row.last_customer_language == "gujarati_script", (
+        f"Detected language must persist as gujarati_script, got {conv_row.last_customer_language!r}"
+    )
+
+    print(f"\n[NMP-05] test_gujarati_fallback_reply_stays_gujarati reply={reply!r} ✓")

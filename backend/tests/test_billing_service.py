@@ -122,7 +122,7 @@ async def test_record_conversation_activity_sends_80pct_nudge_once(mock_db, seed
     mock_db.execute.return_value = mock_result
 
     with patch(
-        "app.services.billing_service.whatsapp_service.send_text_message", new=AsyncMock()
+        "app.services.whatsapp_service._raw_send_text_message", new=AsyncMock()
     ) as mock_send:
         await billing_service.record_conversation_activity(mock_db, client, conv)
 
@@ -145,7 +145,7 @@ async def test_record_conversation_activity_nudge_not_resent(mock_db, seeded_pla
     mock_db.execute.return_value = mock_result
 
     with patch(
-        "app.services.billing_service.whatsapp_service.send_text_message", new=AsyncMock()
+        "app.services.whatsapp_service._raw_send_text_message", new=AsyncMock()
     ) as mock_send:
         await billing_service.record_conversation_activity(mock_db, client, conv)
 

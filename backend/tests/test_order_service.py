@@ -77,7 +77,7 @@ async def test_mark_order_paid_generates_and_sends_invoice_on_whatsapp(mock_db):
         "app.services.invoice_service.save_order_invoice_pdf",
         return_value="https://app.example.com/invoices/order_invoice_1.pdf",
     ), patch(
-        "app.services.whatsapp_service.send_document_message", new=AsyncMock()
+        "app.services.outbound.send_document", new=AsyncMock()
     ) as mock_send_doc:
         result = await order_service.mark_order_paid(mock_db, order, client)
 
@@ -85,10 +85,10 @@ async def test_mark_order_paid_generates_and_sends_invoice_on_whatsapp(mock_db):
     assert order.invoice_number == "INV-7-0001"
     assert order.invoice_url == "https://app.example.com/invoices/order_invoice_1.pdf"
     mock_send_doc.assert_called_once()
-    call_kwargs = mock_send_doc.call_args.kwargs
-    assert call_kwargs["to_phone_number"] == "919999999999"
-    assert call_kwargs["document_url"] == "https://app.example.com/invoices/order_invoice_1.pdf"
-    assert call_kwargs["filename"] == "Invoice-INV-7-0001.pdf"
+    call_args = mock_send_doc.call_args.args
+    assert call_args[0] == "919999999999"
+    assert call_args[1] == "https://app.example.com/invoices/order_invoice_1.pdf"
+    assert call_args[2] == "Invoice-INV-7-0001.pdf"
 
 
 async def test_mark_order_paid_skips_document_send_on_non_whatsapp_channel(mock_db):
@@ -109,7 +109,7 @@ async def test_mark_order_paid_skips_document_send_on_non_whatsapp_channel(mock_
         "app.services.invoice_service.save_order_invoice_pdf",
         return_value="https://app.example.com/invoices/order_invoice_1.pdf",
     ), patch(
-        "app.services.whatsapp_service.send_document_message", new=AsyncMock()
+        "app.services.outbound.send_document", new=AsyncMock()
     ) as mock_send_doc:
         result = await order_service.mark_order_paid(mock_db, order, client)
 
@@ -154,7 +154,7 @@ async def test_mark_order_paid_no_conversation_skips_document_send(mock_db):
         "app.services.invoice_service.save_order_invoice_pdf",
         return_value="https://app.example.com/invoices/order_invoice_1.pdf",
     ), patch(
-        "app.services.whatsapp_service.send_document_message", new=AsyncMock()
+        "app.services.outbound.send_document", new=AsyncMock()
     ) as mock_send_doc:
         result = await order_service.mark_order_paid(mock_db, order, client)
 

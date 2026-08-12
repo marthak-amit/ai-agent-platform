@@ -210,17 +210,17 @@ async def test_summary_has_delivery_and_upi(replay_http, replay_session):
     )
 
     from app.services import whatsapp_service
-    whatsapp_service.send_text_message.reset_mock()
-    whatsapp_service.send_button_message.reset_mock()
+    whatsapp_service._raw_send_text_message.reset_mock()
+    whatsapp_service._raw_send_button_message.reset_mock()
 
     # Any neutral message with all slots already filled → SLOTS_DONE → show_summary
     resp = await send_message(replay_http, phone, "ok", phone_number_id=pnid)
     assert resp.status_code == 200
 
     # Summary is sent via confirm_buttons (send_button_message) — capture body text
-    text_captured = _all_sent_text(whatsapp_service.send_text_message)
+    text_captured = _all_sent_text(whatsapp_service._raw_send_text_message)
     btn_body = ""
-    for call in whatsapp_service.send_button_message.call_args_list:
+    for call in whatsapp_service._raw_send_button_message.call_args_list:
         _, kw = call
         btn_body += kw.get("body_text", "") + "\n"
     captured = text_captured + "\n" + btn_body
@@ -288,12 +288,12 @@ async def test_confirmation_has_catalogue_link(replay_http, replay_session):
     )
 
     from app.services import whatsapp_service
-    whatsapp_service.send_text_message.reset_mock()
+    whatsapp_service._raw_send_text_message.reset_mock()
 
     resp = await send_message(replay_http, phone, "yes", phone_number_id=pnid)
     assert resp.status_code == 200
 
-    captured = _all_sent_text(whatsapp_service.send_text_message)
+    captured = _all_sent_text(whatsapp_service._raw_send_text_message)
 
     assert "🎉" in captured, "Success emoji missing from confirmation"
     assert "placed successfully" in captured, "Placed-successfully text missing"
@@ -467,7 +467,7 @@ async def test_price_formatting_no_decimals(replay_http, replay_session):
     )
 
     from app.services import whatsapp_service
-    whatsapp_service.send_text_message.reset_mock()
+    whatsapp_service._raw_send_text_message.reset_mock()
 
     # Trigger summary display ("1" at awaiting_final_confirmation)
     resp1 = await send_message(replay_http, phone, "1", phone_number_id=pnid)
@@ -477,7 +477,7 @@ async def test_price_formatting_no_decimals(replay_http, replay_session):
     resp2 = await send_message(replay_http, phone, "yes", phone_number_id=pnid)
     assert resp2.status_code == 200
 
-    captured = _all_sent_text(whatsapp_service.send_text_message)
+    captured = _all_sent_text(whatsapp_service._raw_send_text_message)
     decimal_match = re.search(r"₹[\d,]+\.\d", captured)
     assert decimal_match is None, (
         f"Decimal price found: {decimal_match.group()!r}\n"
@@ -494,6 +494,13 @@ async def test_summary_buttons(replay_http, replay_session):
     At awaiting_final_confirmation the order summary must be dispatched via
     send_button_message (confirm_pay + cancel_order) not plain text.
     Tapping confirm_pay must create an order; tapping cancel_order must not.
+
+    The customer re-sends the pinned product's own SKU (not a button tap) —
+    the AFC free-text handler resolves this to the already-pinned product
+    and falls through to the normal summary render, so this still exercises
+    the button-dispatch path. (Free text that resolves to a *different*
+    product now switches the draft instead of re-showing this summary — see
+    tests/replay/test_afc_product_switch.py.)
     """
     phone = _phone("0800")
     pnid = _pnid("800")
@@ -502,7 +509,7 @@ async def test_summary_buttons(replay_http, replay_session):
         replay_session,
         phone=phone,
         pnid=pnid,
-        product_sku="SB_SKU",
+        product_sku="SB1500",
         product_name="Chanderi Suit",
         price=1500.0,
         stock=5,
@@ -522,14 +529,15 @@ async def test_summary_buttons(replay_http, replay_session):
     )
 
     from app.services import whatsapp_service
-    whatsapp_service.send_button_message.reset_mock()
+    whatsapp_service._raw_send_button_message.reset_mock()
 
-    # Any message at AFC triggers show_summary → should send via button
-    resp = await send_message(replay_http, phone, "show me the order", phone_number_id=pnid)
+    # Re-sending the pinned product's own SKU at AFC → not a switch → falls
+    # through to show_summary → should send via button.
+    resp = await send_message(replay_http, phone, product.sku, phone_number_id=pnid)
     assert resp.status_code == 200
 
     # send_button_message must have been called with confirm_pay + cancel_order
-    btn_calls = whatsapp_service.send_button_message.call_args_list
+    btn_calls = whatsapp_service._raw_send_button_message.call_args_list
     assert len(btn_calls) >= 1, "send_button_message never called for order summary"
     call_kwargs = btn_calls[-1][1] if btn_calls[-1][1] else {}
     call_args = btn_calls[-1][0]

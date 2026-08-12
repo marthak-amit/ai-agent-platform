@@ -17,7 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.campaign import Campaign
 from app.models.campaign_recipient import CampaignRecipient
-from app.services import plan_cache, whatsapp_service
+from app.services import outbound, plan_cache
+from app.services.send_gate import MessageKind
 
 logger = logging.getLogger(__name__)
 
@@ -213,13 +214,24 @@ async def send_campaign(campaign_id: int, db: AsyncSession) -> None:
         try:
             message = _personalise(campaign.message_template, recipient)
             await asyncio.sleep(0.1)  # ~600 msg/min — safely under Meta's 1 000/min cap
-            await whatsapp_service.send_text_message(
-                to_phone_number=recipient.phone_number,
-                message_text=message,
+            _result = await outbound.send_text(
+                recipient.phone_number,
+                message,
+                kind=MessageKind.BROADCAST_MARKETING,
+                db=db,
+                client_id=campaign.client_id,
             )
-            recipient.status = "sent"
-            recipient.sent_at = datetime.now(timezone.utc)
-            campaign.sent_count += 1
+            if _result is None:
+                # Send gate refused (opted out / blocked / outside the 24h
+                # window with no approved template) — marketing consent is
+                # checked per recipient at send time, not just at segment
+                # build. Recorded, never retried as free-form.
+                recipient.status = "suppressed"
+                campaign.failed_count += 1
+            else:
+                recipient.status = "sent"
+                recipient.sent_at = datetime.now(timezone.utc)
+                campaign.sent_count += 1
         except Exception as exc:
             logger.warning(
                 "Campaign %d: failed to send to %s — %s",

@@ -94,7 +94,10 @@ def replay_db_url():
 
     admin_engine2 = sa.create_engine(_ADMIN_SYNC_URL, isolation_level="AUTOCOMMIT")
     with admin_engine2.connect() as conn:
-        conn.execute(sa.text(f'DROP DATABASE IF EXISTS "{_REPLAY_DB}"'))
+        # WITH (FORCE) here too — engine.dispose() in function fixtures is
+        # async and Postgres may still see those sessions for a moment,
+        # which made this teardown DROP flake with ObjectInUse.
+        conn.execute(sa.text(f'DROP DATABASE IF EXISTS "{_REPLAY_DB}" WITH (FORCE)'))
     admin_engine2.dispose()
 
 
@@ -332,19 +335,19 @@ async def replay_http(replay_db_url, _clean_replay_db, monkeypatch):
     # test hits the network (Groq, Gemini, etc.).
     import unittest.mock as mock
     monkeypatch.setattr(
-        "app.services.whatsapp_service.send_text_message",
+        "app.services.whatsapp_service._raw_send_text_message",
         mock.AsyncMock(return_value=None),
     )
     monkeypatch.setattr(
-        "app.services.whatsapp_service.send_image_message",
+        "app.services.whatsapp_service._raw_send_image_message",
         mock.AsyncMock(return_value=None),
     )
     monkeypatch.setattr(
-        "app.services.whatsapp_service.send_button_message",
+        "app.services.whatsapp_service._raw_send_button_message",
         mock.AsyncMock(return_value=True),
     )
     monkeypatch.setattr(
-        "app.services.whatsapp_service.send_document_message",
+        "app.services.whatsapp_service._raw_send_document_message",
         mock.AsyncMock(return_value=None),
     )
     monkeypatch.setattr(

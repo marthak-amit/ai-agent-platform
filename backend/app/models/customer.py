@@ -57,6 +57,24 @@ class Customer(Base):
     # Tags & flags
     is_vip: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_blocked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    # Send-gate fields (migration 0055).
+    # opted_out: customer asked us to stop messaging — send_gate denies every
+    # outbound to them except the single opt-out confirmation.
+    # optout_confirmed_at: stamped when that confirmation is sent; makes the
+    # "one-time" goodbye DB-enforced rather than caller-disciplined.
+    # last_inbound_at: customer's most recent inbound message — customer-level
+    # fallback for the Meta 24h window when no conversation is resolvable
+    # (conversation-level message history remains the primary source).
+    opted_out: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    optout_confirmed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_inbound_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     tags: Mapped[Optional[str]] = mapped_column(
         String, nullable=True
     )  # comma-separated: "wholesale,regular,vip"

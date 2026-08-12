@@ -410,21 +410,34 @@ async def _send_abandoned_intent_followups(db) -> None:
 
             # Send — channel-aware (mirrors followup_service.send_followups)
             try:
+                from app.services import outbound
+                from app.services.send_gate import MessageKind
+
                 if conv.channel == "instagram":
                     if not client.instagram_account_id:
                         raise ValueError("No instagram_account_id for client — cannot send Instagram nudge.")
-                    from app.services.instagram_service import send_dm
-                    await send_dm(
-                        ig_user_id=client.instagram_account_id,
-                        recipient_igsid=conv.phone_number,
-                        message_text=followup_text,
+                    _sent = await outbound.ig_send_dm(
+                        client.instagram_account_id,
+                        conv.phone_number,
+                        followup_text,
+                        kind=MessageKind.NUDGE,
+                        db=db,
+                        client_id=conv.client_id,
+                        conversation_id=conv.id,
                     )
                 else:
-                    from app.services.whatsapp_service import send_text_message
-                    await send_text_message(
-                        to_phone_number=conv.phone_number,
-                        message_text=followup_text,
+                    _sent = await outbound.send_text(
+                        conv.phone_number,
+                        followup_text,
+                        kind=MessageKind.NUDGE,
+                        db=db,
+                        client_id=conv.client_id,
+                        conversation_id=conv.id,
                     )
+                if _sent is None:
+                    # Gate refused (opt-out / block / window re-closed since the
+                    # scheduler's own check) — do not mark as followed-up.
+                    continue
             except Exception as exc:
                 logger.warning(
                     "Follow-up send failed for conv=%s phone=%s channel=%s: %s",

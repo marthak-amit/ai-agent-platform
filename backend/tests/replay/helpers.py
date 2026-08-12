@@ -181,8 +181,8 @@ def capture_all(monkeypatch) -> list[str]:
         captured.append(body_text)
         return True
 
-    monkeypatch.setattr("app.services.whatsapp_service.send_text_message", _capture_text)
-    monkeypatch.setattr("app.services.whatsapp_service.send_button_message", _capture_button)
-    monkeypatch.setattr("app.services.whatsapp_service.send_list_message", _capture_list)
+    monkeypatch.setattr("app.services.whatsapp_service._raw_send_text_message", _capture_text)
+    monkeypatch.setattr("app.services.whatsapp_service._raw_send_button_message", _capture_button)
+    monkeypatch.setattr("app.services.whatsapp_service._raw_send_list_message", _capture_list)
 
     return captured

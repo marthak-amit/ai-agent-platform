@@ -101,15 +101,15 @@ async def test_record_message_sends_80_percent_warning():
     db.add = MagicMock()
 
     with patch(
-        "app.services.whatsapp_service.send_text_message",
+        "app.services.whatsapp_service._raw_send_text_message",
         new_callable=AsyncMock,
     ) as mock_send:
         await usage_service.record_message(db, client)
 
     mock_send.assert_called_once()
-    call_args = mock_send.call_args
-    assert call_args.kwargs["to_phone_number"] == "+919876543210"
-    assert "80" in call_args.kwargs["message_text"] or "Usage Alert" in call_args.kwargs["message_text"]
+    call_kwargs = mock_send.call_args.kwargs
+    assert call_kwargs["to_phone_number"] == "+919876543210"
+    assert "80" in call_kwargs["message_text"] or "Usage Alert" in call_kwargs["message_text"]
 
 
 async def test_record_message_does_not_resend_80_warning():
@@ -126,7 +126,7 @@ async def test_record_message_does_not_resend_80_warning():
     db.add = MagicMock()
 
     with patch(
-        "app.services.whatsapp_service.send_text_message",
+        "app.services.whatsapp_service._raw_send_text_message",
         new_callable=AsyncMock,
     ) as mock_send:
         await usage_service.record_message(db, client)
@@ -147,7 +147,7 @@ async def test_record_message_no_warning_when_no_whatsapp_number():
     db.add = MagicMock()
 
     with patch(
-        "app.services.whatsapp_service.send_text_message",
+        "app.services.whatsapp_service._raw_send_text_message",
         new_callable=AsyncMock,
     ) as mock_send:
         await usage_service.record_message(db, client)
@@ -168,7 +168,7 @@ async def test_record_message_logs_at_100_percent():
     db.add = MagicMock()
 
     with patch(
-        "app.services.whatsapp_service.send_text_message",
+        "app.services.whatsapp_service._raw_send_text_message",
         new_callable=AsyncMock,
     ):
         log = await usage_service.record_message(db, client)

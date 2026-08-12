@@ -1,8 +1,14 @@
 """
-WhatsApp Cloud API sender service.
+WhatsApp Cloud API sender service — RAW transport layer.
 
 Sends text, image, document, and interactive (button/list) messages via the
 Meta Cloud API POST /v21.0/{phone_number_id}/messages endpoint.
+
+IMPORTANT: every function here is module-private (`_raw_*`) on purpose.
+Nothing in app/ may call these directly except app/services/outbound.py,
+which wraps each one behind send_gate.check_send() (opt-out, block status,
+Meta 24h window). tests/test_send_gate_guard.py fails the build if any other
+module references a `_raw_` sender or the Graph messages endpoint.
 """
 
 import logging
@@ -17,18 +23,26 @@ META_API_BASE_URL = "https://graph.facebook.com"
 logger = logging.getLogger(__name__)
 
 
-async def send_text_message(to_phone_number: str, message_text: str) -> dict:
+async def _raw_send_text_message(
+    to_phone_number: str,
+    message_text: str,
+    phone_number_id: str | None = None,
+    access_token: str | None = None,
+) -> dict:
     """
     Send a plain-text WhatsApp message to a recipient.
 
     Constructs the Meta Cloud API request payload and posts it
     using an async httpx client. The access token and phone number
-    ID are sourced from environment variables.
+    ID default to the env-var configuration; per-client credentials
+    may be passed explicitly (e.g. the channel-setup test message).
 
     Args:
         to_phone_number: Recipient phone number in E.164 format without '+',
                          e.g. "919876543210".
         message_text:    The text content to send.
+        phone_number_id: Optional per-client WhatsApp phone number ID.
+        access_token:    Optional per-client access token.
 
     Returns:
         The parsed JSON response dict from Meta API on success.
@@ -38,13 +52,11 @@ async def send_text_message(to_phone_number: str, message_text: str) -> dict:
     """
     settings = get_settings()
 
-    url = (
-        f"{META_API_BASE_URL}/{META_API_VERSION}"
-        f"/{settings.whatsapp_phone_number_id}/messages"
-    )
+    pid = phone_number_id or settings.whatsapp_phone_number_id
+    url = f"{META_API_BASE_URL}/{META_API_VERSION}/{pid}/messages"
 
     headers = {
-        "Authorization": f"Bearer {settings.whatsapp_access_token}",
+        "Authorization": f"Bearer {access_token or settings.whatsapp_access_token}",
         "Content-Type": "application/json",
     }
 
@@ -68,7 +80,7 @@ async def send_text_message(to_phone_number: str, message_text: str) -> dict:
         return response.json()
 
 
-async def send_button_message(
+async def _raw_send_button_message(
     to_phone_number: str,
     body_text: str,
     buttons: list[dict],
@@ -130,7 +142,7 @@ async def send_button_message(
         return response.status_code == 200
 
 
-async def send_list_message(
+async def _raw_send_list_message(
     to_phone_number: str,
     header_text: str,
     body_text: str,
@@ -187,7 +199,7 @@ async def send_list_message(
         return response.status_code == 200
 
 
-async def send_image_message(to_phone_number: str, image_url: str, caption: str | None = None) -> dict:
+async def _raw_send_image_message(to_phone_number: str, image_url: str, caption: str | None = None) -> dict:
     """
     Send an image WhatsApp message (by public URL) to a recipient.
 
@@ -236,7 +248,7 @@ async def send_image_message(to_phone_number: str, image_url: str, caption: str 
         return response.json()
 
 
-async def send_document_message(
+async def _raw_send_document_message(
     to_phone_number: str, document_url: str, filename: str, caption: str | None = None
 ) -> dict:
     """

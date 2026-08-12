@@ -121,6 +121,99 @@ def test_format_catalogue_context_multiple_products():
     assert "Product B" in ctx
 
 
+# ── guard_product_reply ──────────────────────────────────────────────────────
+#
+# BUG: guard_product_reply's 0-relevance fallback echoed the customer's raw
+# message back into a "we don't carry {query}" template — nonsensical when
+# the query is bare smalltalk ("Hello") rather than a product-name claim,
+# and separately, a SKU already resolved via a multi-choice pick this turn
+# had no way to bypass the phantom check other than the caller perfectly
+# rebuilding canonical_products. These tests characterize the fix directly
+# against the pure function (no DB/webhook harness needed).
+
+def test_guard_product_reply_greeting_query_does_not_echo_not_carry():
+    """
+    Customer sends a bare greeting ("Hello"); the LLM's open-browsing reply
+    hallucinates a SKU/price not in the catalogue. The 0-relevance fallback
+    must NOT echo "Hello" back as a fake product name ("we don't carry
+    Hello") — it must fall back to the plain deterministic listing instead,
+    same as the no-query case.
+    """
+    real_product = _make_product(
+        id=1, name="Cotton Printed Saree", sku="SR10001", price=1200.0,
+    )
+    hallucinated_reply = (
+        "Hi there! We have a lovely option:\n"
+        "• Designer Georgette [SR99999] — ₹2500\n"
+        "Would you like to order?"
+    )
+    result = catalogue_service.guard_product_reply(
+        hallucinated_reply, [real_product], query="Hello",
+    )
+    assert "don't carry hello" not in result.lower(), (
+        f"BUG: bare greeting query must never be echoed as a fake product "
+        f"name in the not-carry fallback; got: {result!r}"
+    )
+    assert "SR99999" not in result, "Phantom SKU must still be stripped"
+    assert "Cotton Printed Saree" in result, (
+        f"Must fall back to the plain real-product listing; got: {result!r}"
+    )
+
+
+def test_guard_product_reply_pre_validated_sku_bypasses_phantom_check():
+    """
+    A SKU already resolved via a multi-choice pick this turn (passed as
+    pre_validated_products) must never be flagged phantom, even when
+    canonical_products is a stale/unrelated set — defense-in-depth on top
+    of the caller rebuilding canonical_products after a pick resolves.
+    """
+    stale_unrelated_product = _make_product(
+        id=1, name="Formal Shirt", sku="SR00100", price=699.0,
+    )
+    picked_product = _make_product(
+        id=2, name="Cotton Saree", sku="SR33210", price=999.0,
+    )
+    pinned_fact_reply = (
+        "Yes, we have this available:\n\n"
+        "Cotton Saree [SR33210] — ₹999\n\n"
+        "Would you like to order? (Yes / No)"
+    )
+    result = catalogue_service.guard_product_reply(
+        pinned_fact_reply,
+        [stale_unrelated_product],
+        query="SR33210",
+        pre_validated_products=[picked_product],
+    )
+    assert result == pinned_fact_reply, (
+        f"Pre-validated pick's own SKU/price must bypass the phantom check "
+        f"entirely, not be rejected as phantom against the stale unrelated "
+        f"canonical set; got: {result!r}"
+    )
+
+
+def test_guard_product_reply_genuine_hallucinated_sku_still_caught():
+    """
+    A genuinely hallucinated SKU not in the catalogue and not pre-validated
+    must still be caught and the reply replaced with a clean listing of the
+    real product(s) — the legitimate phantom-SKU catch must keep working.
+    """
+    real_product = _make_product(
+        id=1, name="Silk Saree", sku="SR10002", price=1500.0,
+    )
+    hallucinated_reply = (
+        "Here are some options:\n"
+        "• Silk Saree [SR10002] — ₹1500\n"
+        "• Premium Saree [SR00000] — ₹5000\n"
+        "Would you like to order?"
+    )
+    result = catalogue_service.guard_product_reply(
+        hallucinated_reply, [real_product], query="saree",
+    )
+    assert "SR00000" not in result, f"Hallucinated SKU must be stripped: {result!r}"
+    assert "5000" not in result, f"Hallucinated price must be stripped: {result!r}"
+    assert "SR10002" in result, f"Real SKU must remain: {result!r}"
+
+
 # ── router tests ──────────────────────────────────────────────────────────────
 
 def test_add_product_returns_201(client, mock_db, mock_settings, make_test_user):

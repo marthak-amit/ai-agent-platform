@@ -23,7 +23,7 @@ def mock_httpx_client():
 
 async def test_send_dm_posts_to_correct_url(mock_httpx_client, mock_settings):
     """send_dm posts to /{ig_user_id}/messages with Bearer token."""
-    from app.services.instagram_service import send_dm
+    from app.services.instagram_service import _raw_send_dm as send_dm
 
     mock_client, _ = mock_httpx_client
     with patch("app.services.instagram_service.httpx.AsyncClient", return_value=mock_client):
@@ -39,7 +39,7 @@ async def test_send_dm_posts_to_correct_url(mock_httpx_client, mock_settings):
 
 async def test_reply_to_comment_posts_to_correct_url(mock_httpx_client, mock_settings):
     """reply_to_comment posts to /{comment_id}/replies."""
-    from app.services.instagram_service import reply_to_comment
+    from app.services.instagram_service import _raw_reply_to_comment as reply_to_comment
 
     mock_client, _ = mock_httpx_client
     with patch("app.services.instagram_service.httpx.AsyncClient", return_value=mock_client):
@@ -52,7 +52,7 @@ async def test_reply_to_comment_posts_to_correct_url(mock_httpx_client, mock_set
 
 async def test_send_private_reply_posts_to_messages_with_comment_id_recipient(mock_httpx_client, mock_settings):
     """send_private_reply posts to /{ig_user_id}/messages with recipient.comment_id."""
-    from app.services.instagram_service import send_private_reply
+    from app.services.instagram_service import _raw_send_private_reply as send_private_reply
 
     mock_client, _ = mock_httpx_client
     with patch("app.services.instagram_service.httpx.AsyncClient", return_value=mock_client):
@@ -68,7 +68,7 @@ async def test_send_private_reply_posts_to_messages_with_comment_id_recipient(mo
 
 async def test_send_dm_raises_on_http_error(mock_settings):
     """send_dm propagates HTTPStatusError on 4xx/5xx."""
-    from app.services.instagram_service import send_dm
+    from app.services.instagram_service import _raw_send_dm as send_dm
 
     mock_response = MagicMock()
     mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(

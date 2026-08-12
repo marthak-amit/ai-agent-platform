@@ -19,7 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.models.payment import Payment
-from app.services import invoice_service, razorpay_service, whatsapp_service
+from app.services import invoice_service, outbound, razorpay_service
+from app.services.send_gate import MessageKind
 
 # Invoices are saved locally under backend/invoices/ and served via a URL.
 _INVOICES_DIR = os.path.join(
@@ -159,35 +160,39 @@ async def razorpay_webhook(
                 except Exception as exc:
                     logger.warning("Could not mark linked order as paid: %s", exc)
 
+                from app.models.client import Client
+
+                owner_result = await db.execute(
+                    select(Client).where(Client.is_active == True).limit(1)  # noqa: E712
+                )
+                owner = owner_result.scalar_one_or_none()
+
                 # ── Notify customer ────────────────────────────────────────
                 try:
                     amount_inr = payment.amount / 100
-                    await whatsapp_service.send_text_message(
-                        to_phone_number=payment.phone_number,
-                        message_text=(
+                    await outbound.send_text(
+                        payment.phone_number,
+                        (
                             f"Payment received! ✅\n"
                             f"₹{amount_inr:.0f} confirmed. Your order is being packed "
                             f"and will be dispatched shortly. 🛍️\n\n"
                             f"Thank you for shopping with us! 🙏"
                         ),
+                        kind=MessageKind.UTILITY_TEMPLATE,
+                        db=db,
+                        client_id=owner.id if owner else None,
                     )
                 except Exception as exc:
                     logger.warning("Customer payment confirmation WhatsApp failed: %s", exc)
 
                 # ── Notify owner ───────────────────────────────────────────
                 try:
-                    from app.models.client import Client
-
-                    owner_result = await db.execute(
-                        select(Client).where(Client.is_active == True).limit(1)  # noqa: E712
-                    )
-                    owner = owner_result.scalar_one_or_none()
                     if owner and owner.phone:
                         amount_inr = payment.amount / 100
                         order_ref = linked_order.order_number if linked_order else (qr_code_id or "?")
-                        await whatsapp_service.send_text_message(
-                            to_phone_number=owner.phone,
-                            message_text=(
+                        await outbound.send_owner_text(
+                            owner.phone,
+                            (
                                 f"💰 Payment received!\n"
                                 f"━━━━━━━━━━━━━━━\n"
                                 f"Order: {order_ref}\n"
@@ -203,12 +208,6 @@ async def razorpay_webhook(
 
                 # ── Generate GST invoice ───────────────────────────────────
                 try:
-                    from app.models.client import Client
-
-                    owner_result = await db.execute(
-                        select(Client).where(Client.is_active == True).limit(1)  # noqa: E712
-                    )
-                    owner = owner_result.scalar_one_or_none()
                     amount_inr = payment.amount / 100
                     products_for_invoice = [
                         {
@@ -240,13 +239,16 @@ async def razorpay_webhook(
                     payment.invoice_url = invoice_url
                     await db.commit()
 
-                    await whatsapp_service.send_text_message(
-                        to_phone_number=payment.phone_number,
-                        message_text=(
+                    await outbound.send_text(
+                        payment.phone_number,
+                        (
                             f"Your GST invoice is ready 🧾\n"
                             f"Download: {invoice_url}\n"
                             f"Order ID: {razorpay_payment_id or qr_code_id}"
                         ),
+                        kind=MessageKind.UTILITY_TEMPLATE,
+                        db=db,
+                        client_id=owner.id if owner else None,
                     )
                     logger.info("Invoice generated and sent for payment %s.", payment.id)
                 except Exception as exc:
@@ -268,15 +270,24 @@ async def razorpay_webhook(
                     payment.phone_number,
                 )
 
+                from app.models.client import Client
+                owner_result = await db.execute(
+                    select(Client).where(Client.is_active == True).limit(1)  # noqa: E712
+                )
+                owner = owner_result.scalar_one_or_none()
+
                 # Notify customer
                 try:
                     amount_inr = payment.amount // 100
-                    await whatsapp_service.send_text_message(
-                        to_phone_number=payment.phone_number,
-                        message_text=(
+                    await outbound.send_text(
+                        payment.phone_number,
+                        (
                             f"Hi! Your payment of ₹{amount_inr} could not be processed. "
                             f"Please try again or contact us for assistance."
                         ),
+                        kind=MessageKind.UTILITY_TEMPLATE,
+                        db=db,
+                        client_id=owner.id if owner else None,
                     )
                 except Exception as exc:
                     logger.error(
@@ -286,15 +297,10 @@ async def razorpay_webhook(
 
                 # Notify business owner
                 try:
-                    from app.models.client import Client
-                    owner_result = await db.execute(
-                        select(Client).where(Client.is_active == True).limit(1)  # noqa: E712
-                    )
-                    owner = owner_result.scalar_one_or_none()
                     if owner and owner.whatsapp_number:
-                        await whatsapp_service.send_text_message(
-                            to_phone_number=owner.whatsapp_number,
-                            message_text=(
+                        await outbound.send_owner_text(
+                            owner.whatsapp_number,
+                            (
                                 f"Payment failed: ₹{amount_inr} from {payment.phone_number}. "
                                 f"Razorpay ID: {razorpay_payment_id or 'unknown'}."
                             ),

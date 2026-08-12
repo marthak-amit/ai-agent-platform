@@ -221,7 +221,7 @@ async def test_stale_paid_after_cancel_never_marks_paid(replay_http, replay_sess
     sent_texts: list[str] = []
 
     with mock.patch(
-        "app.services.whatsapp_service.send_text_message",
+        "app.services.whatsapp_service._raw_send_text_message",
         side_effect=lambda to_phone_number, message_text, **kw: sent_texts.append(message_text),
     ):
         resp = await _btn(replay_http, phone, "paid_done", "I've Paid",
@@ -385,7 +385,7 @@ async def test_expired_nonce_button_rejected(replay_http, replay_session):
 
     sent_texts: list[str] = []
     with mock.patch(
-        "app.services.whatsapp_service.send_text_message",
+        "app.services.whatsapp_service._raw_send_text_message",
         side_effect=lambda to_phone_number, message_text, **kw: sent_texts.append(message_text),
     ):
         # Button ID encodes a WRONG nonce ("deadbeef" ≠ stored "aabbccdd")

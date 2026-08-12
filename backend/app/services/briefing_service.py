@@ -13,7 +13,7 @@ from datetime import date, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services import whatsapp_service
+from app.services import outbound
 
 logger = logging.getLogger(__name__)
 
@@ -159,10 +159,7 @@ async def send_daily_briefings(db: AsyncSession) -> None:
             continue
         try:
             briefing = await generate_daily_briefing(client.id, db)
-            await whatsapp_service.send_text_message(
-                to_phone_number=client.phone,
-                message_text=briefing,
-            )
+            await outbound.send_owner_text(client.phone, briefing)
             logger.info("Briefing sent to client %d (%s).", client.id, client.phone)
         except Exception as exc:
             logger.error(

@@ -30,8 +30,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.db import get_db
 from app.schemas.webhook import WhatsAppWebhookPayload
-from app.services import catalogue_service, conversation_service, vision_service, whatsapp_service
-from app.services.language_templates import format_price
+from app.services import catalogue_service, conversation_service, outbound, vision_service
+from app.services.send_gate import MessageKind
 from app.services.order_pipeline import InboundContext, _decode_btn, handle_inbound_message
 from app.routers._whatsapp_adapter import send_pipeline_result
 
@@ -170,83 +170,6 @@ async def _get_client_by_phone_number_id(db: AsyncSession, phone_number_id: str 
 # only by decide_send_instruction() there.
 
 
-async def _send_upi_qr(
-    sender_phone: str,
-    amount_inr: float,
-    order_number: str,
-    client,
-    pid: str | None,
-) -> None:
-    """
-    Send payment instructions to the customer via WhatsApp.
-
-    Priority:
-    1. Razorpay QR code (per-client keys, falls back to global env vars).
-    2. Plain UPI ID text with optional upi_display_name and payment_instructions.
-
-    All errors are swallowed — payment collection must never crash the order flow.
-    """
-    _upi_id = getattr(client, "upi_id", None) if client else None
-    _upi_display_name = getattr(client, "upi_display_name", None) if client else None
-    _payment_instructions = getattr(client, "payment_instructions", None) if client else None
-    _rz_key_id = getattr(client, "razorpay_key_id", None) if client else None
-    _rz_key_secret = getattr(client, "razorpay_key_secret", None) if client else None
-
-    from app.config import get_settings as _gs
-    settings = _gs()
-
-    # Prefer per-client keys; fall back to global env vars
-    effective_key_id = _rz_key_id or settings.razorpay_key_id
-    effective_key_secret = _rz_key_secret or settings.razorpay_key_secret
-    razorpay_ready = bool(effective_key_id and effective_key_secret)
-
-    if razorpay_ready:
-        try:
-            from app.services import razorpay_service
-
-            qr_data = await razorpay_service.create_qr_code(
-                amount=int(amount_inr * 100),  # paise
-                description=f"Order {order_number}",
-                phone_number=sender_phone,
-                key_id=effective_key_id,
-                key_secret=effective_key_secret,
-            )
-            image_url = qr_data.get("image_url") or qr_data.get("short_url")
-            if image_url:
-                caption = (
-                    f"Scan this QR to pay {format_price(amount_inr)} for order {order_number}.\n"
-                    f"Order will be dispatched after payment is confirmed. 🙏"
-                )
-                if _payment_instructions:
-                    caption += f"\n\n{_payment_instructions}"
-                await whatsapp_service.send_image_message(
-                    to_phone_number=sender_phone,
-                    image_url=image_url,
-                    caption=caption,
-                )
-                return
-        except Exception as exc:
-            logger.warning("Razorpay QR generation failed, falling back to UPI text: %s", exc)
-
-    # Fallback: send plain UPI ID text
-    if _upi_id:
-        name_part = f" ({_upi_display_name})" if _upi_display_name else ""
-        instructions_part = f"\n\n{_payment_instructions}" if _payment_instructions else ""
-        await whatsapp_service.send_text_message(
-            to_phone_number=sender_phone,
-            message_text=(
-                f"Please pay {format_price(amount_inr)} via UPI to complete your order {order_number}.\n"
-                f"UPI ID: {_upi_id}{name_part}{instructions_part}\n\n"
-                f"Reply PAID when done. ✅"
-            ),
-        )
-    else:
-        logger.warning(
-            "No Razorpay config and no UPI ID for client %s — cannot send payment request.",
-            getattr(client, "id", "?"),
-        )
-
-
 # NOTE: _send_bank_transfer_details moved to app/services/order_pipeline.py as
 # _build_bank_transfer_text() (pure text builder) as part of the
 # handle_inbound_message consolidation — the actual send now flows through
@@ -330,13 +253,13 @@ async def _deduct_stock_and_alert(db: AsyncSession, order, product, client) -> N
                     f"{product.name} is now out of stock.\n"
                     f"Please restock soon."
                 )
-                await whatsapp_service.send_text_message(client.phone, alert)
+                await outbound.send_owner_text(client.phone, alert)
             elif stock_remaining <= product.low_stock_alert:
                 alert = (
                     f"⚠️ Low stock alert!\n"
                     f"{product.name} — only {stock_remaining} pieces remaining."
                 )
-                await whatsapp_service.send_text_message(client.phone, alert)
+                await outbound.send_owner_text(client.phone, alert)
     except Exception as exc:
         logger.warning("Stock alert notification failed: %s", exc)
 
@@ -489,9 +412,11 @@ async def receive_message(
         # message.audio is not None` — no ack for a malformed audio payload.
         if message.type == "audio" and message.audio is not None:
             try:
-                await whatsapp_service.send_text_message(
-                    to_phone_number=sender_phone,
-                    message_text="🎤 Voice note suna. Ek second...",
+                await outbound.send_text(
+                    sender_phone,
+                    "🎤 Voice note suna. Ek second...",
+                    kind=MessageKind.PIPELINE_REPLY,
+                    db=db,
                 )
             except Exception as exc:
                 logger.warning("Ack send failed for audio: %s", exc)
@@ -499,11 +424,9 @@ async def receive_message(
     # Resolve the client that owns this WhatsApp number.
     # display_phone_number in the webhook metadata is the business's number —
     # match it against client.whatsapp_number set during onboarding.
-    display_phone: str | None = None
     webhook_phone_number_id: str | None = None
     try:
         meta = payload.entry[0].changes[0].value.metadata
-        display_phone = meta.display_phone_number
         webhook_phone_number_id = meta.phone_number_id
     except (IndexError, AttributeError):
         pass

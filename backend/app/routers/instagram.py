@@ -45,11 +45,12 @@ from app.schemas.webhook import AudioContent, ImageContent, TextContent, WhatsAp
 from app.services import (
     conversation_service,
     ig_comment_service,
-    instagram_service,
+    outbound,
     plan_service,
     vision_service,
 )
 from app.services.order_pipeline import InboundContext, handle_inbound_message
+from app.services.send_gate import MessageKind
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/instagram", tags=["instagram"])
@@ -284,7 +285,12 @@ async def _handle_dm(
         # left waiting in silence during transcription — same exception
         # webhook.py documents for WhatsApp's audio ack.
         try:
-            await instagram_service.send_dm(ig_user_id, sender_igsid, "🎤 Voice note suna. Ek second...")
+            await outbound.ig_send_dm(
+                ig_user_id, sender_igsid, "🎤 Voice note suna. Ek second...",
+                kind=MessageKind.PIPELINE_REPLY, db=db,
+                client_id=getattr(conv, "client_id", None),
+                conversation_id=getattr(conv, "id", None),
+            )
         except Exception as exc:
             logger.warning("Ack DM failed for Instagram audio: %s", exc)
         audio_url = dm.message.get_audio_url() if dm.message else None
@@ -312,7 +318,10 @@ async def _handle_dm(
     result = await handle_inbound_message(ctx)
 
     try:
-        await send_pipeline_result(result, ig_user_id=ig_user_id, recipient_igsid=sender_igsid)
+        await send_pipeline_result(
+            result, ig_user_id=ig_user_id, recipient_igsid=sender_igsid,
+            db=db, conv=conv,
+        )
     except Exception as exc:
         logger.error("Instagram send error: %s", exc)
 

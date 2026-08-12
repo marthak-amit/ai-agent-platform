@@ -11,26 +11,35 @@ customer (see Section 1 of external_data/trim_and_unify_prompt.md).
 
 from __future__ import annotations
 
+from app.services.language_templates import get_template as _tpl
 from app.services.llm_intent import IntentResult
 
-_KNOWN_FACTS = {
-    "delivery_time": "Delivery usually takes 3–7 business days.",
-    "payment": "We accept payments via UPI.",
-    "quality": "All our products go through a quality check before dispatch.",
+# Maps a llm_intent question_topic to the language_templates key holding its
+# canonical answer — kept in language_templates.py so every language variant
+# lives next to the rest of the localized copy, not duplicated here.
+_KNOWN_FACT_KEYS = {
+    "delivery_time": "known_fact_delivery_time",
+    "payment": "known_fact_payment",
+    "quality": "known_fact_quality",
 }
 
 
-def render_product_list_reply(products: list) -> str:
+def render_product_list_reply(products: list, language: str = "english") -> str:
     """
     Render a "browse this category" reply listing several catalogue products
     (e.g. customer says "saree dikhao" and several sarees match) — facts come
     straight from the DB-fetched product rows, never from model text.
+
+    Args:
+        products: DB-fetched product rows to list.
+        language: Language code as returned by language_service.detect_language();
+                  determines which localized template wraps the product lines.
     """
-    lines = ["Here are our options:"]
+    lines = [_tpl(language, "browse_list_header")]
     for p in products:
         price = int(getattr(p, "price", 0) or 0)
         lines.append(f"• {p.name} [{p.sku}] — ₹{price:,}")
-    lines.append("Which one interests you?")
+    lines.append(_tpl(language, "browse_list_footer"))
     return "\n".join(lines)
 
 
@@ -41,6 +50,7 @@ def render_open_browsing_reply(
     client,
     business_name: str,
     user_text: str = "",
+    language: str = "english",
 ) -> str:
     """
     Render the customer-facing reply for an open-browsing turn.
@@ -54,14 +64,19 @@ def render_open_browsing_reply(
                        for `product` (or the default empty dict if product is None).
         client:        Client ORM instance, or None.
         business_name: Display name to use when no product/topic is known.
+        language:      Language code as returned by language_service.detect_language();
+                       every fixed phrase in the reply is drawn from language_templates
+                       for this code so the reply matches the customer's language
+                       even on this fallback/generic path.
 
     Returns:
         Customer-facing text. Never contains raw model prose.
     """
-    if intent_result.question_topic and intent_result.question_topic in _KNOWN_FACTS:
-        fact = _KNOWN_FACTS[intent_result.question_topic]
+    if intent_result.question_topic and intent_result.question_topic in _KNOWN_FACT_KEYS:
+        fact = _tpl(language, _KNOWN_FACT_KEYS[intent_result.question_topic])
         if product:
-            return f"{fact}\n\nWould you like to order {product.name} [{product.sku}]? (Yes / No)"
+            order_line = _tpl(language, "would_you_like_to_order_named", name=product.name, sku=product.sku)
+            return f"{fact}\n\n{order_line}"
         return fact
 
     if product:
@@ -79,17 +94,14 @@ def render_open_browsing_reply(
             or product.sku.lower() in (user_text or "").lower()
         )
         if not intent_result.parsed_ok and not product_mentioned:
-            lines.append("Sorry, we don't carry that. Here's what we do have:")
+            lines.append(_tpl(language, "not_carry_have_instead"))
         lines.append(f"{product.name} [{product.sku}] — ₹{price:,}")
         if colors:
-            lines.append(f"Available colors: {', '.join(colors)}")
+            lines.append(_tpl(language, "available_colors_line", colors=", ".join(colors)))
         if sizes:
-            lines.append(f"Available sizes: {', '.join(sizes)}")
+            lines.append(_tpl(language, "available_sizes_line", sizes=", ".join(sizes)))
         lines.append("")
-        lines.append("Would you like to order? (Yes / No)")
+        lines.append(_tpl(language, "would_you_like_to_order_generic"))
         return "\n".join(lines)
 
-    return (
-        f"I'd be happy to help you find the right product from {business_name}! "
-        "Which item are you interested in?"
-    )
+    return _tpl(language, "which_item", business=business_name)

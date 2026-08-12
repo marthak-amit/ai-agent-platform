@@ -108,7 +108,7 @@ async def test_greeting_after_expired_flow_state_resets_not_resumes(replay_http,
     )
 
     from app.services import whatsapp_service, gemini_service
-    whatsapp_service.send_text_message.reset_mock()
+    whatsapp_service._raw_send_text_message.reset_mock()
     ai_calls_before = gemini_service.generate_reply.call_count
 
     resp = await _msg(replay_http, phone, "hi", pnid=pnid)
@@ -122,7 +122,7 @@ async def test_greeting_after_expired_flow_state_resets_not_resumes(replay_http,
     assert conv.pending_order_quantity is None
     assert conv.summary_shown is False
 
-    call_args, call_kwargs = whatsapp_service.send_text_message.call_args_list[-1]
+    call_args, call_kwargs = whatsapp_service._raw_send_text_message.call_args_list[-1]
     reply_text = call_kwargs.get("message_text") or (call_args[1] if len(call_args) > 1 else "")
     assert "catalogue" in reply_text.lower(), f"Expected fresh catalogue welcome, got: {reply_text!r}"
     assert "confirm" not in reply_text.lower(), (
@@ -176,7 +176,7 @@ async def test_pronoun_reference_within_context_ttl_answers_directly(replay_http
     assert conv.pending_product_sku is None, "Direct pronoun answer must not pin/restart an order"
 
     from app.services import whatsapp_service
-    call_args, call_kwargs = whatsapp_service.send_text_message.call_args_list[-1]
+    call_args, call_kwargs = whatsapp_service._raw_send_text_message.call_args_list[-1]
     reply_text = call_kwargs.get("message_text") or (call_args[1] if len(call_args) > 1 else "")
     assert "context test saree" in reply_text.lower(), f"Expected direct product answer, got: {reply_text!r}"
     assert "available" in reply_text.lower() or "stock" in reply_text.lower()
@@ -221,7 +221,7 @@ async def test_pronoun_reference_after_context_expired_falls_through(replay_http
     assert resp.status_code == 200, resp.text
 
     from app.services import whatsapp_service
-    call_args, call_kwargs = whatsapp_service.send_text_message.call_args_list[-1]
+    call_args, call_kwargs = whatsapp_service._raw_send_text_message.call_args_list[-1]
     reply_text = call_kwargs.get("message_text") or (call_args[1] if len(call_args) > 1 else "")
     assert "stale context saree is available at" not in reply_text.lower(), (
         f"Expired last_context must NOT produce the direct-answer template, got: {reply_text!r}"

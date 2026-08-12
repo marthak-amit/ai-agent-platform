@@ -39,9 +39,9 @@ async def test_buttons_degrade_to_text_when_pid_missing(monkeypatch):
     async def _capture_text(to_phone_number, message_text):
         sent_text.append((to_phone_number, message_text))
 
-    monkeypatch.setattr("app.services.whatsapp_service.send_text_message", _capture_text)
-    monkeypatch.setattr("app.services.whatsapp_service.send_button_message", _fail_if_called)
-    monkeypatch.setattr("app.services.whatsapp_service.send_list_message", _fail_if_called)
+    monkeypatch.setattr("app.services.whatsapp_service._raw_send_text_message", _capture_text)
+    monkeypatch.setattr("app.services.whatsapp_service._raw_send_button_message", _fail_if_called)
+    monkeypatch.setattr("app.services.whatsapp_service._raw_send_list_message", _fail_if_called)
 
     result = PipelineResult(
         text="Pick a payment method",
@@ -61,9 +61,9 @@ async def test_list_options_degrade_to_text_when_pid_missing(monkeypatch):
     async def _capture_text(to_phone_number, message_text):
         sent_text.append((to_phone_number, message_text))
 
-    monkeypatch.setattr("app.services.whatsapp_service.send_text_message", _capture_text)
-    monkeypatch.setattr("app.services.whatsapp_service.send_button_message", _fail_if_called)
-    monkeypatch.setattr("app.services.whatsapp_service.send_list_message", _fail_if_called)
+    monkeypatch.setattr("app.services.whatsapp_service._raw_send_text_message", _capture_text)
+    monkeypatch.setattr("app.services.whatsapp_service._raw_send_button_message", _fail_if_called)
+    monkeypatch.setattr("app.services.whatsapp_service._raw_send_list_message", _fail_if_called)
 
     result = PipelineResult(
         text="Choose an option",
@@ -90,8 +90,8 @@ async def test_buttons_sent_normally_when_pid_present(monkeypatch):
     async def _fail_text(*args, **kwargs):
         raise AssertionError("plain text should not be sent when buttons send succeeds")
 
-    monkeypatch.setattr("app.services.whatsapp_service.send_button_message", _capture_button)
-    monkeypatch.setattr("app.services.whatsapp_service.send_text_message", _fail_text)
+    monkeypatch.setattr("app.services.whatsapp_service._raw_send_button_message", _capture_button)
+    monkeypatch.setattr("app.services.whatsapp_service._raw_send_text_message", _fail_text)
 
     result = PipelineResult(
         text="Pick a payment method",

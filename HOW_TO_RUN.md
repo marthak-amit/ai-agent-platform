@@ -666,3 +666,4 @@ alembic upgrade head
 # Stop everything
 Ctrl+C  (in each Terminal window)
 ```
+#ngrok http 8000

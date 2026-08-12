@@ -199,7 +199,7 @@ async def notify_owner_escalation(
         reason:       Escalation reason key.
         db:           Active async DB session (unused but kept for future DB writes).
     """
-    from app.services import whatsapp_service
+    from app.services import outbound
 
     reason_text = {
         "customer_escalation": "⚠️ Customer seems upset",
@@ -219,10 +219,7 @@ async def notify_owner_escalation(
         return
 
     try:
-        await whatsapp_service.send_text_message(
-            to_phone_number=client.phone,
-            message_text=message,
-        )
+        await outbound.send_owner_text(client.phone, message)
         logger.info(
             "Escalation alert sent to owner %s (reason=%s, customer=%s).",
             client.phone,

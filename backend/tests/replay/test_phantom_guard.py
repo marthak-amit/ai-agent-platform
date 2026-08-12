@@ -13,6 +13,12 @@ FIX 1 assertions:
     Guard must pass it through unchanged.
   - Assertion helper: extract_skus_and_prices(text) — all extracted tokens must
     exist in the seeded catalogue.
+  - test_resolved_multi_choice_pick_not_phantom_guarded: a SKU resolved from a
+    pending multi-choice list pick (button tap) must NOT be rejected as
+    "phantom" by guard_product_reply — regression test for the bug where
+    canonical_browse_products stayed stale (from before the pick resolved) so
+    the just-confirmed SKU's own FIX1 pinned-fact reply was overridden with a
+    false "we don't carry it" message.
 
 FIX 2 assertions:
   - test_button_confirm: interactive button_reply.id="confirm_pay" at
@@ -294,6 +300,134 @@ async def test_list_all_real(replay_http, replay_session, monkeypatch):
     assert_no_phantom_data(reply, allowed_skus, allowed_prices)
 
 
+async def test_resolved_multi_choice_pick_not_phantom_guarded(replay_http, replay_session, monkeypatch):
+    """
+    BUG 1 regression test.
+
+    Reproduces the exact conv=60-style scenario: the customer already has an
+    UNRELATED product (SR00100, a "Formal Shirt") pinned as pending_product_sku
+    from earlier in the conversation. They then ask an ambiguous multi-word
+    "saree" query, which opens a pending_choice_skus list for two Saree
+    products WITHOUT touching pending_product_sku (still SR00100). They pick
+    one of the Saree options via a list_reply button tap.
+
+    _get_catalogue_context() runs at the START of the pick turn, before the
+    pick resolves — with pending_product_sku still SR00100, its step-1 short
+    circuit returns canonical_browse_products=[SR00100 shirt] immediately,
+    never reaching the picked Saree product. Once the pick resolves this same
+    turn, FIX1 fires a deterministic pinned-fact reply containing the picked
+    Saree's own real SKU/price — but guard_product_reply() then checks that
+    reply against canonical_browse_products, which (pre-fix) is still just
+    the unrelated shirt. The picked Saree's SKU/price aren't in that stale
+    allowed set, so the guard flags them as phantom and replaces the reply
+    with a false "we don't carry it" message, even though the SKU was just
+    correctly resolved from the shown list. After the fix, the pick-resolution
+    branch rebuilds canonical_browse_products from the just-picked product, so
+    the reply passes through untouched.
+    """
+    phone = _phone("00003")
+    pnid = _pnid("00003")
+    from app.models.client import Client
+    from app.models.product import Product
+    from app.models.conversation import Conversation
+
+    client = Client(
+        business_name="Resolved Pick Store",
+        email=f"resolvedpick_{phone}@test.com",
+        phone=phone,
+        whatsapp_phone_number_id=pnid,
+        accepts_cod=True,
+        hashed_password="x",
+        upi_id=None,
+    )
+    replay_session.add(client)
+    await replay_session.flush()
+
+    prod_unrelated = Product(
+        client_id=client.id, name="Formal Shirt", sku="SR00100",
+        price=699.0, stock=5, is_active=True, has_variants=False,
+    )
+    prod_a = Product(
+        client_id=client.id, name="Cotton Saree", sku="SR33210",
+        price=999.0, stock=5, is_active=True, has_variants=False,
+    )
+    prod_b = Product(
+        client_id=client.id, name="Silk Saree", sku="SR33299",
+        price=1999.0, stock=5, is_active=True, has_variants=False,
+    )
+    replay_session.add_all([prod_unrelated, prod_a, prod_b])
+    await replay_session.commit()
+    await replay_session.refresh(prod_unrelated)
+    await replay_session.refresh(prod_a)
+    await replay_session.refresh(prod_b)
+
+    # Conversation already has an UNRELATED product pinned (mirrors a
+    # customer mid-browse who had already asked about the shirt earlier).
+    conv = Conversation(
+        phone_number=phone, channel="whatsapp", client_id=client.id,
+        current_stage="product_inquiry", pending_product_sku="SR00100",
+    )
+    replay_session.add(conv)
+    await replay_session.commit()
+
+    captured = capture_all(monkeypatch)
+
+    # Multi-word so it doesn't hit the bare-single-word "_active_order_context"
+    # block that would otherwise skip the name-match pinner entirely while a
+    # product is already pinned.
+    resp = await send_message(
+        replay_http, phone, "saree please", phone_number_id=pnid,
+        wamid=f"wamid.rp.list.{int(time.time())}",
+    )
+    assert resp.status_code == 200, resp.text
+
+    conv_after_list = await _get_conv_by_phone(replay_session, phone)
+    assert conv_after_list.pending_choice_skus, (
+        f"Expected pending_choice_skus set, got {conv_after_list.pending_choice_skus!r}"
+    )
+    assert conv_after_list.pending_product_sku == "SR00100", (
+        "The ambiguous multi-choice branch must not touch the already-pinned "
+        f"unrelated SKU; got {conv_after_list.pending_product_sku!r}"
+    )
+    import json as _json
+    choice_list = _json.loads(conv_after_list.pending_choice_skus)
+    assert len(choice_list) >= 2, f"Expected 2+ choice SKUs, got {choice_list!r}"
+    target_sku = choice_list[0]
+
+    resp2 = await send_button(
+        replay_http, phone, target_sku, f"{target_sku} option",
+        phone_number_id=pnid, wamid=f"wamid.rp.pick.{int(time.time())}",
+    )
+    assert resp2.status_code == 200, resp2.text
+
+    conv_after_pick = await _get_conv_by_phone(replay_session, phone)
+    assert conv_after_pick.pending_product_sku == target_sku, (
+        f"Button tap must pin pending_product_sku={target_sku!r}, "
+        f"got {conv_after_pick.pending_product_sku!r}"
+    )
+
+    reply = captured[-1] if captured else ""
+    assert target_sku in reply, (
+        f"Picked SKU {target_sku!r} missing from post-pick reply: {reply!r}"
+    )
+    assert "don't carry" not in reply.lower() and "we currently have" not in reply.lower(), (
+        f"BUG 1: resolved multi-choice pick {target_sku!r} was overridden by "
+        f"guard_product_reply's false phantom/not-found path (guarded against the "
+        f"stale unrelated pinned product SR00100 instead of the just-picked SKU): "
+        f"{reply!r}"
+    )
+
+
+async def _get_conv_by_phone(session: AsyncSession, phone: str):
+    from app.models.conversation import Conversation
+    r = await session.execute(
+        select(Conversation)
+        .where(Conversation.phone_number == phone)
+        .execution_options(populate_existing=True)
+    )
+    return r.scalar_one_or_none()
+
+
 # ---------------------------------------------------------------------------
 # FIX 2 — WhatsApp confirm/cancel buttons
 # ---------------------------------------------------------------------------
@@ -316,11 +450,11 @@ async def test_button_confirm(replay_http, replay_session, monkeypatch):
         captured.append(message_text)
 
     monkeypatch.setattr(
-        "app.services.whatsapp_service.send_text_message",
+        "app.services.whatsapp_service._raw_send_text_message",
         _capture,
     )
     monkeypatch.setattr(
-        "app.services.whatsapp_service.send_button_message",
+        "app.services.whatsapp_service._raw_send_button_message",
         mock.AsyncMock(return_value=True),
     )
 
@@ -369,11 +503,11 @@ async def test_button_cancel(replay_http, replay_session, monkeypatch):
         captured.append(message_text)
 
     monkeypatch.setattr(
-        "app.services.whatsapp_service.send_text_message",
+        "app.services.whatsapp_service._raw_send_text_message",
         _capture,
     )
     monkeypatch.setattr(
-        "app.services.whatsapp_service.send_button_message",
+        "app.services.whatsapp_service._raw_send_button_message",
         mock.AsyncMock(return_value=True),
     )
 
@@ -419,11 +553,11 @@ async def test_typed_fallback_still_works(replay_http, replay_session, monkeypat
     )
 
     monkeypatch.setattr(
-        "app.services.whatsapp_service.send_text_message",
+        "app.services.whatsapp_service._raw_send_text_message",
         mock.AsyncMock(return_value=None),
     )
     monkeypatch.setattr(
-        "app.services.whatsapp_service.send_button_message",
+        "app.services.whatsapp_service._raw_send_button_message",
         mock.AsyncMock(return_value=True),
     )
 

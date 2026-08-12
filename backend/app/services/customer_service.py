@@ -75,12 +75,16 @@ async def upsert_customer(
             preferred_payment=preferred_payment,
             first_message_at=now,
             last_message_at=now,
+            last_inbound_at=now,
         )
         db.add(customer)
         await db.flush()
         logger.info("Created new customer profile phone=%s client=%s", phone, client_id)
     else:
         customer.last_message_at = now
+        # upsert_customer only runs on inbound webhooks, so this doubles as
+        # the send-gate's 24h-window snapshot (migration 0055).
+        customer.last_inbound_at = now
         if name and not customer.name:
             customer.name = name
         if address and not customer.address:

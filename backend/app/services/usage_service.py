@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.client import Client
 from app.models.usage_log import UsageLog
-from app.services import whatsapp_service
+from app.services import outbound
 
 logger = logging.getLogger(__name__)
 
@@ -78,10 +78,7 @@ async def record_message(db: AsyncSession, client: Client) -> UsageLog:
         )
         if client.whatsapp_number:
             try:
-                await whatsapp_service.send_text_message(
-                    to_phone_number=client.whatsapp_number,
-                    message_text=warning,
-                )
+                await outbound.send_owner_text(client.whatsapp_number, warning)
             except Exception as exc:
                 logger.warning("Could not send 80%% usage warning to %s: %s", client.whatsapp_number, exc)
 

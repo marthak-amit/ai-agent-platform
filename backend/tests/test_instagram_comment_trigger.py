@@ -228,15 +228,19 @@ async def test_send_comment_reply_success_sends_public_and_private_reply(mock_db
     conv = SimpleNamespace(id=99)
     pipeline_result = SimpleNamespace(text="It's ₹999!", buttons=None, list_options=None)
 
-    with patch("app.services.ig_comment_service.instagram_service.reply_to_comment", new=AsyncMock()) as reply_mock, \
+    with patch("app.services.instagram_service._raw_reply_to_comment", new=AsyncMock()) as reply_mock, \
          patch("app.services.ig_comment_service.conversation_service.get_or_create_conversation", new=AsyncMock(return_value=conv)) as conv_mock, \
          patch("app.services.ig_comment_service.handle_inbound_message", new=AsyncMock(return_value=pipeline_result)), \
-         patch("app.services.ig_comment_service.instagram_service.send_private_reply", new=AsyncMock()) as private_mock:
+         patch("app.services.instagram_service._raw_send_private_reply", new=AsyncMock()) as private_mock:
         await ig_comment_service.send_comment_reply(mock_db, client, "ig_biz_1", row)
 
-    reply_mock.assert_called_once_with("ig_biz_1", "cmt1", "Check your DM 👀")
+    reply_mock.assert_called_once_with(
+        ig_user_id="ig_biz_1", comment_id="cmt1", message_text="Check your DM 👀"
+    )
     assert conv_mock.call_args.kwargs["source"] == "comment_reply"
-    private_mock.assert_called_once_with("ig_biz_1", "cmt1", "It's ₹999!")
+    private_mock.assert_called_once_with(
+        ig_user_id="ig_biz_1", comment_id="cmt1", message_text="It's ₹999!"
+    )
     assert row.status == "sent"
     assert row.sent_at is not None
 
@@ -248,13 +252,15 @@ async def test_send_comment_reply_uses_hindi_bucket_for_hindi_comment(mock_db):
     conv = SimpleNamespace(id=99)
     pipeline_result = SimpleNamespace(text="reply", buttons=None, list_options=None)
 
-    with patch("app.services.ig_comment_service.instagram_service.reply_to_comment", new=AsyncMock()) as reply_mock, \
+    with patch("app.services.instagram_service._raw_reply_to_comment", new=AsyncMock()) as reply_mock, \
          patch("app.services.ig_comment_service.conversation_service.get_or_create_conversation", new=AsyncMock(return_value=conv)), \
          patch("app.services.ig_comment_service.handle_inbound_message", new=AsyncMock(return_value=pipeline_result)), \
-         patch("app.services.ig_comment_service.instagram_service.send_private_reply", new=AsyncMock()):
+         patch("app.services.instagram_service._raw_send_private_reply", new=AsyncMock()):
         await ig_comment_service.send_comment_reply(mock_db, client, "ig_biz_1", row)
 
-    reply_mock.assert_called_once_with("ig_biz_1", "cmt1", "DM dekho")
+    reply_mock.assert_called_once_with(
+        ig_user_id="ig_biz_1", comment_id="cmt1", message_text="DM dekho"
+    )
 
 
 @pytest.mark.asyncio
@@ -270,13 +276,13 @@ async def test_send_comment_reply_buttons_collapse_to_numbered_text(mock_db):
         list_options=None,
     )
 
-    with patch("app.services.ig_comment_service.instagram_service.reply_to_comment", new=AsyncMock()), \
+    with patch("app.services.instagram_service._raw_reply_to_comment", new=AsyncMock()), \
          patch("app.services.ig_comment_service.conversation_service.get_or_create_conversation", new=AsyncMock(return_value=conv)), \
          patch("app.services.ig_comment_service.handle_inbound_message", new=AsyncMock(return_value=pipeline_result)), \
-         patch("app.services.ig_comment_service.instagram_service.send_private_reply", new=AsyncMock()) as private_mock:
+         patch("app.services.instagram_service._raw_send_private_reply", new=AsyncMock()) as private_mock:
         await ig_comment_service.send_comment_reply(mock_db, client, "ig_biz_1", row)
 
-    sent_text = private_mock.call_args[0][2]
+    sent_text = private_mock.call_args.kwargs["message_text"]
     assert "Pick a size:" in sent_text
     assert "1. Small" in sent_text
     assert "2. Medium" in sent_text
@@ -289,10 +295,10 @@ async def test_send_comment_reply_private_send_failure_marks_row_failed(mock_db)
     conv = SimpleNamespace(id=99)
     pipeline_result = SimpleNamespace(text="reply", buttons=None, list_options=None)
 
-    with patch("app.services.ig_comment_service.instagram_service.reply_to_comment", new=AsyncMock()), \
+    with patch("app.services.instagram_service._raw_reply_to_comment", new=AsyncMock()), \
          patch("app.services.ig_comment_service.conversation_service.get_or_create_conversation", new=AsyncMock(return_value=conv)), \
          patch("app.services.ig_comment_service.handle_inbound_message", new=AsyncMock(return_value=pipeline_result)), \
-         patch("app.services.ig_comment_service.instagram_service.send_private_reply", new=AsyncMock(side_effect=RuntimeError("boom"))):
+         patch("app.services.instagram_service._raw_send_private_reply", new=AsyncMock(side_effect=RuntimeError("boom"))):
         await ig_comment_service.send_comment_reply(mock_db, client, "ig_biz_1", row)
 
     assert row.status == "failed"
@@ -305,10 +311,10 @@ async def test_send_comment_reply_public_reply_failure_still_attempts_private_re
     conv = SimpleNamespace(id=99)
     pipeline_result = SimpleNamespace(text="reply", buttons=None, list_options=None)
 
-    with patch("app.services.ig_comment_service.instagram_service.reply_to_comment", new=AsyncMock(side_effect=RuntimeError("public fail"))), \
+    with patch("app.services.instagram_service._raw_reply_to_comment", new=AsyncMock(side_effect=RuntimeError("public fail"))), \
          patch("app.services.ig_comment_service.conversation_service.get_or_create_conversation", new=AsyncMock(return_value=conv)), \
          patch("app.services.ig_comment_service.handle_inbound_message", new=AsyncMock(return_value=pipeline_result)), \
-         patch("app.services.ig_comment_service.instagram_service.send_private_reply", new=AsyncMock()) as private_mock:
+         patch("app.services.instagram_service._raw_send_private_reply", new=AsyncMock()) as private_mock:
         await ig_comment_service.send_comment_reply(mock_db, client, "ig_biz_1", row)
 
     private_mock.assert_called_once()

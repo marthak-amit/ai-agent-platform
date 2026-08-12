@@ -107,7 +107,7 @@ async def _get_orders(session: AsyncSession, conv_id: int):
 
 
 def _last_reply(whatsapp_service_mock) -> str:
-    call_args, call_kwargs = whatsapp_service_mock.send_text_message.call_args_list[-1]
+    call_args, call_kwargs = whatsapp_service_mock._raw_send_text_message.call_args_list[-1]
     return call_kwargs.get("message_text") or (call_args[1] if len(call_args) > 1 else "")
 
 
@@ -145,7 +145,7 @@ async def test_purchase_intent_midpayment_prompts_switch_confirm(replay_http, re
     )
 
     from app.services import whatsapp_service
-    whatsapp_service.send_text_message.reset_mock()
+    whatsapp_service._raw_send_text_message.reset_mock()
 
     resp = await _msg(replay_http, phone, "I want to buy kurti dress", pnid=pnid)
     assert resp.status_code == 200, resp.text
@@ -196,7 +196,7 @@ async def test_switch_confirm_yes_switches_order(replay_http, replay_session):
     )
 
     from app.services import whatsapp_service
-    whatsapp_service.send_text_message.reset_mock()
+    whatsapp_service._raw_send_text_message.reset_mock()
 
     resp = await _msg(replay_http, phone, "yes", pnid=pnid)
     assert resp.status_code == 200, resp.text
@@ -248,7 +248,7 @@ async def test_switch_confirm_no_keeps_original_order(replay_http, replay_sessio
     )
 
     from app.services import whatsapp_service
-    whatsapp_service.send_text_message.reset_mock()
+    whatsapp_service._raw_send_text_message.reset_mock()
 
     resp = await _msg(replay_http, phone, "no", pnid=pnid)
     assert resp.status_code == 200, resp.text
@@ -309,7 +309,7 @@ async def test_free_text_cancel_intent_during_payment_cancels_order(replay_http,
     assert orders_before and orders_before[0].status == "pending_payment"
 
     from app.services import whatsapp_service
-    whatsapp_service.send_text_message.reset_mock()
+    whatsapp_service._raw_send_text_message.reset_mock()
 
     resp = await _msg(replay_http, phone, "I do not want to buy this", pnid=pnid)
     assert resp.status_code == 200, resp.text
@@ -378,7 +378,7 @@ async def test_cancel_intent_during_switch_confirm_cancels_whole_order(replay_ht
     assert conv.interrupted_sku == kurti.sku
 
     from app.services import whatsapp_service
-    whatsapp_service.send_text_message.reset_mock()
+    whatsapp_service._raw_send_text_message.reset_mock()
 
     # Cancel, not yes/no
     resp = await _msg(replay_http, phone, "cancel", pnid=pnid)
@@ -446,7 +446,7 @@ async def test_switch_confirm_candidate_name_renders_clean(replay_http, replay_s
     )
 
     from app.services import whatsapp_service
-    whatsapp_service.send_text_message.reset_mock()
+    whatsapp_service._raw_send_text_message.reset_mock()
 
     resp = await _msg(replay_http, phone, "switch to cotton printed kurti instead", pnid=pnid)
     assert resp.status_code == 200, resp.text

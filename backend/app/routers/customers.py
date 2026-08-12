@@ -16,7 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.routers.auth import get_owner_client as get_current_client
-from app.services import customer_service, whatsapp_service
+from app.services import customer_service, outbound
+from app.services.send_gate import MessageKind
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/customers", tags=["customers"])
@@ -247,10 +248,26 @@ async def send_message(
         raise HTTPException(status_code=404, detail="Customer not found")
 
     try:
-        await whatsapp_service.send_text_message(c.phone, payload.message)
+        sent = await outbound.send_text(
+            c.phone,
+            payload.message,
+            kind=MessageKind.MANUAL_AGENT,
+            db=db,
+            client_id=client.id,
+            customer=c,
+        )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"WhatsApp send failed: {exc}")
 
+    if sent is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Message suppressed: customer has opted out, is blocked, or "
+                "hasn't messaged you in 24h (Meta's window for free-form "
+                "messages is closed — they must message you first)."
+            ),
+        )
     return {"status": "sent", "phone": c.phone}
 
 

@@ -22,7 +22,7 @@ from app.models.client import Client
 from app.models.client_monthly_usage import ClientMonthlyUsage
 from app.models.conversation import Conversation
 from app.models.photo_generation_log import PhotoGenerationLog
-from app.services import plan_cache, whatsapp_service
+from app.services import outbound, plan_cache
 
 logger = logging.getLogger(__name__)
 
@@ -143,10 +143,7 @@ async def record_conversation_activity(
         )
         if client.whatsapp_number:
             try:
-                await whatsapp_service.send_text_message(
-                    to_phone_number=client.whatsapp_number,
-                    message_text=warning,
-                )
+                await outbound.send_owner_text(client.whatsapp_number, warning)
             except Exception as exc:
                 logger.warning(
                     "Could not send conv_limit usage warning to %s: %s",

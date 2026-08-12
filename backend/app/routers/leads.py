@@ -25,7 +25,7 @@ from app.config import get_settings
 from app.db import get_db
 from app.models.lead import Lead
 from app.routers.auth import get_owner_client as get_current_client
-from app.services import whatsapp_service
+from app.services import outbound
 
 logger = logging.getLogger(__name__)
 router = APIRouter(
@@ -150,10 +150,7 @@ async def _notify_internal_team(body: "PublicDemoLeadRequest") -> None:
     )
 
     try:
-        await whatsapp_service.send_text_message(
-            to_phone_number=notify_number,
-            message_text=text,
-        )
+        await outbound.send_owner_text(notify_number, text)
     except Exception as exc:
         logger.error("Failed to send internal demo-lead WhatsApp notification: %s", exc)
 

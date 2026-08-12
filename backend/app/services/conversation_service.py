@@ -177,6 +177,44 @@ async def save_message(
     return msg
 
 
+async def replace_last_assistant_message(
+    db: AsyncSession,
+    conversation_id: int,
+    content: str,
+) -> bool:
+    """
+    Overwrite the most recent assistant message's content.
+
+    Needed because the outbound reply is persisted before order creation is
+    attempted: when creation then fails (e.g. quantity exceeds stock), the
+    already-saved payment/confirmation text is wrong and must be corrected so
+    the stored transcript matches what the customer is actually sent.
+
+    Args:
+        db:              Active async DB session.
+        conversation_id: FK to the parent Conversation.
+        content:         Corrected reply text.
+
+    Returns:
+        True when a row was updated, False when no assistant message exists.
+    """
+    result = await db.execute(
+        select(Message)
+        .where(
+            Message.conversation_id == conversation_id,
+            Message.role == normalize_role("assistant"),
+        )
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(1)
+    )
+    msg = result.scalar_one_or_none()
+    if msg is None:
+        return False
+    msg.content = content
+    await db.commit()
+    return True
+
+
 async def get_history(
     db: AsyncSession,
     conversation_id: int,

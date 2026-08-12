@@ -125,7 +125,7 @@ def test_verify_signature_missing_prefix(mock_settings):
 @patch("app.services.order_pipeline.conversation_service.update_stage", new_callable=AsyncMock)
 @patch("app.services.order_pipeline.lead_service.tag_lead", new_callable=AsyncMock)
 @patch("app.services.order_pipeline.gemini_service.generate_reply", new_callable=AsyncMock)
-@patch("app.services.whatsapp_service.send_text_message", new_callable=AsyncMock)
+@patch("app.services.whatsapp_service._raw_send_text_message", new_callable=AsyncMock)
 @patch("app.services.order_pipeline._get_system_prompt", return_value=None)
 @patch("app.services.order_pipeline._get_catalogue_context", new_callable=AsyncMock)
 @patch("app.services.order_pipeline._record_usage", new_callable=AsyncMock)
@@ -137,10 +137,12 @@ def test_receive_message_success(
     mock_get_client.return_value = MagicMock(
         id=1, business_name="Test Store", catalogue_slug=None,
         whatsapp_phone_number_id="1234567890", is_active=True,
+        flow_state_ttl_hours=None, context_ttl_days=None,
     )
     mock_conv.return_value = MagicMock(
         id=1, stage="greeting", pending_product_sku=None,
         last_customer_language="english",
+        flow_state_at=None, last_context_at=None,
     )
     mock_history.return_value = []
     mock_prompt.return_value = None

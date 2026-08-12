@@ -17,7 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.routers.auth import get_current_client, require_permission
-from app.services import order_service, whatsapp_service
+from app.services import order_service, outbound
+from app.services.send_gate import MessageKind
 
 logger = logging.getLogger(__name__)
 
@@ -284,11 +285,26 @@ async def notify_customer(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.")
 
     try:
-        await whatsapp_service.send_text_message(order.customer_phone, body.message)
-        return {"status": "sent"}
+        sent = await outbound.send_text(
+            order.customer_phone,
+            body.message,
+            kind=MessageKind.MANUAL_AGENT,
+            db=db,
+            client_id=client.id,
+        )
     except Exception as exc:
         logger.error("Failed to notify customer for order %s: %s", order.order_number, exc)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="WhatsApp send failed.",
         )
+    if sent is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Message suppressed: customer has opted out, is blocked, or "
+                "hasn't messaged you in 24h (Meta's window for free-form "
+                "messages is closed — they must message you first)."
+            ),
+        )
+    return {"status": "sent"}

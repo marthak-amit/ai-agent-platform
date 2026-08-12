@@ -22,8 +22,9 @@ from __future__ import annotations
 
 import logging
 
-from app.services import instagram_service
+from app.services import outbound
 from app.services.order_pipeline import PipelineResult
+from app.services.send_gate import MessageKind
 
 logger = logging.getLogger("app.routers.instagram")
 
@@ -43,6 +44,8 @@ async def send_pipeline_result(
     *,
     ig_user_id: str,
     recipient_igsid: str,
+    db=None,
+    conv=None,
 ) -> None:
     """
     Send *result* via the Instagram Graph API.
@@ -56,39 +59,49 @@ async def send_pipeline_result(
     if result.skip_send:
         return
 
+    _gate_kw = dict(
+        kind=MessageKind.PIPELINE_REPLY,
+        db=db,
+        client_id=getattr(conv, "client_id", None),
+        conversation_id=getattr(conv, "id", None),
+    )
+
     for _pre in (result.pre_texts or []):
         try:
-            await instagram_service.send_dm(ig_user_id, recipient_igsid, _pre)
+            await outbound.ig_send_dm(ig_user_id, recipient_igsid, _pre, **_gate_kw)
         except Exception:
             pass
 
     if result.buttons and len(result.buttons) <= _IG_QUICK_REPLY_MAX:
-        sent = await instagram_service.send_quick_replies(
+        sent = await outbound.ig_send_quick_replies(
             ig_user_id, recipient_igsid, result.text,
-            quick_replies=[{"id": b.id, "title": b.title} for b in result.buttons],
+            [{"id": b.id, "title": b.title} for b in result.buttons],
+            **_gate_kw,
         )
         if not sent:
-            await instagram_service.send_dm(ig_user_id, recipient_igsid, result.text)
+            await outbound.ig_send_dm(ig_user_id, recipient_igsid, result.text, **_gate_kw)
     elif result.buttons:
         # More buttons than IG quick replies support — numbered text fallback.
-        await instagram_service.send_dm(
+        await outbound.ig_send_dm(
             ig_user_id, recipient_igsid,
             _numbered_text_fallback(result.text, result.buttons),
+            **_gate_kw,
         )
     elif result.list_options:
-        await instagram_service.send_dm(
+        await outbound.ig_send_dm(
             ig_user_id, recipient_igsid,
             _numbered_text_fallback(result.text, result.list_options),
+            **_gate_kw,
         )
     else:
-        await instagram_service.send_dm(ig_user_id, recipient_igsid, result.text)
+        await outbound.ig_send_dm(ig_user_id, recipient_igsid, result.text, **_gate_kw)
 
     # Deferred product images — sent AFTER the main text/quick-replies,
     # mirroring the WhatsApp adapter's deferred image queue.
     for _img_url, _img_caption in (result.images or []):
         try:
-            await instagram_service.send_image(ig_user_id, recipient_igsid, _img_url)
+            await outbound.ig_send_image(ig_user_id, recipient_igsid, _img_url, **_gate_kw)
             if _img_caption:
-                await instagram_service.send_dm(ig_user_id, recipient_igsid, _img_caption)
+                await outbound.ig_send_dm(ig_user_id, recipient_igsid, _img_caption, **_gate_kw)
         except Exception as _img_exc:
             logger.error("Product image send error (non-fatal): %s", _img_exc)

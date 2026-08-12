@@ -23,7 +23,7 @@ from app.models.conversation import Conversation
 from app.models.ig_comment_reply import IgCommentReply
 from app.models.order import Order
 from app.schemas.webhook import TextContent, WhatsAppMessage
-from app.services import conversation_service, instagram_service, vision_service
+from app.services import conversation_service, outbound, vision_service
 from app.services.language_service import detect_language
 from app.services.order_pipeline import InboundContext, handle_inbound_message
 
@@ -99,7 +99,7 @@ async def send_comment_reply(
             or reply_text_map.get("english")
             or "Check your DM 👀"
         )
-        await instagram_service.reply_to_comment(ig_user_id, comment_id, public_text)
+        await outbound.ig_reply_to_comment(ig_user_id, comment_id, public_text)
     except Exception as exc:
         logger.error("Public comment reply failed for comment=%s: %s", comment_id, exc)
 
@@ -136,7 +136,10 @@ async def send_comment_reply(
         elif result.list_options:
             reply_text = _numbered_text_fallback(reply_text, result.list_options)
 
-        await instagram_service.send_private_reply(ig_user_id, comment_id, reply_text)
+        await outbound.ig_send_private_reply(
+            ig_user_id, comment_id, reply_text,
+            db=db, client_id=client.id, recipient_igsid=commenter_igsid,
+        )
 
         log_row.status = "sent"
         log_row.sent_at = datetime.now(timezone.utc)

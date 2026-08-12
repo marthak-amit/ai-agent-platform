@@ -851,11 +851,39 @@ def render_product_listing(products: list[Product]) -> str:
 _SKU_IN_REPLY_RE = re.compile(r"\b([A-Za-z]{2,4}\d{4,6})\b")
 _PRICE_IN_REPLY_RE = re.compile(r"₹\s*(\d[\d,]*)")
 
+# Bare greetings/acks that never carry a product-name claim. Used ONLY to
+# decide whether the customer's raw message is a plausible product-name
+# attempt before echoing it into a "we don't carry X" fallback — kept as a
+# small local list (deliberately not imported from order_pipeline, which
+# imports this module, to avoid a circular import) rather than a full
+# intent classifier.
+_SMALLTALK_ONLY_PHRASES = frozenset({
+    "hi", "hello", "hey", "hii", "hiii", "helo", "hlo",
+    "namaste", "namaskar", "namaskte", "salam", "assalam", "kem cho", "hola",
+    "thanks", "thank you", "shukriya", "dhanyavaad", "ty",
+    "ok", "okay", "yes", "no", "bye", "goodbye", "alvida",
+})
+
+
+def _is_smalltalk_only(text: str) -> bool:
+    """
+    True when *text* is nothing but a greeting/ack/small-talk word — not a
+    product-name claim of any kind. Matched as the ENTIRE message (case-
+    insensitive, punctuation-stripped), so "hi, kurti available?" is NOT
+    smalltalk-only.
+    """
+    if not text:
+        return True
+    stripped = re.sub(r"[^\w\s]", "", text.lower())
+    stripped = re.sub(r"\s+", " ", stripped).strip()
+    return stripped in _SMALLTALK_ONLY_PHRASES
+
 
 def guard_product_reply(
     reply: str,
     canonical_products: list[Product],
     query: str | None = None,
+    pre_validated_products: list[Product] | None = None,
 ) -> str:
     """
     Verify that an AI-generated browsing reply contains only real product facts.
@@ -863,35 +891,68 @@ def guard_product_reply(
     Extracts every SKU-like token and ₹ price from *reply* and checks each
     against the DB rows that were actually queried this turn.  If any phantom
     SKU or price is found, replaces the entire reply with a deterministic
-    listing rendered from *canonical_products*.
+    listing rendered from the allowed products.
 
-    When *query* is provided and the canonical products have zero relevance
-    to that query (score=0), the fallback is an honest "not found" message
-    rather than listing an irrelevant product.
+    When *query* is provided and the allowed products have zero relevance to
+    it, the fallback is an honest "not found" message naming the customer's
+    query — UNLESS the query is bare smalltalk (a greeting/ack with no
+    product-name claim at all), in which case echoing it back as "we don't
+    carry {query}" would be nonsensical, so the plain deterministic listing
+    is used instead (same as the no-query case).
 
     This guard runs on ALL models including 429 fallbacks (8b / llama-4-scout)
     which hallucinate more frequently.
 
     Args:
-        reply:              AI-generated reply text.
-        canonical_products: Products whose data is allowed in the reply
-                            (the rows that were passed to the AI as context).
-        query:              Original customer query — used for relevance check
-                            so we don't show an unrelated pinned product when
-                            the customer asked about something we don't carry.
+        reply:                 AI-generated reply text.
+        canonical_products:    Products whose data is allowed in the reply
+                                (the rows that were passed to the AI as
+                                context this turn).
+        query:                 Original customer query — used for relevance
+                                check so we don't show an unrelated pinned
+                                product when the customer asked about
+                                something we don't carry.
+        pre_validated_products: Product(s) already confirmed valid THIS TURN
+                                through a path other than the canonical-
+                                context lookup — e.g. a SKU the customer just
+                                resolved via a multi-choice list/button pick.
+                                Their SKU/price are always allowed in the
+                                reply even if canonical_products (built
+                                earlier in the turn, before the pick
+                                resolved) doesn't include them. Defense-in-
+                                depth on top of the caller rebuilding
+                                canonical_products after a pick resolves —
+                                an already-validated SKU must never be
+                                flagged phantom regardless of what
+                                canonical_products ends up containing.
 
     Returns:
         Original reply when clean; deterministic listing when phantom found
-        (or "not found" message when query has no match in canonical set).
+        (or "not found" message when query has no match in the allowed set
+        and is itself a plausible product-name claim).
     """
-    if not canonical_products:
+    if not canonical_products and not pre_validated_products:
         return reply
 
     import logging as _log
     _logger = _log.getLogger(__name__)
 
-    allowed_skus = {(p.sku or "").upper() for p in canonical_products if p.sku}
-    allowed_prices = {str(int(p.price)) for p in canonical_products if p.price is not None}
+    # Merge canonical + pre-validated products for the allow-list, deduping
+    # by id (a pre-validated pick is often already present in canonical_
+    # products too, once the caller has rebuilt it — this just guarantees
+    # the pick is allowed even when that rebuild didn't happen/doesn't apply).
+    _seen_ids: set[int] = set()
+    _allowed_products: list[Product] = []
+    for _p in list(canonical_products) + list(pre_validated_products or []):
+        _pid = getattr(_p, "id", None)
+        if _pid is not None and _pid in _seen_ids:
+            continue
+        if _pid is not None:
+            _seen_ids.add(_pid)
+        _allowed_products.append(_p)
+
+    allowed_skus = {(p.sku or "").upper() for p in _allowed_products if p.sku}
+    allowed_prices = {str(int(p.price)) for p in _allowed_products if p.price is not None}
 
     reply_skus = {m.group(1).upper() for m in _SKU_IN_REPLY_RE.finditer(reply)}
     phantom_skus = reply_skus - allowed_skus
@@ -907,17 +968,21 @@ def guard_product_reply(
             phantom_skus, phantom_prices,
         )
 
-        # FIX 3: If a query is provided, check whether canonical_products actually
-        # match it. Score=0 means the canonical set was there only due to a pinned
-        # SKU from a prior turn — not because it matched the current query.
-        # In that case return an honest "not found" reply rather than listing an
-        # irrelevant product.
-        if query:
+        # FIX 3: If a query is provided, check whether the allowed products
+        # actually match it. Score=0 means the allowed set was there only
+        # because of a pinned SKU from a prior turn — not because it matched
+        # the current query. In that case return an honest "not found" reply
+        # naming the query, rather than listing an irrelevant product — but
+        # only when the query itself is a plausible product-name claim. A
+        # bare greeting/ack ("Hello", "thanks") never claims a product, so
+        # echoing it into "we don't carry {query}" is nonsensical; fall
+        # through to the plain listing instead.
+        if query and canonical_products and not _is_smalltalk_only(query):
             _scored = search_products_with_scores(canonical_products, query, top_k=1)
             _top_score = _scored[0][0] if _scored else 0
             if _top_score == 0:
                 _query_label = query.strip()[:40]
-                _real_names = ", ".join(p.name for p in canonical_products[:4])
+                _real_names = ", ".join(p.name for p in _allowed_products[:4])
                 _logger.info(
                     "guard_product_reply: query %r has 0 relevance to canonical products — "
                     "returning not-found instead of irrelevant listing.",
@@ -929,7 +994,7 @@ def guard_product_reply(
                     "Let me know if any of these interest you!"
                 )
 
-        listing = render_product_listing(canonical_products)
+        listing = render_product_listing(_allowed_products)
         return f"Here are some options:\n{listing}"
 
     return reply

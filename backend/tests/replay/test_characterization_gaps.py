@@ -119,15 +119,15 @@ async def test_greeting_short_circuit_fresh_conversation(replay_http, replay_ses
     )
 
     from app.services import whatsapp_service, gemini_service
-    whatsapp_service.send_text_message.reset_mock()
+    whatsapp_service._raw_send_text_message.reset_mock()
     ai_calls_before = gemini_service.generate_reply.call_count
 
     resp = await _msg(replay_http, phone, "hi", pnid=pnid, wamid=f"wamid.greet.{int(time.time())}")
     assert resp.status_code == 200, resp.text
 
     # Reply was sent via the mocked send_text_message.
-    assert whatsapp_service.send_text_message.call_args_list, "No reply sent for bare greeting"
-    call_args, call_kwargs = whatsapp_service.send_text_message.call_args_list[-1]
+    assert whatsapp_service._raw_send_text_message.call_args_list, "No reply sent for bare greeting"
+    call_args, call_kwargs = whatsapp_service._raw_send_text_message.call_args_list[-1]
     reply_text = call_kwargs.get("message_text") or (call_args[1] if len(call_args) > 1 else "")
     assert "catalogue" in reply_text.lower() or "Welcome" in reply_text, (
         f"Expected deterministic greeting template, got: {reply_text!r}"
@@ -228,12 +228,12 @@ async def test_cold_conversation_single_product_e2e_cod(replay_http, replay_sess
 
     stage_log = []
     for i, text in enumerate(turns):
-        _wa_dbg.send_text_message.reset_mock()
+        _wa_dbg._raw_send_text_message.reset_mock()
         resp = await _msg(replay_http, phone, text, pnid=pnid, wamid=f"wamid.e2e.{i}.{int(time.time())}")
         assert resp.status_code == 200, f"turn {i} ({text!r}) failed: {resp.text}"
         conv = await _get_conv(replay_session, phone)
         _replies = []
-        for call in _wa_dbg.send_text_message.call_args_list:
+        for call in _wa_dbg._raw_send_text_message.call_args_list:
             a, kw = call
             _replies.append(kw.get("message_text") or (a[1] if len(a) > 1 else ""))
         stage_log.append((text, conv.current_stage if conv else None, conv.pending_product_sku if conv else None, _replies))
@@ -332,7 +332,7 @@ async def test_multi_option_list_pick_by_typed_number(replay_http, replay_sessio
     await replay_session.refresh(conv)
 
     from app.services import whatsapp_service
-    whatsapp_service.send_text_message.reset_mock()
+    whatsapp_service._raw_send_text_message.reset_mock()
 
     resp = await _msg(replay_http, phone, "saree", pnid=pnid, wamid=f"wamid.mc.list.{int(time.time())}")
     assert resp.status_code == 200, resp.text
@@ -454,14 +454,14 @@ async def test_multi_option_list_pick_by_button_sku(replay_http, replay_session)
     # case is the SKU-pin name-match path, not pending_choice_skus, since the
     # list was already cleared by the first tap).
     from app.services import whatsapp_service
-    whatsapp_service.send_text_message.reset_mock()
+    whatsapp_service._raw_send_text_message.reset_mock()
     resp3 = await _btn(
         replay_http, phone, target_sku, f"{target_sku} option",
         pnid=pnid, wamid=f"wamid.mb.pick2.{int(time.time())}",
     )
     assert resp3.status_code == 200, resp3.text
     replay_texts = []
-    for call in whatsapp_service.send_text_message.call_args_list:
+    for call in whatsapp_service._raw_send_text_message.call_args_list:
         args, kwargs = call
         replay_texts.append(kwargs.get("message_text") or (args[1] if len(args) > 1 else ""))
     joined = "\n".join(replay_texts)
@@ -535,7 +535,7 @@ async def test_returning_customer_name_autofills_address_does_not(replay_http, r
     # profile is loaded — assert customer_name got silently filled without
     # ever asking, by checking the conversation row right after this turn.
     from app.services import whatsapp_service
-    whatsapp_service.send_text_message.reset_mock()
+    whatsapp_service._raw_send_text_message.reset_mock()
     resp = await _msg(replay_http, phone, "1", pnid=pnid, wamid=f"wamid.rc.3.{int(time.time())}")
     assert resp.status_code == 200, resp.text
 
@@ -551,7 +551,7 @@ async def test_returning_customer_name_autofills_address_does_not(replay_http, r
     # delivery address (a confirm-saved-address prompt, since address is
     # known but NOT silently filled).
     replied_texts = []
-    for call in whatsapp_service.send_text_message.call_args_list:
+    for call in whatsapp_service._raw_send_text_message.call_args_list:
         args, kwargs = call
         replied_texts.append(kwargs.get("message_text") or (args[1] if len(args) > 1 else ""))
     joined_reply = "\n".join(replied_texts)
@@ -568,7 +568,7 @@ async def test_returning_customer_name_autofills_address_does_not(replay_http, r
     )
 
     # Turn 4: confirm the saved address -> NOW delivery_address gets populated.
-    whatsapp_service.send_text_message.reset_mock()
+    whatsapp_service._raw_send_text_message.reset_mock()
     resp = await _msg(replay_http, phone, "yes", pnid=pnid, wamid=f"wamid.rc.4.{int(time.time())}")
     assert resp.status_code == 200, resp.text
 
@@ -719,7 +719,7 @@ async def _seed_returning_customer_at_address_confirm(
 def _joined_replies():
     from app.services import whatsapp_service
     replied_texts = []
-    for call in whatsapp_service.send_text_message.call_args_list:
+    for call in whatsapp_service._raw_send_text_message.call_args_list:
         args, kwargs = call
         replied_texts.append(kwargs.get("message_text") or (args[1] if len(args) > 1 else ""))
     return "\n".join(replied_texts)
@@ -737,7 +737,7 @@ async def test_address_confirm_garbage_reply_reprompts_without_validating(replay
     )
 
     from app.services import whatsapp_service
-    whatsapp_service.send_text_message.reset_mock()
+    whatsapp_service._raw_send_text_message.reset_mock()
     resp = await _msg(replay_http, phone, "Hi", pnid=pnid, wamid=f"wamid.ac.hi.{int(time.time())}")
     assert resp.status_code == 200, resp.text
 
@@ -753,7 +753,7 @@ async def test_address_confirm_garbage_reply_reprompts_without_validating(replay
     assert conv.current_stage == "order_collection"
 
     # Saved address still accepted on a follow-up "yes".
-    whatsapp_service.send_text_message.reset_mock()
+    whatsapp_service._raw_send_text_message.reset_mock()
     resp = await _msg(replay_http, phone, "yes", pnid=pnid, wamid=f"wamid.ac.yes.{int(time.time())}")
     assert resp.status_code == 200, resp.text
     conv2 = await _get_conv(replay_session, phone)
@@ -776,7 +776,7 @@ async def test_address_confirm_negated_change_keeps_saved_address(replay_http, r
     )
 
     from app.services import whatsapp_service
-    whatsapp_service.send_text_message.reset_mock()
+    whatsapp_service._raw_send_text_message.reset_mock()
     resp = await _msg(
         replay_http, phone, "I do not want to change the address.",
         pnid=pnid, wamid=f"wamid.ac.neg.{int(time.time())}",
@@ -807,7 +807,7 @@ async def test_address_confirm_explicit_change_starts_new_address_flow(replay_ht
     )
 
     from app.services import whatsapp_service
-    whatsapp_service.send_text_message.reset_mock()
+    whatsapp_service._raw_send_text_message.reset_mock()
     resp = await _msg(replay_http, phone, "change", pnid=pnid, wamid=f"wamid.ac.chg.{int(time.time())}")
     assert resp.status_code == 200, resp.text
 
@@ -819,7 +819,7 @@ async def test_address_confirm_explicit_change_starts_new_address_flow(replay_ht
     )
     assert "new delivery address" in joined_reply.lower()
 
-    whatsapp_service.send_text_message.reset_mock()
+    whatsapp_service._raw_send_text_message.reset_mock()
     resp = await _msg(
         replay_http, phone, "702 Somerest, Ahmedabad, 350010",
         pnid=pnid, wamid=f"wamid.ac.newaddr.{int(time.time())}",
@@ -828,4 +828,145 @@ async def test_address_confirm_explicit_change_starts_new_address_flow(replay_ht
     conv2 = await _get_conv(replay_session, phone)
     assert conv2.delivery_address and "somerest" in conv2.delivery_address.lower(), (
         f"A real address sent right after 'change' must be validated and filled; got {conv2.delivery_address!r}"
+    )
+
+
+# ===========================================================================
+# 7. BUG 2 — bare greeting while a multi-choice list is pending
+# ===========================================================================
+
+async def _seed_two_saree_choice(replay_session, *, suffix: str):
+    """
+    Seed a client + 2 same-keyword products and send "saree" so the
+    name-match pinner opens a pending_choice_skus list (same setup as
+    test_multi_option_list_pick_by_typed_number / by_button_sku above).
+
+    Returns (phone, pnid).
+    """
+    phone = _phone(suffix)
+    pnid = _pnid(suffix)
+    from app.models.client import Client
+    from app.models.product import Product
+
+    client = Client(
+        business_name="Greeting Loop Store",
+        email=f"greetloop_{phone}@test.com",
+        phone=phone,
+        whatsapp_phone_number_id=pnid,
+        accepts_cod=True,
+        hashed_password="x",
+    )
+    replay_session.add(client)
+    await replay_session.flush()
+
+    prod_a = Product(
+        client_id=client.id, name="Cotton Saree", sku=f"GL{suffix}1",
+        price=800.0, stock=5, is_active=True, has_variants=False,
+    )
+    prod_b = Product(
+        client_id=client.id, name="Silk Saree", sku=f"GL{suffix}2",
+        price=1500.0, stock=5, is_active=True, has_variants=False,
+    )
+    replay_session.add_all([prod_a, prod_b])
+    await replay_session.commit()
+
+    from app.models.conversation import Conversation
+    conv = Conversation(
+        phone_number=phone, channel="whatsapp", client_id=client.id, current_stage="greeting"
+    )
+    replay_session.add(conv)
+    await replay_session.commit()
+
+    return phone, pnid
+
+
+async def test_multi_choice_pending_bare_greeting_gets_short_reask_not_list_repeat(
+    replay_http, replay_session
+):
+    """
+    BUG 2 characterization test — first branch (short re-ask, not a repeat).
+
+    While pending_choice_skus is open, a bare greeting ("Hi") must NOT be
+    handled by the old "reject bare affirmative, re-ask" path, which
+    verbatim-repeats the full numbered list on every unresolved reply. It
+    must instead get a short, distinct warm re-ask — and the choice list
+    must remain open (still resolvable by a follow-up number) with the
+    greeting counter incremented.
+    """
+    phone, pnid = await _seed_two_saree_choice(replay_session, suffix="0700")
+
+    resp = await _msg(replay_http, phone, "saree", pnid=pnid, wamid=f"wamid.gl.list.{int(time.time())}")
+    assert resp.status_code == 200, resp.text
+    conv_after_list = await _get_conv(replay_session, phone)
+    assert conv_after_list.pending_choice_skus, "Expected pending_choice_skus set after 'saree'"
+
+    from app.services import whatsapp_service
+    whatsapp_service._raw_send_text_message.reset_mock()
+    resp2 = await _msg(replay_http, phone, "Hi", pnid=pnid, wamid=f"wamid.gl.hi1.{int(time.time())}")
+    assert resp2.status_code == 200, resp2.text
+
+    joined_reply = _joined_replies()
+    print(f"[BUG2] first greeting reply: {joined_reply!r}")
+    assert "please reply with the number of your choice" not in joined_reply.lower(), (
+        f"BUG 2: bare greeting while a choice list is pending must NOT verbatim-repeat "
+        f"the numbered list; got: {joined_reply!r}"
+    )
+
+    conv_after_greeting = await _get_conv(replay_session, phone)
+    assert conv_after_greeting.pending_choice_skus, (
+        "First greeting must NOT clear the pending choice list — it should still "
+        "be resolvable by a follow-up number"
+    )
+    assert conv_after_greeting.pending_choice_greeting_count == 1, (
+        f"Expected greeting counter to increment to 1, got "
+        f"{conv_after_greeting.pending_choice_greeting_count!r}"
+    )
+
+
+async def test_multi_choice_pending_repeated_greetings_break_loop(replay_http, replay_session):
+    """
+    BUG 2 characterization test — loop-break branch.
+
+    A customer who keeps greeting instead of answering must not be stuck in
+    an infinite identical-list loop. After the greeting threshold is hit,
+    the pending choice must be cleared (falling back to open intent capture)
+    instead of re-asking with the same list forever.
+    """
+    phone, pnid = await _seed_two_saree_choice(replay_session, suffix="0701")
+
+    resp = await _msg(replay_http, phone, "saree", pnid=pnid, wamid=f"wamid.gl2.list.{int(time.time())}")
+    assert resp.status_code == 200, resp.text
+    conv_after_list = await _get_conv(replay_session, phone)
+    assert conv_after_list.pending_choice_skus, "Expected pending_choice_skus set after 'saree'"
+
+    from app.services import whatsapp_service
+
+    # First greeting: short re-ask, list stays open (characterized above).
+    whatsapp_service._raw_send_text_message.reset_mock()
+    resp2 = await _msg(replay_http, phone, "Hi", pnid=pnid, wamid=f"wamid.gl2.hi1.{int(time.time())}")
+    assert resp2.status_code == 200, resp2.text
+    conv_after_hi1 = await _get_conv(replay_session, phone)
+    assert conv_after_hi1.pending_choice_skus, "List must still be open after ONE greeting"
+
+    # Second consecutive greeting: loop-break must fire.
+    whatsapp_service._raw_send_text_message.reset_mock()
+    resp3 = await _msg(replay_http, phone, "Hello", pnid=pnid, wamid=f"wamid.gl2.hi2.{int(time.time())}")
+    assert resp3.status_code == 200, resp3.text
+
+    joined_reply = _joined_replies()
+    print(f"[BUG2] second greeting reply: {joined_reply!r}")
+    assert "please reply with the number of your choice" not in joined_reply.lower(), (
+        f"BUG 2: repeated greetings must never re-dump the identical numbered list; "
+        f"got: {joined_reply!r}"
+    )
+
+    conv_after_hi2 = await _get_conv(replay_session, phone)
+    assert conv_after_hi2.pending_choice_skus is None, (
+        "BUG 2: after the greeting threshold is hit, the pending choice must be "
+        f"cleared (fallback to open intent capture); got "
+        f"{conv_after_hi2.pending_choice_skus!r}"
+    )
+    assert conv_after_hi2.pending_choice_greeting_count == 0, (
+        f"Greeting counter must reset once the loop breaks/clears; got "
+        f"{conv_after_hi2.pending_choice_greeting_count!r}"
     )

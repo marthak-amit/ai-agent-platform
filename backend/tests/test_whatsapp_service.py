@@ -28,7 +28,7 @@ def mock_httpx_client():
 
 async def test_send_text_message_success(mock_httpx_client, mock_settings):
     """send_text_message posts to correct Meta URL and returns parsed JSON."""
-    from app.services.whatsapp_service import send_text_message
+    from app.services.whatsapp_service import _raw_send_text_message as send_text_message
 
     mock_client, _ = mock_httpx_client
 
@@ -50,7 +50,7 @@ async def test_send_text_message_success(mock_httpx_client, mock_settings):
 
 async def test_send_text_message_uses_bearer_token(mock_httpx_client, mock_settings):
     """send_text_message sets Authorization header with the access token."""
-    from app.services.whatsapp_service import send_text_message
+    from app.services.whatsapp_service import _raw_send_text_message as send_text_message
 
     mock_client, _ = mock_httpx_client
 
@@ -63,7 +63,7 @@ async def test_send_text_message_uses_bearer_token(mock_httpx_client, mock_setti
 
 async def test_send_text_message_raises_on_http_error(mock_settings):
     """send_text_message propagates HTTPStatusError on 4xx/5xx."""
-    from app.services.whatsapp_service import send_text_message
+    from app.services.whatsapp_service import _raw_send_text_message as send_text_message
 
     mock_response = MagicMock()
     mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
@@ -82,7 +82,7 @@ async def test_send_text_message_raises_on_http_error(mock_settings):
 
 async def test_send_image_message_success(mock_httpx_client, mock_settings):
     """send_image_message posts an image payload with link and caption."""
-    from app.services.whatsapp_service import send_image_message
+    from app.services.whatsapp_service import _raw_send_image_message as send_image_message
 
     mock_client, _ = mock_httpx_client
 
@@ -104,7 +104,7 @@ async def test_send_image_message_success(mock_httpx_client, mock_settings):
 
 async def test_send_document_message_success(mock_httpx_client, mock_settings):
     """send_document_message posts a document payload with link, filename, and caption."""
-    from app.services.whatsapp_service import send_document_message
+    from app.services.whatsapp_service import _raw_send_document_message as send_document_message
 
     mock_client, _ = mock_httpx_client
 
@@ -128,7 +128,7 @@ async def test_send_document_message_success(mock_httpx_client, mock_settings):
 
 async def test_send_document_message_without_caption_omits_key(mock_httpx_client, mock_settings):
     """send_document_message omits the caption key entirely when none is given."""
-    from app.services.whatsapp_service import send_document_message
+    from app.services.whatsapp_service import _raw_send_document_message as send_document_message
 
     mock_client, _ = mock_httpx_client
 

@@ -99,6 +99,14 @@ class Conversation(Base):
     # rather than repinned from last_shown_sku (migration 0044).
     pending_choice_skus: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Consecutive bare greetings ("Hi"/"Hello") seen while pending_choice_skus
+    # is open — resets to 0 once the choice resolves or is cleared. Lets the
+    # handler send a short re-ask on the first greeting and fall back to open
+    # intent capture instead of re-dumping the same list forever (migration 0056).
+    pending_choice_greeting_count: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False, server_default="0"
+    )
+
     # Browsed SKUs — JSON list of SKUs the customer showed buying intent for this conversation.
     # Appended on every product switch/pin; used for end-of-order cross-sell.
     browsed_skus: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

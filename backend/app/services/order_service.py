@@ -110,7 +110,8 @@ async def _generate_and_send_invoice(db: AsyncSession, order: Order, client) -> 
     Instagram's customer_phone is an IGSID, not a real phone number).
     """
     from app.models.conversation import Conversation
-    from app.services import invoice_service, whatsapp_service
+    from app.services import invoice_service, outbound
+    from app.services.send_gate import MessageKind
 
     invoice_number = await invoice_service.generate_invoice_number(db, order.client_id)
     logo_bytes = await invoice_service.load_client_logo_bytes(client)
@@ -130,11 +131,15 @@ async def _generate_and_send_invoice(db: AsyncSession, order: Order, client) -> 
         channel = conv.channel if conv else None
 
     if channel == "whatsapp":
-        await whatsapp_service.send_document_message(
-            to_phone_number=order.customer_phone,
-            document_url=invoice_url,
-            filename=f"Invoice-{invoice_number}.pdf",
-            caption=f"🧾 Invoice for order {order.order_number}",
+        await outbound.send_document(
+            order.customer_phone,
+            invoice_url,
+            f"Invoice-{invoice_number}.pdf",
+            f"🧾 Invoice for order {order.order_number}",
+            kind=MessageKind.UTILITY_TEMPLATE,
+            db=db,
+            client_id=order.client_id,
+            conversation_id=order.conversation_id,
         )
 
     logger.info("Invoice %s generated for order %s.", invoice_number, order.order_number)
@@ -230,7 +235,6 @@ async def create_order(
 
 async def _notify_owner_new_order(order: Order, client) -> None:
     """Send a WhatsApp summary of a new order to the business owner's registered phone."""
-    from app.services import whatsapp_service
 
     if not client.phone:
         return
@@ -254,7 +258,8 @@ async def _notify_owner_new_order(order: Order, client) -> None:
         f"View in dashboard: /orders"
     )
 
-    await whatsapp_service.send_text_message(client.phone, message)
+    from app.services import outbound
+    await outbound.send_owner_text(client.phone, message)
 
 
 async def get_order(order_id: int, client_id: int, db: AsyncSession) -> Order:
@@ -318,7 +323,7 @@ async def update_order_status(
             result = await db.execute(select(Client).where(Client.id == client_id))
             client = result.scalar_one_or_none()
             if client:
-                await _notify_customer_dispatched(order, client)
+                await _notify_customer_dispatched(order, client, db)
         except Exception as exc:
             logger.warning("Customer dispatch notification failed: %s", exc)
     elif new_status == "delivered":
@@ -332,9 +337,10 @@ async def update_order_status(
     return order
 
 
-async def _notify_customer_dispatched(order: Order, client) -> None:
-    """Send a WhatsApp dispatch notification to the customer."""
-    from app.services import whatsapp_service
+async def _notify_customer_dispatched(order: Order, client, db=None) -> None:
+    """Send a WhatsApp dispatch notification to the customer (gated utility send)."""
+    from app.services import outbound
+    from app.services.send_gate import MessageKind
 
     if not client.whatsapp_phone_number_id:
         return
@@ -350,7 +356,14 @@ async def _notify_customer_dispatched(order: Order, client) -> None:
             message += f" ({order.courier_name})"
     message += "\nExpected delivery: 3–5 days"
 
-    await whatsapp_service.send_text_message(order.customer_phone, message)
+    await outbound.send_text(
+        order.customer_phone,
+        message,
+        kind=MessageKind.UTILITY_TEMPLATE,
+        db=db,
+        client_id=order.client_id,
+        conversation_id=order.conversation_id,
+    )
 
 
 async def get_orders(
