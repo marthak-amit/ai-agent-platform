@@ -402,8 +402,19 @@ async def _send_abandoned_intent_followups(db) -> None:
                 # once submitted to Meta — free-form business-initiated messages outside
                 # the 24-hour window are REJECTED by Meta in production; the window guard
                 # above keeps this send inside that window.
+                # Phase 1 cart engine — a "different for each" or cross-sell
+                # order in progress has more than one product/variant in
+                # cart_items; naming only the single pinned SKU would be
+                # misleading ("your Silk Saree order" when the customer was
+                # actually mid-way through a 3-item cart).
+                _cart_items_wip = getattr(conv, "cart_items", None) or []
+                if _cart_items_wip:
+                    _item_count = len(_cart_items_wip) + (1 if getattr(conv, "cart_wip_item", None) else 0)
+                    _order_desc = f"{_item_count}-item order"
+                else:
+                    _order_desc = f"{product_name} order"
                 followup_text = (
-                    f"Hi {name}! 👋 Your {product_name} order is waiting — "
+                    f"Hi {name}! 👋 Your {_order_desc} is waiting — "
                     f"just pick up where you left off. "
                     f"Reply to continue or ask any questions! 😊"
                 )

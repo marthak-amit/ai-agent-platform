@@ -17,6 +17,7 @@ from app.models.ig_comment_reply import IgCommentReply
 from app.models.lead import Lead
 from app.models.message import Message
 from app.models.order import Order
+from app.models.order_line_item import OrderLineItem
 from app.models.payment import Payment
 from app.models.product import Product
 from app.models.style_reference import StyleReference
@@ -30,7 +31,7 @@ from app.models.user import User
 
 __all__ = [
     "Campaign", "CampaignRecipient", "Client", "ClientMonthlyUsage", "Conversation", "CostLogEntry",
-    "Customer", "FollowUp", "IgCommentReply", "KnowledgeBase", "Lead", "Message", "Order", "Payment",
-    "PhotoGenerationLog", "Plan", "Product", "ProductVariant", "RestockNotification", "StockLog",
+    "Customer", "FollowUp", "IgCommentReply", "KnowledgeBase", "Lead", "Message", "Order", "OrderLineItem",
+    "Payment", "PhotoGenerationLog", "Plan", "Product", "ProductVariant", "RestockNotification", "StockLog",
     "StyleReference", "UsageLog", "User",
 ]

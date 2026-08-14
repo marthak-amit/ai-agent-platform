@@ -151,6 +151,7 @@ _LANG_PARAMS = [
             "color":   "Pink",
             "size":    "M",
             "qty":     "2",
+            "variant_mode": "same",
             "name":    "Ramesh Kumar",
             "address": "12 MG Road, Mumbai",
             "yes":     "yes",
@@ -164,6 +165,7 @@ _LANG_PARAMS = [
             "color":   "Pink chahiye",
             "size":    "M size",
             "qty":     "2 chahiye",
+            "variant_mode": "same",
             "name":    "Ramesh Kumar",
             "address": "12 MG Road, Mumbai",
             "yes":     "haan",
@@ -178,6 +180,7 @@ _LANG_PARAMS = [
             "color":   "Pink",
             "size":    "M",
             "qty":     "2",
+            "variant_mode": "same",
             # Devanagari name — is_valid_name passes (Python .isalpha() handles Devanagari)
             "name":    "राम कुमार",  # "राम कुमार"
             "address": "12 MG Road, Mumbai",
@@ -195,6 +198,7 @@ _LANG_PARAMS = [
             "color":   "Pink",
             "size":    "M",
             "qty":     "2",
+            "variant_mode": "same",
             "name":    "Ramesh Kumar",
             "address": "12 MG Road, Mumbai",
             # "ha" is in _CONFIRMATION_YES (Latin — widely used in Gujarati messages)
@@ -255,6 +259,12 @@ async def test_lang_matrix_full_upi_flow(
     # Step 4 — quantity
     r = await _msg(replay_http, phone, msgs["qty"], pnid=pnid,
                    wamid=f"wamid.{lang}.qty.{ts}")
+    assert r.status_code == 200
+
+    # Step 4b — Phase 1 cart engine: qty=2 > 1 on a variant product asks
+    # "same or different?" before proceeding.
+    r = await _msg(replay_http, phone, msgs["variant_mode"], pnid=pnid,
+                   wamid=f"wamid.{lang}.mode.{ts}")
     assert r.status_code == 200
 
     # Step 5 — name
@@ -794,11 +804,14 @@ async def test_H_language_switch_mid_flow(replay_http, replay_session):
 
     ts = int(time.time())
 
-    # English messages for first 4 slots
+    # English messages for first 4 slots. "same" answers the Phase 1 cart
+    # engine's "same or different?" question, asked because qty=2 > 1 on a
+    # variant product.
     for step, text in [
         ("color", "Pink"),
         ("size",  "M"),
         ("qty",   "2"),
+        ("variant_mode", "same"),
         ("name",  "Ramesh Kumar"),
     ]:
         r = await _msg(replay_http, phone, text, pnid=pnid,

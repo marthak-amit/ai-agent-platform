@@ -330,17 +330,42 @@ def generate_order_invoice(
     c.drawString(380, y + 5, "Unit Price")
     c.drawString(470, y + 5, "Total")
 
-    # ── Table row (Order = one product per row) ──────────────────────────────
+    # ── Table rows — one per cart line item (Phase 1 cart engine); falls
+    # back to the single flat row for legacy pre-cart orders. ──────────────
     y -= 20
     c.setFont("Helvetica", 10)
-    c.drawString(55,  y, order.product_name[:32])
-    c.drawString(255, y, _variant_line(order)[:20] or "—")
-    c.drawString(340, y, str(order.quantity))
-    c.drawString(380, y, format_price(order.unit_price))
-    c.drawString(470, y, format_price(order.total_amount))
+    _line_items = list(getattr(order, "line_items", None) or [])
+    if not _line_items:
+        c.drawString(55,  y, order.product_name[:32])
+        c.drawString(255, y, _variant_line(order)[:20] or "—")
+        c.drawString(340, y, str(order.quantity))
+        c.drawString(380, y, format_price(order.unit_price))
+        c.drawString(470, y, format_price(order.total_amount))
+        y -= 20
+    else:
+        for _li in _line_items:
+            if y < 130:
+                # Page-break guard: a batch-mode cart can have several
+                # distinct variant rows, unlike the single-row legacy case.
+                c.showPage()
+                y = height - 60
+                c.setFont("Helvetica", 10)
+            _li_variant = " / ".join(
+                p for p in [_li.variant_color, _li.variant_size, _li.variant_material] if p
+            )
+            c.drawString(55,  y, _li.product_name[:32])
+            c.drawString(255, y, _li_variant[:20] or "—")
+            c.drawString(340, y, str(_li.quantity))
+            c.drawString(380, y, format_price(_li.unit_price))
+            c.drawString(470, y, format_price(_li.subtotal))
+            y -= 20
+
+    if y < 110:
+        c.showPage()
+        y = height - 60
 
     # ── Totals ────────────────────────────────────────────────────────────────
-    y -= 18
+    y -= 6
     c.setLineWidth(0.5)
     c.line(360, y + 4, width - 50, y + 4)
     y -= 14

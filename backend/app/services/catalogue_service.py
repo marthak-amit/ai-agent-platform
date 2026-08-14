@@ -579,6 +579,7 @@ def search_products(
 
     Scoring:
         +2  keyword found in product name
+        +2  keyword found in product category
         +1  keyword found in product description
 
     Args:
@@ -601,9 +602,12 @@ def search_products(
     for p in active:
         score = 0
         name_tokens = _tokenize(p.name)
+        category_tokens = _tokenize(p.category or "")
         desc_tokens = _tokenize(p.description or "")
         for kw in keywords:
             if kw in name_tokens or kw in p.name.lower():
+                score += 2
+            if kw in category_tokens or kw in (p.category or "").lower():
                 score += 2
             if kw in desc_tokens or kw in (p.description or "").lower():
                 score += 1
@@ -714,9 +718,12 @@ def search_products_with_scores(
     for p in active:
         score = 0
         name_tokens = _tokenize(p.name)
+        category_tokens = _tokenize(p.category or "")
         desc_tokens = _tokenize(p.description or "")
         for kw in keywords:
             if kw in name_tokens or kw in p.name.lower():
+                score += 2
+            if kw in category_tokens or kw in (p.category or "").lower():
                 score += 2
             if kw in desc_tokens or kw in (p.description or "").lower():
                 score += 1
@@ -884,6 +891,7 @@ def guard_product_reply(
     canonical_products: list[Product],
     query: str | None = None,
     pre_validated_products: list[Product] | None = None,
+    all_products: list[Product] | None = None,
 ) -> str:
     """
     Verify that an AI-generated browsing reply contains only real product facts.
@@ -925,6 +933,18 @@ def guard_product_reply(
                                 an already-validated SKU must never be
                                 flagged phantom regardless of what
                                 canonical_products ends up containing.
+        all_products:           The client's full active catalogue, pre-
+                                fetched this turn. Used ONLY to build the
+                                "not found" fallback's product list.
+                                canonical_products is frequently just a
+                                single stale product pinned in an earlier
+                                turn (e.g. via conv.pending_product_sku) —
+                                listing it as "what we currently have" when
+                                the customer's query has zero relevance to
+                                it is misleading. When all_products is
+                                given, the fallback lists real catalogue
+                                products instead. Falls back to
+                                canonical_products when omitted/empty.
 
     Returns:
         Original reply when clean; deterministic listing when phantom found
@@ -982,12 +1002,21 @@ def guard_product_reply(
             _top_score = _scored[0][0] if _scored else 0
             if _top_score == 0:
                 _query_label = query.strip()[:40]
-                _real_names = ", ".join(p.name for p in _allowed_products[:4])
+                # Prefer the real catalogue over canonical_products/_allowed_products,
+                # which may be nothing more than one stale pinned product carried
+                # over from an earlier turn and unrelated to this query.
+                _catalogue_sample = [
+                    p for p in (all_products or []) if p.is_active is not False
+                ]
+                _listing_source = _catalogue_sample or _allowed_products
+                _real_names = ", ".join(p.name for p in _listing_source[:4])
                 _logger.info(
                     "guard_product_reply: query %r has 0 relevance to canonical products — "
                     "returning not-found instead of irrelevant listing.",
                     _query_label,
                 )
+                if not _real_names:
+                    return f"Sorry, we don't carry {_query_label}."
                 return (
                     f"Sorry, we don't carry {_query_label}. "
                     f"We currently have: {_real_names}. "

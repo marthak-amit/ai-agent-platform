@@ -335,9 +335,13 @@ def _build_availability_answer(
     sizes = vi.get("available_sizes", []) or []
     materials = vi.get("available_materials", []) or []
 
+    # Word-boundary match only — a naive substring check let a single-letter
+    # size like "L" match inside an unrelated token (e.g. the "L" in SKU
+    # "LH10042"), causing a general availability question to be answered as
+    # if the customer had named that specific size.
     for options in (colors, sizes, materials):
         for opt in options:
-            if opt and opt.lower() in lower:
+            if opt and re.search(rf"\b{re.escape(opt.lower())}\b", lower):
                 return f"Yes, {opt} is available for {prod_name}."
 
     cleaned = lower.replace("?", " ")
@@ -347,11 +351,25 @@ def _build_availability_answer(
             opts = ", ".join(colors) if colors else "see our catalogue"
             return f"{word.capitalize()} isn't available for {prod_name}. Available colors: {opts}."
 
-    # No specific attribute named — fall back to overall stock state.
+    # No specific variant named — general availability answer with full
+    # details, not a guess at one arbitrary variant.
     if available_stock is not None:
         if available_stock <= 0:
             return f"Sorry, {prod_name} is currently out of stock."
         return f"Yes, {prod_name} is available."
+
+    if colors or sizes or materials:
+        price = getattr(pinned_product, "price", None)
+        answer = f"Yes, {prod_name} is available"
+        answer += f" — ₹{int(price):,}." if price else "."
+        if colors:
+            answer += f" Colors: {', '.join(colors)}."
+        if sizes:
+            answer += f" Sizes: {', '.join(sizes)}."
+        if materials:
+            answer += f" Materials: {', '.join(materials)}."
+        return answer
+
     return ""
 
 
@@ -669,6 +687,13 @@ def _build_slot_question(
     vi = variant_info or {}
 
     if next_slot == "quantity_invalid":
+        # available_stock==0 should already be caught upstream by the product/
+        # combo OOS gates before quantity is ever asked, but guard here too —
+        # "1–0" is a nonsensical range and must never reach the customer.
+        # (available_stock is None means untracked stock hitting the sanity
+        # ceiling, not zero stock — that case keeps the "limited" wording.)
+        if available_stock is not None and available_stock <= 0:
+            return _gt(lang, "out_of_stock_block", product=product_name)
         stock_str = str(available_stock) if available_stock is not None else "limited"
         return _gt(lang, "quantity_exceeds_stock", stock=stock_str, product=product_name)
 
@@ -692,6 +717,65 @@ def _build_slot_question(
         if attempt_count >= _SLOT_ATTEMPT_ESCAPE_HATCH:
             _slot_reply += "\n\n(Reply 'cancel' to stop, or 'help' to reach our team.)"
         return _slot_reply
+
+    # ── Phase 1 cart engine — only reachable when qty > 1 on a variant product ──
+    if next_slot == "variant_mode":
+        _n = getattr(conv, "pending_order_quantity", 0) or 0
+        _cs_parts = [p for p in [getattr(conv, "selected_color", None), getattr(conv, "selected_size", None)] if p]
+        _color_size = "/".join(_cs_parts) or "your selection"
+        _slot_reply = _gt(lang, "ask_variant_mode", n=_n, color_size=_color_size)
+        if attempt_count >= _SLOT_ATTEMPT_ESCAPE_HATCH:
+            _slot_reply += "\n\n(Reply 'cancel' to stop, or 'help' to reach our team.)"
+        return _slot_reply
+
+    if next_slot == "cart_item_color":
+        item_num = len(getattr(conv, "cart_items", None) or []) + 1
+        colors = " / ".join(vi.get("available_colors", [])) or "see catalogue"
+        return _gt(lang, "ask_cart_item_color", item_num=item_num, colors=colors)
+
+    if next_slot == "cart_item_size":
+        item_num = len(getattr(conv, "cart_items", None) or []) + 1
+        sizes = " / ".join(vi.get("available_sizes", [])) or "see catalogue"
+        return _gt(lang, "ask_cart_item_size", item_num=item_num, sizes=sizes)
+
+    if next_slot == "cart_item_material":
+        materials = " / ".join(vi.get("available_materials", [])) or "see catalogue"
+        return _gt(lang, "ask_material", materials=materials)
+
+    if next_slot == "cart_item_qty":
+        _n = getattr(conv, "pending_order_quantity", 0) or 0
+        _remaining = _n - conversation_flow._cart_committed_qty(conv)
+        _cart_items_so_far = getattr(conv, "cart_items", None) or []
+        _wip = getattr(conv, "cart_wip_item", None) or {}
+        if not _cart_items_so_far:
+            # Item 1 — color/size/material are the leading slots already
+            # answered above, never re-asked here.
+            _cs_parts = [p for p in [getattr(conv, "selected_color", None), getattr(conv, "selected_size", None)] if p]
+        else:
+            _cs_parts = [p for p in [_wip.get("color"), _wip.get("size")] if p]
+        _color_size = "/".join(_cs_parts) or "this item"
+        return _gt(lang, "ask_cart_item_qty", color_size=_color_size, remaining=_remaining)
+
+    if next_slot == "cart_breakdown":
+        _n = getattr(conv, "pending_order_quantity", 0) or 0
+        _remaining = _n - conversation_flow._cart_committed_qty(conv)
+        return _gt(lang, "ask_cart_breakdown", remaining=_remaining)
+
+    if next_slot == "cart_breakdown_confirm":
+        _proposed = getattr(conv, "cart_pending_confirmation", None) or []
+        _desc = " + ".join(f"{i['qty']} {i.get('color', '')}".strip() for i in _proposed)
+        return _gt(lang, "ask_cart_breakdown_confirm", breakdown=_desc)
+
+    if next_slot == "cart_breakdown_mismatch":
+        _info = conv.__dict__.get("_cart_breakdown_mismatch_info") or {}
+        return _gt(lang, "cart_breakdown_mismatch", sum=_info.get("sum", "?"), remaining=_info.get("remaining", "?"))
+
+    if next_slot == "cart_breakdown_invalid":
+        _info = conv.__dict__.get("_cart_breakdown_invalid_info") or {}
+        return _gt(
+            lang, "cart_breakdown_invalid_variant",
+            invalid=_info.get("invalid", "?"), colors=_info.get("colors", ""), sizes=_info.get("sizes", ""),
+        )
 
     if next_slot == "combo_oos":
         _sel_color = getattr(conv, "selected_color", None) or ""
@@ -1010,6 +1094,9 @@ async def run_cancel_in_payment_guard(
         ("payment_method", None), ("summary_shown", False),
         ("pending_product_sku", None), ("interrupted_sku", None),
         ("last_shown_sku", None), ("pending_choice_skus", None),
+        ("cart_items", None), ("cart_variant_mode", None),
+        ("cart_collection_mode", None), ("cart_wip_item", None),
+        ("cart_pending_confirmation", None),
     ]
     for _pcf, _pcv in _pc_cancel_fields:
         try:
@@ -1247,6 +1334,151 @@ async def run_switch_confirm_guard(
         await record_usage(db, client, conv)
     except Exception as exc:
         logger.error("Usage tracking error (switch confirm): %s", exc)
+    return PipelineResult(text=reply)
+
+
+# ---------------------------------------------------------------------------
+# Cross-product aside-question switch confirmation
+# ---------------------------------------------------------------------------
+# When a customer asks about a DIFFERENT, named product while a slot is
+# pending for the pinned order (FIX2/FIX4 in run_slot_state_machine, e.g.
+# "LH10042 is available?" while a chair is mid quantity-slot), we answer the
+# question and then ask "Would you like to order <named product>? (Yes/No)"
+# instead of confusingly re-asking the ORIGINAL pinned slot. The candidate
+# SKU is stashed in interrupted_sku (the same field the payment-stage
+# run_switch_confirm_guard uses) under a dedicated micro-stage,
+# 'awaiting_order_switch_confirm' — distinct from payment's
+# 'awaiting_switch_confirm' since resolution must return to order_collection
+# slot-filling, not payment. This guard resolves that confirmation on the
+# customer's NEXT turn, entirely before SKU/name-pinning runs, so a bare
+# "yes"/"no" is never mistaken for a fresh SKU search or swallowed by the
+# browsing-stage interrupted_sku handler (run_sku_and_name_pinning).
+# ---------------------------------------------------------------------------
+
+async def run_order_switch_confirm_guard(
+    db, conv, client, sender_phone: str, user_text: str, wamid: "str | None", record_usage,
+) -> "PipelineResult | None":
+    """
+    Resolve a pending cross-product order-switch confirmation prompt.
+
+    Returns None (caller continues normal dispatch) whenever current_stage
+    isn't 'awaiting_order_switch_confirm' — i.e. on every ordinary turn.
+    """
+    if (getattr(conv, "current_stage", None) or "") != "awaiting_order_switch_confirm":
+        return None
+
+    _candidate_sku = getattr(conv, "interrupted_sku", None)
+    _lang = getattr(conv, "last_customer_language", None) or "english"
+    _confirm_yes = user_text.strip().lower() in {
+        "yes", "haan", "ha", "han", "ok", "okay", "sure", "y", "yep", "yeah",
+        "bilkul", "हाँ", "ہاں",
+    }
+
+    _new_product = None
+    if _confirm_yes and _candidate_sku and client:
+        _new_product = await catalogue_service.find_product_by_sku(db, client.id, _candidate_sku)
+
+    if _new_product is not None:
+        # Reuse the NEW_PRODUCT re-pin primitive (see run_slot_state_machine's
+        # NEW_PRODUCT branch): archive the old SKU, reset variant/qty slots,
+        # pin the new SKU, and start slot-filling for it.
+        _old_sku = getattr(conv, "pending_product_sku", None)
+        if _old_sku and _old_sku != _candidate_sku:
+            _browsed_raw = getattr(conv, "browsed_skus", None) or "[]"
+            try:
+                _browsed = _json.loads(_browsed_raw)
+            except Exception:
+                _browsed = []
+            if _old_sku not in _browsed:
+                _browsed.append(_old_sku)
+            try:
+                _nb = _json.dumps(_browsed)
+                await conversation_service.update_order_field(db, conv.id, "browsed_skus", _nb)
+                conv.browsed_skus = _nb
+            except Exception as exc:
+                logger.error("browsed_skus update (cross-product switch): %s", exc)
+        _reset_fields = [
+            ("pending_order_quantity", None), ("selected_color", None),
+            ("selected_size", None), ("selected_material", None),
+            ("summary_shown", False),
+        ]
+        for _rf, _rv in _reset_fields:
+            try:
+                await conversation_service.update_order_field(db, conv.id, _rf, _rv)
+                setattr(conv, _rf, _rv)
+            except Exception as exc:
+                logger.error("cross-product switch slot reset (%s): %s", _rf, exc)
+        try:
+            await conversation_service.update_order_field(db, conv.id, "pending_product_sku", _candidate_sku)
+            conv.pending_product_sku = _candidate_sku
+            await conversation_service.update_order_field(db, conv.id, "interrupted_sku", None)
+            conv.interrupted_sku = None
+            await conversation_service.update_stage(db, conv.id, "order_collection")
+            conv.current_stage = "order_collection"
+        except Exception as exc:
+            logger.error("Cross-product switch-confirm yes error: %s", exc)
+        try:
+            _variant_info = await catalogue_service.get_product_variant_info(db, _new_product)
+        except Exception as exc:
+            logger.error("Cross-product switch variant_info fetch error: %s", exc)
+            _variant_info = {}
+        _next_slot = conversation_flow.get_next_required_slot(conv, _variant_info)
+        _is_first_slot = True
+        logger.info(
+            "Cross-product switch confirmed: conv=%s → pending_product_sku=%s (was %s)",
+            conv.id, _candidate_sku, _old_sku,
+        )
+    else:
+        # "No", an unclear reply, or the candidate no longer resolves — keep
+        # the original pinned product/slots untouched and simply re-ask the
+        # slot that was pending before the aside-question interrupted it.
+        try:
+            await conversation_service.update_order_field(db, conv.id, "interrupted_sku", None)
+            conv.interrupted_sku = None
+            await conversation_service.update_stage(db, conv.id, "order_collection")
+            conv.current_stage = "order_collection"
+        except Exception as exc:
+            logger.error("Cross-product switch-confirm no/other error: %s", exc)
+        _pinned_sku_reask = getattr(conv, "pending_product_sku", None)
+        _pinned_product_reask = (
+            await catalogue_service.find_product_by_sku(db, client.id, _pinned_sku_reask)
+            if (client and _pinned_sku_reask) else None
+        )
+        try:
+            _variant_info = (
+                await catalogue_service.get_product_variant_info(db, _pinned_product_reask)
+                if _pinned_product_reask else {}
+            )
+        except Exception as exc:
+            logger.error("Cross-product switch decline variant_info fetch error: %s", exc)
+            _variant_info = {}
+        _next_slot = conversation_flow.get_next_required_slot(conv, _variant_info)
+        _is_first_slot = False
+        logger.info(
+            "Cross-product switch declined/unclear: conv=%s — kept pending_product_sku=%r",
+            conv.id, _pinned_sku_reask,
+        )
+
+    try:
+        reply = await _render_order_reply(
+            action="ask_slot", conv=conv, db=db, client=client,
+            next_slot=_next_slot, variant_info=_variant_info, customer_profile=None,
+            available_stock=None, declined_saved_address=False, lang=_lang,
+            is_first_slot=_is_first_slot,
+        )
+    except RenderError as exc:
+        logger.error("Cross-product switch-confirm render error: %s", exc)
+        return PipelineResult(text=None, skip_send=True, status="render_error")
+
+    try:
+        await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+        await conversation_service.save_message(db, conv.id, "assistant", reply)
+    except Exception as exc:
+        logger.error("Cross-product switch-confirm save error: %s", exc)
+    try:
+        await record_usage(db, client, conv)
+    except Exception as exc:
+        logger.error("Usage tracking error (cross-product switch confirm): %s", exc)
     return PipelineResult(text=reply)
 
 
@@ -1914,27 +2146,108 @@ async def run_sku_and_name_pinning(
                         conv.id, _pc_stash_color, _pc_stash_size,
                     )
 
-                logger.info("Multi-choice open: rejecting bare affirmative, re-asking conv=%s", conv.id)
-                _reask_lines = []
-                for _cs, _cp in _pc_candidates:
-                    _i = _pending_choice_skus_list.index(_cs) + 1
-                    _cname = getattr(_cp, "name", None) or _cs
-                    _cprice = int(getattr(_cp, "price", 0) or 0)
-                    _reask_lines.append(f"{_i}. {_cname} [{_cs}] — ₹{_cprice:,}")
-                _reask_msg = (
-                    "Please reply with the number of your choice:\n" + "\n".join(_reask_lines)
+                # Before giving up on the reply as a bare affirmative/no-match,
+                # check whether it actually names a DIFFERENT product than the
+                # ones on offer — e.g. shown Kurti options, customer then types
+                # "Saree". A genuinely ambiguous reply (empty, a generic
+                # affirmative, or a number that didn't map to a choice above)
+                # skips this check and falls through to the re-ask unchanged.
+                _PC_GENERIC_AFFIRMATIVES = {
+                    "yes", "yeah", "yep", "yup", "ok", "okay", "sure",
+                    "haan", "ha", "theek hai",
+                }
+                _pc_is_ambiguous_reply = (
+                    not _stripped_pc
+                    or _stripped_pc_lower in _PC_GENERIC_AFFIRMATIVES
+                    or _stripped_pc.isdigit()
                 )
-                try:
-                    await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
-                    await conversation_service.save_message(db, conv.id, "assistant", _reask_msg)
-                except Exception:
-                    pass
-                try:
-                    await record_usage(db, client, conv)
-                except Exception:
-                    pass
-                out.early_result = PipelineResult(text=_reask_msg)
-                return out
+                _pc_new_query_prod = None
+                _pc_match_kind = None
+                _pc_fresh_confidence = 1.0
+                if not _pc_is_ambiguous_reply and client:
+                    # Explicit SKU/code mention always wins over the pending menu —
+                    # e.g. "is SR99999 available?" is unambiguously a new-product
+                    # lookup, even though search_products_with_scores below (which
+                    # only scores name/category/description tokens) never matches a
+                    # raw SKU and used to fall through to the bare-affirmative
+                    # rejection, incorrectly re-showing the old menu.
+                    for _pc_sku in catalogue_service.extract_skus_from_text(user_text):
+                        try:
+                            _pc_sku_prod = await catalogue_service.find_product_by_sku(db, client.id, _pc_sku)
+                        except Exception:
+                            _pc_sku_prod = None
+                        if _pc_sku_prod is not None:
+                            _pc_new_query_prod = _pc_sku_prod
+                            _pc_match_kind = "sku"
+                            break
+
+                    if _pc_new_query_prod is None:
+                        try:
+                            _pc_all_prods = await catalogue_service.list_products(db, client.id)
+                        except Exception:
+                            _pc_all_prods = []
+                        _pc_fresh_scored = catalogue_service.search_products_with_scores(
+                            _pc_all_prods, user_text
+                        )
+                        if _pc_fresh_scored:
+                            _pc_fresh_top_score, _pc_fresh_top_prod = _pc_fresh_scored[0]
+                            _pc_fresh_keywords = catalogue_service._tokenize(user_text)
+                            _pc_fresh_max_score = max(1, 2 * len(_pc_fresh_keywords))
+                            _pc_fresh_confidence = _pc_fresh_top_score / _pc_fresh_max_score
+                            _pc_fresh_sku = getattr(_pc_fresh_top_prod, "sku", None)
+                            if (
+                                _pc_fresh_confidence >= _NAME_MATCH_CONFIDENCE_FLOOR
+                                and _pc_fresh_sku
+                                and _pc_fresh_sku not in _pending_choice_skus_list
+                            ):
+                                _pc_new_query_prod = _pc_fresh_top_prod
+                                _pc_match_kind = "name"
+
+                if _pc_new_query_prod is not None:
+                    logger.info(
+                        "Multi-choice open: reply %r matches a different product "
+                        "(sku=%s, match=%s, confidence=%.2f) not in pending choices %s — "
+                        "clearing pending choice, treating as new catalog query.",
+                        user_text[:40], getattr(_pc_new_query_prod, "sku", None),
+                        _pc_match_kind, _pc_fresh_confidence, _pending_choice_skus_list,
+                    )
+                    try:
+                        await conversation_service.set_pending_choice_skus(db, conv.id, None)
+                        conv.pending_choice_skus = None
+                        if getattr(conv, "pending_choice_greeting_count", 0):
+                            await conversation_service.update_order_field(
+                                db, conv.id, "pending_choice_greeting_count", 0
+                            )
+                            conv.pending_choice_greeting_count = 0
+                    except Exception as exc:
+                        logger.error("Multi-choice clear (new-query redirect) error: %s", exc)
+                    _pending_choice_skus_list = []
+                    # Do NOT return — fall through so the normal name-match/
+                    # search flow below (which reruns its own fresh catalogue
+                    # search) pins or multi-matches this query exactly as if
+                    # no choice had been pending.
+                else:
+                    logger.info("Multi-choice open: rejecting bare affirmative, re-asking conv=%s", conv.id)
+                    _reask_lines = []
+                    for _cs, _cp in _pc_candidates:
+                        _i = _pending_choice_skus_list.index(_cs) + 1
+                        _cname = getattr(_cp, "name", None) or _cs
+                        _cprice = int(getattr(_cp, "price", 0) or 0)
+                        _reask_lines.append(f"{_i}. {_cname} [{_cs}] — ₹{_cprice:,}")
+                    _reask_msg = (
+                        "Please reply with the number of your choice:\n" + "\n".join(_reask_lines)
+                    )
+                    try:
+                        await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+                        await conversation_service.save_message(db, conv.id, "assistant", _reask_msg)
+                    except Exception:
+                        pass
+                    try:
+                        await record_usage(db, client, conv)
+                    except Exception:
+                        pass
+                    out.early_result = PipelineResult(text=_reask_msg)
+                    return out
 
     # ── P0-3: repin last_shown_sku on a bare affirmative after reset ─────────
     # After order completion/cancel, pending_product_sku is cleared but a new
@@ -2158,6 +2471,25 @@ async def run_sku_and_name_pinning(
         "product_inquiry", "qualification", "objection_handling", "offer_making", "greeting"
     )
     _is_bare_attribute = len(user_text.split()) == 1
+    # A bare single word only counts as a plausible pending-slot answer
+    # (colour/size/material/quantity) when it actually looks like one — a
+    # digit, or a value that matches the pinned product's own variant
+    # options. Previously ANY single word was assumed to be an attribute
+    # answer, which meant a genuine new-product search typed as one word
+    # (e.g. "Kurti") could never reach the name-match pinner below, so a
+    # stale pinned SKU and its slot-filling state (stage=product_inquiry,
+    # next_slot="color") never reset for an off-flow browse/search query.
+    _is_plausible_bare_slot_answer = _is_bare_attribute and (
+        user_text.strip().isdigit()
+        or any(
+            user_text.strip().lower() == v.lower()
+            for v in (
+                out.variant_info.get("available_colors", [])
+                + out.variant_info.get("available_sizes", [])
+                + out.variant_info.get("available_materials", [])
+            )
+        )
+    )
     # P1-4: a multi-word variant answer ("Pink and xl") at offer stage must NOT be
     # treated as a new product search just because it isn't a single word — check
     # whether the message names a colour/size/material of the ALREADY-pinned product.
@@ -2181,7 +2513,7 @@ async def run_sku_and_name_pinning(
             # Block re-pin for bare single-word attributes (color/material/size) when a
             # product is already pinned at a browsing stage. Multi-word messages (explicit
             # product names) are allowed through so a customer can switch products.
-            or (_browsing_stage_pinned and _is_bare_attribute)
+            or (_browsing_stage_pinned and _is_plausible_bare_slot_answer)
             # Block re-pin for a multi-word variant answer ("Pink and xl") naming an
             # attribute of the already-pinned product.
             or (_browsing_stage_pinned and _is_variant_answer_for_pinned)
@@ -2422,6 +2754,191 @@ class SlotOutcome:
     crosssell_sku_for_session: str | None = None
 
 
+# Sentinel field names returned by conversation_flow.extract_order_field()
+# for the Phase 1 cart engine — none of these are real Conversation columns,
+# so they must never reach the generic single-column setattr() path used for
+# every other extracted field. _apply_cart_extraction() below is the only
+# thing that writes them.
+_CART_SENTINEL_FIELDS = frozenset({
+    "cart_multi_seed", "cart_variant_mode", "cart_wip_color", "cart_wip_size",
+    "cart_wip_material", "cart_wip_qty", "cart_wip_qty_invalid",
+    "cart_breakdown_confirmed", "cart_breakdown_rejected", "cart_correct_last_qty",
+})
+
+
+async def _apply_cart_extraction(db, conv, variant_info: dict, pinned_product, field: str, value) -> bool:
+    """
+    Persist one cart-sentinel extraction result from extract_order_field().
+
+    Mirrors the write-then-setattr pattern conversation_service.update_order_field
+    uses for ordinary slots, but every cart sentinel maps to a JSONB column
+    (cart_items/cart_wip_item/cart_pending_confirmation) or derives a second
+    column (cart_collection_mode) rather than a single 1:1 column write, so
+    each needs its own handling instead of the generic path.
+
+    Returns True on a value the customer should be told is invalid (so the
+    caller can drive the same slot_attempt_count increment/re-ask behavior
+    used for an ordinary write-rejected value) — False otherwise.
+    """
+    async def _set(f: str, v) -> None:
+        await conversation_service.update_order_field(db, conv.id, f, v)
+        setattr(conv, f, v)
+
+    sku = getattr(pinned_product, "sku", None)
+    name = getattr(pinned_product, "name", None)
+    price = getattr(pinned_product, "price", 0)
+
+    if field == "cart_multi_seed":
+        # value = [{"color": str, "qty": int}, ...] — 2+ distinct colors
+        # named with quantities in one message ("10 red and 10 pink").
+        _total = sum(p["qty"] for p in value)
+        _existing_qty = getattr(conv, "pending_order_quantity", None)
+        if _existing_qty and _existing_qty != _total:
+            # A total was already stated and disagrees with the pairs' sum —
+            # never silently override one with the other.
+            logger.warning(
+                "cart_multi_seed mismatch: conv=%s pairs_sum=%d vs stated_qty=%d — rejecting.",
+                conv.id, _total, _existing_qty,
+            )
+            return True
+        _items = [
+            {
+                "sku": sku, "product_name": name, "color": p["color"],
+                "size": getattr(conv, "selected_size", None),
+                "material": getattr(conv, "selected_material", None),
+                "qty": p["qty"], "unit_price": price,
+            }
+            for p in value
+        ]
+        await _set("pending_order_quantity", _total)
+        await _set("cart_variant_mode", "different")
+        _remaining_after_seed = _total - sum(i["qty"] for i in _items)
+        await _set(
+            "cart_collection_mode",
+            "batch" if _remaining_after_seed > conversation_flow._CART_BATCH_THRESHOLD else "loop",
+        )
+        await _set("cart_items", _items)
+        logger.info("Multi-color capture: conv=%s items=%r", conv.id, _items)
+        return False
+
+    if field == "cart_variant_mode":
+        if value == "different":
+            _n = getattr(conv, "pending_order_quantity", 0) or 0
+            # Line item 1 = the color/size/material already collected before
+            # this question was asked — its own qty is still unknown, so the
+            # "remaining" count used to pick loop vs batch mode is N minus
+            # nothing yet (item 1 hasn't been asked its qty at this point).
+            await _set("cart_collection_mode", "batch" if _n > conversation_flow._CART_BATCH_THRESHOLD else "loop")
+        else:
+            await _set("cart_collection_mode", None)
+        await _set("cart_variant_mode", value)
+        return False
+
+    if field in ("cart_wip_color", "cart_wip_size", "cart_wip_material", "cart_wip_qty"):
+        _subkey = {
+            "cart_wip_color": "color", "cart_wip_size": "size",
+            "cart_wip_material": "material", "cart_wip_qty": "qty",
+        }[field]
+        if _subkey == "color":
+            _valid = [c.lower() for c in variant_info.get("available_colors", [])]
+            if _valid and str(value).lower() not in _valid:
+                logger.warning("WRITE REJECTED (cart) conv=%s field=%r value=%r", conv.id, field, value)
+                return True
+        elif _subkey == "size":
+            _valid = [s.lower() for s in variant_info.get("available_sizes", [])]
+            if _valid and str(value).lower() not in _valid:
+                logger.warning("WRITE REJECTED (cart) conv=%s field=%r value=%r", conv.id, field, value)
+                return True
+        elif _subkey == "material":
+            _valid = [m.lower() for m in variant_info.get("available_materials", [])]
+            if _valid and str(value).lower() not in _valid:
+                logger.warning("WRITE REJECTED (cart) conv=%s field=%r value=%r", conv.id, field, value)
+                return True
+
+        _existing_items = getattr(conv, "cart_items", None) or []
+        if field == "cart_wip_qty" and not _existing_items:
+            # Line item 1 — its color/size/material were already collected by
+            # the leading slots (conv.selected_color/size/material) before the
+            # "same or different" question was ever asked, never written into
+            # cart_wip_item. Build the completed item straight from those
+            # instead of reading a cart_wip_item that was never populated.
+            _items = [{
+                "sku": sku, "product_name": name,
+                "color": getattr(conv, "selected_color", None),
+                "size": getattr(conv, "selected_size", None),
+                "material": getattr(conv, "selected_material", None),
+                "qty": value, "unit_price": price,
+            }]
+            await _set("cart_items", _items)
+            logger.info("Cart line item 1 committed: conv=%s item=%r", conv.id, _items[0])
+            return False
+
+        _wip = dict(getattr(conv, "cart_wip_item", None) or {})
+        _wip[_subkey] = value
+        _complete = (
+            (not variant_info.get("needs_color") or _wip.get("color"))
+            and (not variant_info.get("needs_size") or _wip.get("size"))
+            and (not variant_info.get("needs_material") or _wip.get("material"))
+            and _wip.get("qty")
+        )
+        if _complete:
+            _items = list(getattr(conv, "cart_items", None) or [])
+            _items.append({
+                "sku": sku, "product_name": name,
+                "color": _wip.get("color"), "size": _wip.get("size"), "material": _wip.get("material"),
+                "qty": _wip["qty"], "unit_price": price,
+            })
+            await _set("cart_items", _items)
+            await _set("cart_wip_item", None)
+            logger.info("Cart line item committed: conv=%s item=%r", conv.id, _items[-1])
+        else:
+            await _set("cart_wip_item", _wip)
+        return False
+
+    if field == "cart_wip_qty_invalid":
+        # value = remaining pieces still to assign — the customer's number
+        # didn't fit (either <1 or more than what's left to allocate).
+        logger.warning("WRITE REJECTED (cart) conv=%s field=cart_item_qty remaining=%r", conv.id, value)
+        return True
+
+    if field == "cart_breakdown_confirmed":
+        # An LLM-inferred split was echoed back and the customer confirmed it.
+        _pending = getattr(conv, "cart_pending_confirmation", None) or []
+        _items = list(getattr(conv, "cart_items", None) or []) + _pending
+        await _set("cart_items", _items)
+        await _set("cart_pending_confirmation", None)
+        logger.info("Cart breakdown confirmed: conv=%s items_added=%d", conv.id, len(_pending))
+        return False
+
+    if field == "cart_breakdown_rejected":
+        await _set("cart_pending_confirmation", None)
+        logger.info("Cart breakdown rejected by customer: conv=%s — will re-ask.", conv.id)
+        return False
+
+    if field == "cart_correct_last_qty":
+        # Mid-loop correction ("actually make it 60 not 40") — adjusts the
+        # LAST committed cart line item's qty in place, never creates a
+        # duplicate. Rejected (re-ask) if the new total would exceed N.
+        _items = list(getattr(conv, "cart_items", None) or [])
+        if not _items:
+            return True
+        _n = getattr(conv, "pending_order_quantity", 0) or 0
+        _others_sum = sum(i["qty"] for i in _items[:-1])
+        if value < 1 or _others_sum + value > _n:
+            logger.warning(
+                "WRITE REJECTED (cart) conv=%s field=cart_correct_last_qty value=%r "
+                "(others=%d, N=%d)", conv.id, value, _others_sum, _n,
+            )
+            return True
+        _items[-1] = {**_items[-1], "qty": value}
+        await _set("cart_items", _items)
+        logger.info("Cart line item corrected: conv=%s item=%r", conv.id, _items[-1])
+        return False
+
+    logger.error("_apply_cart_extraction: unrecognised cart sentinel field=%r conv=%s", field, conv.id)
+    return True
+
+
 async def run_slot_state_machine(
     db,
     conv,
@@ -2609,6 +3126,40 @@ async def run_slot_state_machine(
                 conv.id, _clear_combo_field,
             )
 
+    # ── Simple-product OOS gate: no variants, so unlike the combo gate above
+    # there is no attribute left to clear and re-pick — the product itself is
+    # sold out. Fires right when the product is confirmed for order (the "Yes"
+    # that put us in order_collection), BEFORE quantity is ever asked. Without
+    # this, get_next_required_slot() would return "quantity" and the customer
+    # would eventually be asked "How many would you like (1–0)?" — a
+    # nonsensical range.
+    if (
+        pinned_product
+        and not getattr(pinned_product, "has_variants", False)
+        and available_stock is not None
+        and available_stock <= 0
+        and stage == "order_collection"
+    ):
+        _oos_name = getattr(pinned_product, "name", None) or "This product"
+        _oos_lang = (getattr(conv, "last_customer_language", None) or "english").lower()
+        _oos_reply = get_template(_oos_lang, "out_of_stock_block", product=_oos_name)
+        logger.info(
+            "Product OOS gate fired at order confirm: conv=%s SKU=%s stock=%s — resetting order slots",
+            conv.id, getattr(pinned_product, "sku", None), available_stock,
+        )
+        await _reset_flow_state(db, conv)
+        try:
+            await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+            await conversation_service.save_message(db, conv.id, "assistant", _oos_reply)
+        except Exception as exc:
+            logger.error("Product OOS save error: %s", exc)
+        try:
+            await record_usage(db, client, conv)
+        except Exception:
+            pass
+        out.early_result = PipelineResult(text=_oos_reply)
+        return out
+
     # Fix A: scope available_sizes to the already-selected color so only in-stock
     # sizes for that color are offered (and accepted) going forward.
     if (
@@ -2661,6 +3212,15 @@ async def run_slot_state_machine(
     # ── Slot-machine: detect quantity_invalid flag before building prompt ──────
     _quantity_invalid = False
 
+    # Phase 1 cart engine — batch-mode breakdown parsing needs an LLM call
+    # (extract_order_field can't award since it's sync), so it's handled
+    # directly in the ANSWER branch below rather than through the normal
+    # deterministic extractor. These flags override _next_slot the same way
+    # _quantity_invalid does, so the existing _build_slot_question dispatch
+    # renders the right re-ask with no separate call site needed.
+    _cart_breakdown_mismatch = False
+    _cart_breakdown_invalid = False
+
     # ── awaiting_final_confirmation: handle "2 = add cross-sell" choice ────────
     # "2" only means "add cross-sell" when the summary that was just shown
     # actually included a cross-sell option (template uses "2️⃣ Add …").
@@ -2694,17 +3254,41 @@ async def run_slot_state_machine(
                     try:
                         _cs_new_product = await catalogue_service.find_product_by_sku(db, client.id, _new_cs_sku)
                         if _cs_new_product:
-                            # Reset all order slots for the new (cross-sell) product
+                            # Phase 1 cart engine: "Add X too" builds ONE cart —
+                            # fold the just-finished selection into cart_items
+                            # (as another line item) instead of wiping it, and
+                            # keep customer_name/delivery_address/payment_method
+                            # since this is still the same order, same delivery.
+                            _cs_existing_cart = list(getattr(conv, "cart_items", None) or [])
+                            if not _cs_existing_cart:
+                                _cs_old_qty = getattr(conv, "pending_order_quantity", None)
+                                if _cs_old_qty:
+                                    _cs_existing_cart.append({
+                                        "sku": _current_sku_cs2,
+                                        "product_name": getattr(pinned_product, "name", _current_sku_cs2),
+                                        "color": getattr(conv, "selected_color", None),
+                                        "size": getattr(conv, "selected_size", None),
+                                        "material": getattr(conv, "selected_material", None),
+                                        "qty": _cs_old_qty,
+                                        "unit_price": getattr(pinned_product, "price", 0),
+                                    })
+                            try:
+                                await conversation_service.update_order_field(db, conv.id, "cart_items", _cs_existing_cart)
+                                conv.cart_items = _cs_existing_cart
+                            except Exception as _cs_cart_e:
+                                logger.error("Cross-sell cart_items fold error: %s", _cs_cart_e)
+
+                            # Reset per-product working slots for the new product only.
                             _cs_reset_fields = [
                                 ("pending_product_sku", _new_cs_sku),
                                 ("pending_order_quantity", None),
                                 ("selected_color", None),
                                 ("selected_size", None),
                                 ("selected_material", None),
-                                ("customer_name", None),
-                                ("delivery_address", None),
-                                ("payment_method", None),
                                 ("summary_shown", False),
+                                ("cart_variant_mode", None),
+                                ("cart_collection_mode", None),
+                                ("cart_wip_item", None),
                             ]
                             for _csf, _csv in _cs_reset_fields:
                                 try:
@@ -2783,6 +3367,9 @@ async def run_slot_state_machine(
                 ("payment_method", None), ("summary_shown", False),
                 ("pending_product_sku", None), ("interrupted_sku", None),
                 ("last_shown_sku", None), ("pending_choice_skus", None),
+                ("cart_items", None), ("cart_variant_mode", None),
+                ("cart_collection_mode", None), ("cart_wip_item", None),
+                ("cart_pending_confirmation", None),
             ]
             for _cf, _cv in _full_cancel_fields:
                 try:
@@ -3065,40 +3652,98 @@ async def run_slot_state_machine(
                 _aq_dt = get_delivery_time_str(pinned_product, client) or "3–7 business days"
                 _aq_answer = ""
 
+                # FIX 4 (moved ahead of the availability-question tier below):
+                # detect whether the question NAMES a different product than the
+                # one pinned for order — e.g. "Kanjivaram Silk Saree available in
+                # red?" while a chair is pinned. This lookup must run BEFORE the
+                # availability tier, not just as its fallback: previously an
+                # availability question always answered from the PINNED
+                # product's variants regardless of what product the text named,
+                # because that tier ran first and almost always produced *some*
+                # answer — so this cross-product lookup never got a chance to
+                # fire for availability questions at all. Pending order state
+                # (pinned SKU, slots) is never touched here — only the answer
+                # text changes; the slot re-ask below still targets the pinned
+                # order via the unmodified `variant_info`/`pinned_product`.
+                _aq_pinned_sku = getattr(conv, "pending_product_sku", None)
+                _aq_named_product = None
+                _aq_named_not_found_label = None
+                if client:
+                    try:
+                        for _aq_named_sku in catalogue_service.extract_skus_from_text(user_text):
+                            if _aq_named_sku == _aq_pinned_sku:
+                                continue
+                            _aq_sku_match = await catalogue_service.find_product_by_sku(db, client.id, _aq_named_sku)
+                            if _aq_sku_match is not None:
+                                _aq_named_product = _aq_sku_match
+                                break
+                            # An explicit SKU-shaped code was named but doesn't
+                            # resolve — remember it in case no other token in
+                            # the message resolves to a real product either.
+                            _aq_named_not_found_label = _aq_named_sku
+                        if _aq_named_product is None:
+                            _aq_all_prods = await catalogue_service.list_products(db, client.id)
+                            _aq_scored = catalogue_service.search_products_with_scores(
+                                _aq_all_prods, user_text, top_k=3
+                            )
+                            for _aq_sc, _aq_cp in _aq_scored:
+                                if _aq_sc >= 3 and getattr(_aq_cp, "sku", None) != _aq_pinned_sku:
+                                    _aq_named_product = _aq_cp
+                                    _aq_named_not_found_label = None
+                                    break
+                    except Exception as _aqe:
+                        logger.warning("FIX4 cross-product lookup failed: %s", _aqe)
+
+                if _aq_named_product is None and _aq_named_not_found_label:
+                    # An explicit product code was named but isn't in the
+                    # catalogue — say so directly rather than silently
+                    # answering about the pinned product instead.
+                    _aq_answer = f"Sorry, we don't carry {_aq_named_not_found_label}."
+                    logger.info(
+                        "FIX4 named product not in catalogue: conv=%s code=%r — answering directly, not pinned SKU",
+                        conv.id, _aq_named_not_found_label,
+                    )
+
                 # BUG 1 FIX: availability questions ("is orange available?") are
                 # resolved against the CATALOG / current product's variants, never
                 # the KB — KB keyword overlap on a word like "available" was
                 # returning unrelated FAQs (e.g. a dispatch/tracking entry).
-                if _is_availability_question(user_text):
-                    _aq_answer = _build_availability_answer(
-                        user_text, pinned_product, variant_info, available_stock,
-                    )
-                    if _aq_answer:
-                        logger.info(
-                            "FIX2 availability question: conv=%s answered from catalog/variants, skipping KB",
-                            conv.id,
+                # When the question named a DIFFERENT product than the one
+                # pinned for order (found above), answer about THAT product's
+                # own variants/stock instead of the pinned product's.
+                if not _aq_answer and _is_availability_question(user_text):
+                    if _aq_named_product is not None:
+                        _aq_named_variant_info = await catalogue_service.get_product_variant_info(db, _aq_named_product)
+                        _aq_named_stock = (
+                            None if getattr(_aq_named_product, "has_variants", False)
+                            else (getattr(_aq_named_product, "stock", None) or 0)
                         )
+                        _aq_answer = _build_availability_answer(
+                            user_text, _aq_named_product, _aq_named_variant_info, _aq_named_stock,
+                        )
+                        if _aq_answer:
+                            logger.info(
+                                "FIX2 availability question: conv=%s answered about named product sku=%s "
+                                "(pinned=%s), skipping KB",
+                                conv.id, getattr(_aq_named_product, "sku", None), _aq_pinned_sku,
+                            )
+                    else:
+                        _aq_answer = _build_availability_answer(
+                            user_text, pinned_product, variant_info, available_stock,
+                        )
+                        if _aq_answer:
+                            logger.info(
+                                "FIX2 availability question: conv=%s answered from catalog/variants, skipping KB",
+                                conv.id,
+                            )
 
-                # FIX 4: question names a DIFFERENT product — look it up in catalogue
-                # FIRST. A confident named-product match is more specific than the
-                # generic pinned-product answer below, so it must take priority —
-                # otherwise _build_order_aside_answer's generic "price"/"total" branches
-                # always answer with the pinned product and this lookup never runs.
-                if not _aq_answer and client:
-                    try:
-                        _aq_all_prods = await catalogue_service.list_products(db, client.id)
-                        _aq_scored = catalogue_service.search_products_with_scores(
-                            _aq_all_prods, user_text, top_k=3
-                        )
-                        _aq_pinned_sku = getattr(conv, "pending_product_sku", None)
-                        for _aq_sc, _aq_cp in _aq_scored:
-                            if _aq_sc >= 3 and getattr(_aq_cp, "sku", None) != _aq_pinned_sku:
-                                _aq_answer = (
-                                    f"{_aq_cp.name} — ₹{int(getattr(_aq_cp, 'price', 0) or 0):,}."
-                                )
-                                break
-                    except Exception as _aqe:
-                        logger.warning("FIX4 cross-product lookup failed: %s", _aqe)
+                # FIX 4 cont'd: a confident named-product match on a
+                # non-availability question (price, "do you have X?", etc.) is
+                # more specific than the generic pinned-product answer below.
+                if not _aq_answer and _aq_named_product is not None:
+                    _aq_answer = (
+                        f"{_aq_named_product.name} — ₹{int(getattr(_aq_named_product, 'price', 0) or 0):,}."
+                    )
 
                 # Issue A: KB takes priority over the deterministic fact table —
                 # a proven past answer is more specific than a generic template.
@@ -3122,7 +3767,43 @@ async def run_slot_state_machine(
                 if not _aq_answer:
                     _aq_answer = _build_order_aside_answer(user_text, conv, client, pinned_product, _aq_dt)
 
-                if _aq_answer:
+                if _aq_answer and _aq_named_product is not None:
+                    # The answer above was about a DIFFERENT, named product than
+                    # the one pinned for this order. Re-asking the OLD pinned
+                    # slot here (even tagged "(for <pinned product>)") reads as
+                    # a non-sequitur — the customer just asked about the named
+                    # product, not the pinned one. Offer to switch the order to
+                    # it instead; the ORIGINAL pinned slot is only re-asked if
+                    # the customer declines (see run_order_switch_confirm_guard,
+                    # which resolves this on the next turn).
+                    _aq_switch_prompt = f"Would you like to order {_aq_named_product.name}? (Yes / No)"
+                    _aq_reply = f"{_aq_answer}\n\n{_aq_switch_prompt}"
+                    try:
+                        await conversation_service.update_order_field(
+                            db, conv.id, "interrupted_sku", _aq_named_product.sku
+                        )
+                        conv.interrupted_sku = _aq_named_product.sku
+                        await conversation_service.update_stage(db, conv.id, "awaiting_order_switch_confirm")
+                        conv.current_stage = "awaiting_order_switch_confirm"
+                    except Exception as _aq_stash_exc:
+                        logger.error("FIX2/FIX4 switch-offer stash error: %s", _aq_stash_exc)
+                    logger.info(
+                        "FIX4 cross-product aside: conv=%s named=%s pinned=%s — offering switch instead of "
+                        "re-asking pinned slot %r",
+                        conv.id, getattr(_aq_named_product, "sku", None), _aq_pinned_sku, _next_slot_pre,
+                    )
+                    try:
+                        await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+                        await conversation_service.save_message(db, conv.id, "assistant", _aq_reply)
+                    except Exception:
+                        pass
+                    try:
+                        await record_usage(db, client, conv)
+                    except Exception:
+                        pass
+                    out.early_result = PipelineResult(text=_aq_reply)
+                    return out
+                elif _aq_answer:
                     _aq_slot_q = _build_slot_question(
                         _next_slot_pre, conv, variant_info, _aq_lang,
                         customer_profile=customer_profile,
@@ -3157,8 +3838,103 @@ async def run_slot_state_machine(
                     return out
                 # No deterministic answer — fall through to normal intent classification.
 
+            # ── Smart greeting during active slot-filling ──────────────────────
+            # A pure greeting ("hi"/"hello"/"namaste"/…) with nothing else mixed
+            # in must never be treated as a slot-answer attempt: extract_order_field
+            # has no way to parse "hi" as a size/color/qty/address, so without this
+            # check it fell through to the same "no value extracted" rejection path
+            # as a genuinely bad answer — "Sorry, we don't have hi in size." —
+            # burning an attempt on a customer who was just saying hello.
+            # is_greeting_only() requires the ENTIRE message to be nothing but the
+            # greeting (not a substring match), so "hi, is chair available in
+            # blue?" is correctly NOT a pure greeting here and falls through to
+            # the FIX2/FIX4 aside-question handling above (it already matched,
+            # since it contains "?") instead of ever reaching this branch.
+            if message.type == "text" and is_greeting_only(user_text):
+                _greet_lang = getattr(conv, "last_customer_language", None) or language or "english"
+                # Same name-lookup precedence as the greeting_short_circuit route's
+                # personalized welcome: prefer this order's captured name, fall
+                # back to the saved customer profile (returning customer).
+                _greet_name = getattr(conv, "customer_name", None) or getattr(customer_profile, "name", None)
+                _GREET_WELCOME = {
+                    "english": f"Hey {_greet_name}! Welcome back 👋" if _greet_name else "Hey! Welcome back 👋",
+                    "hindi": f"Hey {_greet_name}! Vapas aane ke liye shukriya 👋" if _greet_name else "Hey! Vapas aane ke liye shukriya 👋",
+                    "gujarati": f"Hey {_greet_name}! Pacha aavva badal aabhar 👋" if _greet_name else "Hey! Pacha aavva badal aabhar 👋",
+                }
+                _GREET_BACK = {
+                    "english": "Let's finish your order now 🙂",
+                    "hindi": "Chaliye aapka order poora karte hain 🙂",
+                    "gujarati": "Chalo, tamaru order pooru karie 🙂",
+                }
+                if _greet_lang in ("hindi_roman", "hindi_devanagari", "hinglish"):
+                    _greet_welcome = _GREET_WELCOME["hindi"]
+                    _greet_reply = _GREET_BACK["hindi"]
+                elif _greet_lang in ("gujarati_roman", "gujarati_script"):
+                    _greet_welcome = _GREET_WELCOME["gujarati"]
+                    _greet_reply = _GREET_BACK["gujarati"]
+                else:
+                    _greet_welcome = _GREET_WELCOME["english"]
+                    _greet_reply = _GREET_BACK["english"]
+                _greet_prod_name = getattr(pinned_product, "name", "the product") or "the product"
+                _greet_slot_q = _build_slot_question(
+                    _next_slot_pre, conv, variant_info, _greet_lang,
+                    customer_profile=customer_profile,
+                    accepts_cod=getattr(client, "accepts_cod", False) if client else False,
+                    available_stock=available_stock,
+                    product_name=_greet_prod_name,
+                    # Capped at 0: _build_slot_question appends a "(Reply
+                    # 'cancel'... )" escape hatch once attempt_count >=
+                    # _SLOT_ATTEMPT_ESCAPE_HATCH (3). A friendly re-greet after
+                    # earlier failed slot attempts must not carry that nudge —
+                    # it reads as a warning right after "Let's finish your
+                    # order now 🙂". The real attempt count is untouched in
+                    # conv/DB; this only affects what this one re-ask renders.
+                    attempt_count=0,
+                )
+                _greet_msg2 = f"{_greet_reply}\n{_greet_slot_q}" if _greet_slot_q else _greet_reply
+                logger.info(
+                    "Pure greeting mid-slot: conv=%s slot=%r — welcome + (finish-order+re-ask) as two messages, "
+                    "no state change, no attempt increment",
+                    conv.id, _next_slot_pre,
+                )
+                try:
+                    await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+                    await conversation_service.save_message(
+                        db, conv.id, "assistant",
+                        f"{_greet_welcome}\n\n{_greet_msg2}",
+                    )
+                except Exception:
+                    pass
+                try:
+                    await record_usage(db, client, conv)
+                except Exception:
+                    pass
+                out.early_result = PipelineResult(
+                    text=_greet_msg2,
+                    pre_texts=[_greet_welcome],
+                )
+                return out
+
             # ── Intent classification ──────────────────────────────────────────
             _product_name = getattr(pinned_product, "name", None) or getattr(conv, "pending_product_sku", "current product") or "current product"
+
+            # Just-entered-order_collection guard: detect_stage() (upstream,
+            # before this function runs) transitions browsing → order_collection
+            # on a bare purchase affirmation ("yes") after the AI offered to
+            # sell ("Would you like to order? (Yes/No)"). That SAME "yes" was
+            # then being fed into the P0-2/LLM classify block below as if it
+            # were an attempt to answer the first slot question (e.g. size) —
+            # it obviously isn't a colour/size/material value, so extraction
+            # failed and the customer got "Sorry, we don't have yes in size."
+            # in an unbreakable loop. "yes" already did its job (the stage
+            # transition); it carries no further content to extract. Route
+            # straight to OTHER so resolve_transition() just asks the first
+            # slot question cleanly, without treating "yes" as a bad answer.
+            _just_entered_order_collection_via_affirmation = (
+                _stored_stage in conversation_flow._BROWSING_STAGES
+                and stage == "order_collection"
+                and user_text.strip().lower() in conversation_flow._PURCHASE_AFFIRMATION
+            )
 
             # P0-2: deterministic fast-path — a trivial slot answer (color/size/
             # qty/yes-no/free-text address) never needs an LLM classify call.
@@ -3168,7 +3944,9 @@ async def run_slot_state_machine(
             #   - cleanly resolves via the deterministic extractor for the
             #     current slot
             _det_skip_llm = False
-            if (
+            if _just_entered_order_collection_via_affirmation:
+                pass
+            elif (
                 message.type == "text"
                 and not conversation_flow._is_price_objection(user_text)
                 and not any(
@@ -3185,8 +3963,25 @@ async def run_slot_state_machine(
                 )
                 if _det_probe is not None:
                     _det_skip_llm = True
+                elif _next_slot_pre == "cart_breakdown":
+                    # Phase 1 cart engine — extract_order_field() deliberately
+                    # returns None for "cart_breakdown" (parsing needs an LLM
+                    # await, which this sync probe can't do), so it never
+                    # trips the check above. The keyword guard on this whole
+                    # `if` block already ruled out cancel/price-objection
+                    # wording, so anything left is a breakdown answer — skip
+                    # straight to ANSWER same as any other deterministic slot.
+                    _det_skip_llm = True
 
-            if _det_skip_llm:
+            if _just_entered_order_collection_via_affirmation:
+                _intent = "OTHER"
+                logger.info(
+                    "conv=%s bare affirmation %r just triggered browsing→order_collection — "
+                    "OTHER (ask first slot), not treated as an answer to next_slot=%s",
+                    conv.id, user_text[:40], _next_slot_pre,
+                )
+                _intent_struct = {"intent": "OTHER", "entities": {}}
+            elif _det_skip_llm:
                 _intent = "ANSWER"
                 logger.info(
                     "conv=%s deterministic slot answer %r → ANSWER, next_slot=%s — no LLM classify call",
@@ -3220,6 +4015,22 @@ async def run_slot_state_machine(
                         _classified_intent = "NEW_PRODUCT_OOS"
                         _intent_override = f"OOS:{_oos_sw_name}"
                         logger.info("conv=%s NEW_PRODUCT switch blocked — OOS: %s", conv.id, _new_sku_candidate)
+                    elif _switch_product is None:
+                        # _new_sku_candidate is a SKU-SHAPED token pulled straight out of
+                        # the customer's raw text via regex (extract_skus_from_text) — it
+                        # is NOT validated against the catalogue yet at this point. Without
+                        # this branch, the `else:` below used to run for a not-found SKU
+                        # the same as a found one, blindly pinning pending_product_sku to a
+                        # candidate that doesn't exist in the DB (a typo, or the customer
+                        # echoing back a hallucinated code from an earlier bad reply) —
+                        # exactly the kind of phantom-product write that let a fake order
+                        # reach payment confirmation. Never pin an unresolved SKU; just
+                        # re-ask the current slot instead.
+                        logger.info(
+                            "conv=%s NEW_PRODUCT switch ignored — SKU %r not found in catalogue.",
+                            conv.id, _new_sku_candidate,
+                        )
+                        _intent_override = "OTHER"
                     else:
                         # Track old SKU as browsed before switching
                         _old_pinned = getattr(conv, "pending_product_sku", None)
@@ -3308,6 +4119,9 @@ async def run_slot_state_machine(
                     ("payment_method", None), ("summary_shown", False),
                     ("pending_product_sku", None), ("interrupted_sku", None),
                     ("last_shown_sku", None), ("pending_choice_skus", None),
+                    ("cart_items", None), ("cart_variant_mode", None),
+                    ("cart_collection_mode", None), ("cart_wip_item", None),
+                    ("cart_pending_confirmation", None),
                 ]
                 for _rf, _rv in _cancel_fields:
                     try:
@@ -3391,6 +4205,80 @@ async def run_slot_state_machine(
                 _intent_override = "OTHER"  # sentinel for the reply-building section
                 logger.info("conv=%s OTHER — skipping extraction, will re-ask slot", conv.id)
 
+            elif _next_slot_pre == "cart_breakdown" and message.type == "text":
+                # Phase 1 cart engine, batch mode — free-text variant breakdown
+                # needs an LLM parse. Never guesses: an unparseable reply just
+                # re-asks the same question (extracted stays unset below), a
+                # sum mismatch or unknown variant reprompts with the specific
+                # problem, and an LLM-inferred split is always echoed back for
+                # confirmation before being committed to cart_items.
+                _cb_n = getattr(conv, "pending_order_quantity", 0) or 0
+                _cb_remaining = _cb_n - conversation_flow._cart_committed_qty(conv)
+                _cb_result = await conversation_flow.extract_cart_breakdown(
+                    user_text, variant_info, _product_name, _cb_remaining, conversation_id=conv.id,
+                )
+                if _cb_result is not None:
+                    _cb_items = _cb_result["items"]
+                    _cb_valid_colors = {c.lower() for c in variant_info.get("available_colors", [])}
+                    _cb_valid_sizes = {s.lower() for s in variant_info.get("available_sizes", [])}
+                    _cb_invalid = [
+                        i for i in _cb_items
+                        if (i.get("color") and i["color"].lower() not in _cb_valid_colors)
+                        or (i.get("size") and i["size"].lower() not in _cb_valid_sizes)
+                    ]
+                    if _cb_invalid:
+                        _bad = ", ".join(str(i.get("color") or i.get("size")) for i in _cb_invalid)
+                        conv.__dict__["_cart_breakdown_invalid_info"] = {
+                            "invalid": _bad,
+                            "colors": " / ".join(variant_info.get("available_colors", [])) or "see catalogue",
+                            "sizes": " / ".join(variant_info.get("available_sizes", [])) or "see catalogue",
+                        }
+                        _cart_breakdown_invalid = True
+                        logger.info("cart_breakdown invalid variant conv=%s bad=%r", conv.id, _bad)
+                    else:
+                        _cb_sum = sum(i["qty"] for i in _cb_items)
+                        _cb_line_items = [
+                            {
+                                "sku": getattr(pinned_product, "sku", None),
+                                "product_name": getattr(pinned_product, "name", None),
+                                "color": i.get("color"), "size": i.get("size"), "material": None,
+                                "qty": i["qty"], "unit_price": getattr(pinned_product, "price", 0),
+                            }
+                            for i in _cb_items
+                        ]
+                        if _cb_result["inferred_split"]:
+                            # ALWAYS echo an inferred split back — never commit
+                            # it silently, regardless of whether the sum happens
+                            # to already match.
+                            try:
+                                await conversation_service.update_order_field(
+                                    db, conv.id, "cart_pending_confirmation", _cb_line_items
+                                )
+                                conv.cart_pending_confirmation = _cb_line_items
+                                logger.info("cart_breakdown inferred split staged for confirm: conv=%s items=%r", conv.id, _cb_line_items)
+                            except Exception as exc:
+                                logger.error("cart_pending_confirmation write error: %s", exc)
+                        elif _cb_sum != _cb_remaining:
+                            conv.__dict__["_cart_breakdown_mismatch_info"] = {
+                                "sum": _cb_sum, "remaining": _cb_remaining,
+                            }
+                            _cart_breakdown_mismatch = True
+                            logger.info(
+                                "cart_breakdown mismatch conv=%s sum=%d remaining=%d — reprompting.",
+                                conv.id, _cb_sum, _cb_remaining,
+                            )
+                        else:
+                            try:
+                                _cb_all_items = list(getattr(conv, "cart_items", None) or []) + _cb_line_items
+                                await conversation_service.update_order_field(db, conv.id, "cart_items", _cb_all_items)
+                                conv.cart_items = _cb_all_items
+                                logger.info("cart_breakdown committed: conv=%s items_added=%d", conv.id, len(_cb_line_items))
+                            except Exception as exc:
+                                logger.error("cart_items batch-commit write error: %s", exc)
+                # _cb_result is None → LLM parse failure; nothing is written,
+                # so next_slot naturally stays "cart_breakdown" and the same
+                # question is re-asked below — no guess, no silent commit.
+
             else:  # ANSWER — normal slot extraction
                 extracted = conversation_flow.extract_order_field(
                     conv,
@@ -3402,7 +4290,31 @@ async def run_slot_state_machine(
                 )
                 if extracted:
                     field, value = extracted
-                    if field == "quantity_invalid":
+                    if field in _CART_SENTINEL_FIELDS:
+                        # Phase 1 cart engine — none of these are real columns,
+                        # so they get their own write path entirely, never the
+                        # generic single-column setattr() below.
+                        _cart_write_rejected = await _apply_cart_extraction(
+                            db, conv, variant_info, pinned_product, field, value
+                        )
+                        if _cart_write_rejected:
+                            _new_wr = (conv.slot_attempt_count or 0) + 1
+                            conv.slot_attempt_count = _new_wr
+                            try:
+                                await conversation_service.update_order_field(db, conv.id, "slot_attempt_count", _new_wr)
+                            except Exception as _wri:
+                                logger.error("slot_attempt write-rejected increment (cart): %s", _wri)
+                        else:
+                            try:
+                                await conversation_service.update_order_field(db, conv.id, "slot_attempt_count", 0)
+                                await conversation_service.update_order_field(db, conv.id, "slot_attempt_slot", None)
+                                await conversation_service.update_order_field(db, conv.id, "off_topic_count", 0)
+                                conv.slot_attempt_count = 0
+                                conv.slot_attempt_slot = None
+                                conv.off_topic_count = 0
+                            except Exception as _slr:
+                                logger.error("Slot-fill counter reset error (cart): %s", _slr)
+                    elif field == "quantity_invalid":
                         _quantity_invalid = True
                         logger.info(
                             "Quantity %s exceeds available stock %s for conv %s — re-prompting.",
@@ -3712,6 +4624,39 @@ async def run_slot_state_machine(
         except Exception as exc:
             logger.error("Auto-fill UPI payment_method error: %s", exc)
 
+    # Phase 1 cart engine — fold a completed "Add {product} too" cross-sell
+    # selection into cart_items. That handler already moved the FIRST
+    # product's data into cart_items and reset the flat fields for the new
+    # (second) product; if the second product never entered "different"
+    # mode (qty=1, or "same" for all N), its own data still lives only in
+    # the flat fields and must be folded in here — otherwise it would be
+    # silently dropped from the final order the moment cart_items renders/
+    # creates from cart_items alone (never happens for cart_variant_mode ==
+    # "different", since item 1 there is folded the instant its own qty is
+    # answered — see _apply_cart_extraction).
+    if (
+        _next_slot is None
+        and (getattr(conv, "cart_items", None) or [])
+        and getattr(conv, "cart_variant_mode", None) is None
+        and getattr(conv, "pending_order_quantity", None)
+    ):
+        try:
+            _fold_items = list(conv.cart_items)
+            _fold_items.append({
+                "sku": getattr(conv, "pending_product_sku", None),
+                "product_name": getattr(pinned_product, "name", None),
+                "color": getattr(conv, "selected_color", None),
+                "size": getattr(conv, "selected_size", None),
+                "material": getattr(conv, "selected_material", None),
+                "qty": conv.pending_order_quantity,
+                "unit_price": getattr(pinned_product, "price", 0),
+            })
+            await conversation_service.update_order_field(db, conv.id, "cart_items", _fold_items)
+            conv.cart_items = _fold_items
+            logger.info("Cross-sell product folded into cart_items: conv=%s item=%r", conv.id, _fold_items[-1])
+        except Exception as exc:
+            logger.error("Cross-sell fold-into-cart_items error: %s", exc)
+
     # When quantity was invalid we stay in order_collection but tell the AI
     # to re-ask with the stock limit rather than asking the next slot.
     if _quantity_invalid:
@@ -3720,6 +4665,12 @@ async def run_slot_state_machine(
     # When a variant combo is OOS, override next_slot to re-ask the cleared attr.
     if _combo_oos:
         _next_slot = "combo_oos"
+
+    # Phase 1 cart engine — batch-breakdown sum mismatch / unknown variant.
+    if _cart_breakdown_mismatch:
+        _next_slot = "cart_breakdown_mismatch"
+    if _cart_breakdown_invalid:
+        _next_slot = "cart_breakdown_invalid"
 
     # ── Declined saved-address flag ───────────────────────────────────────────
     # True when: the agent just offered the saved address AND the customer
@@ -3914,7 +4865,21 @@ async def _render_order_reply(
         _prod_sku = getattr(_prod, "sku", "") or ""
 
     _qty = getattr(conv, "pending_order_quantity", None) or 0
-    _total = int(_qty * _prod_price) if (_qty and _prod_price) else 0
+    # Phase 1 cart engine — for a "different for each" cart, pending_order_
+    # quantity is the TARGET TOTAL N, not any one line item's own qty, and
+    # selected_color/selected_size below only ever hold line item 1's data
+    # (item 2+ live in cart_items). qty * unit_price only happens to equal
+    # the real total when every line item shares the same unit price — true
+    # today (Phase 1 carts are single-product/multi-variant only) but not a
+    # safe assumption to bake into every render action. Compute the grand
+    # total from cart_items directly whenever it's populated so every
+    # action below (show_payment, confirm_paid_*, ...) gets the real
+    # figure regardless of per-variant pricing.
+    _cart_for_total = getattr(conv, "cart_items", None) or []
+    if _cart_for_total:
+        _total = int(sum(i["qty"] * i["unit_price"] for i in _cart_for_total))
+    else:
+        _total = int(_qty * _prod_price) if (_qty and _prod_price) else 0
 
     # Build variant string from slot values
     _v_parts = [
@@ -3974,6 +4939,39 @@ async def _render_order_reply(
             raise RenderError(
                 f"show_summary: missing required field — "
                 f"name={_name!r} addr={_addr!r} pay={_pay!r} qty={_qty!r} (conv={conv.id})"
+            )
+
+        # Phase 1 cart engine — a "different for each" order has 2+ line
+        # items in conv.cart_items. The "same for all" path never touches
+        # cart_items, so it falls straight through to the single-item logic
+        # below, completely unchanged.
+        _cart = getattr(conv, "cart_items", None) or []
+        if _cart:
+            if any(i.get("unit_price") is None for i in _cart):
+                raise RenderError(
+                    f"show_summary(cart): a line item is missing unit_price (conv={conv.id})"
+                )
+            _cart_pay_display = _pay
+            if _pay and _pay.upper() == "UPI":
+                _cart_upi = getattr(client, "upi_id", None) if client else None
+                if _cart_upi:
+                    _cart_pay_display = f"{_pay} ({_cart_upi})"
+            _cart_lines = []
+            _cart_grand_total = 0.0
+            for _item in _cart:
+                _sub = _item["qty"] * _item["unit_price"]
+                _cart_grand_total += _sub
+                _variant_bits = " ".join(p for p in [_item.get("color"), _item.get("size")] if p)
+                _cart_lines.append(
+                    f"📦 {_item['product_name']} {_variant_bits} × {_item['qty']} = {format_price(_sub)}"
+                )
+            _cart_delivery = get_delivery_time_str(_prod, client) or "3–7 business days"
+            return _gt(
+                lang, "cart_order_summary",
+                items_block="\n".join(_cart_lines),
+                total=format_price(_cart_grand_total),
+                name=_name, address=_addr, payment=_cart_pay_display,
+                delivery_time=_cart_delivery,
             )
         # Show the actual UPI ID alongside the payment method so the customer
         # doesn't have to wait for the separate payment-instructions message
@@ -4043,6 +5041,40 @@ async def _render_order_reply(
         else:
             _catalogue_line = ""
         _total_fmt = format_price(_total)
+
+        # Phase 1 cart engine — a "different for each" order has 2+ line
+        # items in conv.cart_items (item 1 is folded in the instant its own
+        # qty is known, item 2+ as each is committed — see
+        # _apply_cart_extraction). This render fires BEFORE run_order_payment
+        # resets cart_items post-completion, so it's still the live cart for
+        # THIS order. Using the flat product/variant/qty columns here would
+        # show only line item 1 and a merged quantity — exactly the bug this
+        # branch fixes. The "same" path never touches cart_items and falls
+        # through to the single-item render below, unchanged.
+        _cart_r = getattr(conv, "cart_items", None) or []
+        if _cart_r:
+            if any(i.get("unit_price") is None for i in _cart_r):
+                raise RenderError(
+                    f"{action}(cart): a line item is missing unit_price (conv={conv.id})"
+                )
+            _cart_r_lines = []
+            _cart_r_total = 0.0
+            for _item in _cart_r:
+                _sub = _item["qty"] * _item["unit_price"]
+                _cart_r_total += _sub
+                _variant_bits = " ".join(p for p in [_item.get("color"), _item.get("size")] if p)
+                _cart_r_lines.append(
+                    f"📦 {_item['product_name']} {_variant_bits} × {_item['qty']} = {format_price(_sub)}"
+                )
+            _cart_tpl = "order_confirmed_cod_cart" if action == "confirm_paid_cod" else "order_confirmed_paid_cart"
+            return _gt(
+                lang, _cart_tpl,
+                items_block="\n".join(_cart_r_lines),
+                total=format_price(_cart_r_total),
+                delivery_time=_delivery_time_r,
+                catalogue_line=_catalogue_line,
+            )
+
         if action == "confirm_paid_cod":
             return _gt(lang, "order_confirmed_cod",
                        product=_prod_name, variant_part=_variant_part,
@@ -4491,6 +5523,7 @@ async def run_llm_routing(
     _llm_calls_today: int,
     _name_match_count: int,
     _multi_match_this_turn: bool = False,
+    catalogue_products: list | None = None,
 ) -> RoutingOutcome:
     """
     stage: the final stage value from SLICE 4's SlotOutcome — passed in
@@ -4513,6 +5546,12 @@ async def run_llm_routing(
     current code (nothing currently increments it) — threaded through as-is
     rather than hardcoded, so a future change to its assignment upstream
     keeps working without touching this function.
+
+    catalogue_products: the client's full active catalogue, already fetched
+    by the caller this turn. Passed to guard_product_reply()'s all_products
+    so its "not found" fallback lists real catalogue products instead of
+    whatever canonical_browse_products happens to hold (often just a single
+    stale pinned product from an earlier turn).
 
     Mirrors webhook.py's original inline tiered-cascade block verbatim (the
     delivery-query / FIX1 pinned-known-fact / catalog-multi-template / soft-
@@ -4781,6 +5820,7 @@ async def run_llm_routing(
         ai_reply = catalogue_service.guard_product_reply(
             ai_reply, _canonical_browse_products, query=user_text,
             pre_validated_products=_pre_validated,
+            all_products=catalogue_products,
         )
 
     return RoutingOutcome(text=ai_reply, llm_called=_llm_called_this_turn, llm_usage=_llm_usage)
@@ -4817,6 +5857,13 @@ async def _reset_order_slots_after_completion(
         # repinned into a later, unrelated session via a stale bare "yes".
         ("last_shown_sku", None),
         ("pending_choice_skus", None),
+        # Phase 1 cart engine (migration 0057) — a paid/completed order must
+        # never leak its cart-building state into the next order cycle.
+        ("cart_items", None),
+        ("cart_variant_mode", None),
+        ("cart_collection_mode", None),
+        ("cart_wip_item", None),
+        ("cart_pending_confirmation", None),
     ]
     for _field, _value in _reset_fields:
         try:
@@ -5068,6 +6115,52 @@ async def run_order_payment(
                     if relevant:
                         product = relevant[0]
 
+                # ── Phantom-product hard block ──────────────────────────────
+                # None of the three resolution tiers above found a real
+                # catalogue row. Never create an order for a product that
+                # doesn't resolve to a real SKU — this is the last checkpoint
+                # before a DB Order row is written, so it must be a hard stop,
+                # not a fallback to "Unknown"/₹0. Reset the corrupted product/
+                # variant/qty slots (keep name+address — not product-specific)
+                # and let run_llm_routing's order_error handling replace
+                # whatever summary/payment text was already rendered this turn
+                # with an honest "couldn't find that product" reply.
+                if not product:
+                    _phantom_requested_qty = getattr(conv, "pending_order_quantity", None)
+                    logger.error(
+                        "Order creation BLOCKED — pinned_sku=%r did not resolve to a "
+                        "real catalogue product for conv=%s. Resetting product/order slots.",
+                        pinned_sku, conv.id,
+                    )
+                    _phantom_reset_fields = [
+                        ("pending_product_sku", None), ("interrupted_sku", None),
+                        ("last_shown_sku", None), ("pending_choice_skus", None),
+                        ("selected_color", None), ("selected_size", None),
+                        ("selected_material", None), ("pending_order_quantity", None),
+                        ("summary_shown", False), ("cart_items", None),
+                        ("cart_variant_mode", None), ("cart_collection_mode", None),
+                        ("cart_wip_item", None), ("cart_pending_confirmation", None),
+                    ]
+                    for _pf, _pv in _phantom_reset_fields:
+                        try:
+                            await conversation_service.update_order_field(db, conv.id, _pf, _pv)
+                            setattr(conv, _pf, _pv)
+                        except Exception as exc:
+                            logger.error("Phantom-product slot reset error (%s): %s", _pf, exc)
+                    stage = "product_inquiry"
+                    try:
+                        await conversation_service.update_stage(db, conv.id, "product_inquiry")
+                        conv.current_stage = "product_inquiry"
+                    except Exception as exc:
+                        logger.error("Stage revert after phantom-product block: %s", exc)
+                    out.order_error = {
+                        "kind": "product_not_found",
+                        "requested_qty": _phantom_requested_qty,
+                        "stock": None,
+                        "product_name": None,
+                    }
+                    raise ValueError("order_blocked:product_not_found")
+
                 # ── Stock validation ──────────────────────────────────────
                 # Abort order creation if requested quantity exceeds stock.
                 # Use the VARIANT-specific stock (not product.stock which is
@@ -5147,12 +6240,43 @@ async def run_order_payment(
                 if not conv.payment_method:
                     _missing_fields.append("payment_method")
                 _vi_check = variant_info or {}
-                if _vi_check.get("needs_color") and not getattr(conv, "selected_color", None):
-                    _missing_fields.append("selected_color")
-                if _vi_check.get("needs_size") and not getattr(conv, "selected_size", None):
-                    _missing_fields.append("selected_size")
-                if _vi_check.get("needs_material") and not getattr(conv, "selected_material", None):
-                    _missing_fields.append("selected_material")
+                # Phase 1 cart engine — a "different for each" cart (whether
+                # reached via the normal variant_mode question or via a
+                # multi-color single-message seed, e.g. "10 red and 10 pink")
+                # never writes selected_color/selected_size/selected_material
+                # at all — each line item carries its own color/size/material
+                # in cart_items instead. Only check the flat columns for the
+                # simple/"same" path, where they're the actual source of truth.
+                if getattr(conv, "cart_variant_mode", None) != "different":
+                    if _vi_check.get("needs_color") and not getattr(conv, "selected_color", None):
+                        _missing_fields.append("selected_color")
+                    if _vi_check.get("needs_size") and not getattr(conv, "selected_size", None):
+                        _missing_fields.append("selected_size")
+                    if _vi_check.get("needs_material") and not getattr(conv, "selected_material", None):
+                        _missing_fields.append("selected_material")
+                # Phase 1 cart engine — cart_items is non-empty for BOTH the
+                # "different for each" path (item 1 is folded in the instant
+                # its own qty is known — see _apply_cart_extraction) AND a
+                # completed "Add {product} too" cross-sell (folded above when
+                # the second product's own flat-field selection completes) —
+                # either way, cart_items is the authoritative source of what
+                # to actually create.
+                _is_cart_order = bool(getattr(conv, "cart_items", None))
+                if getattr(conv, "cart_variant_mode", None) == "different":
+                    # Belt-and-braces check, only meaningful for the "different
+                    # for each" flow where pending_order_quantity is the single
+                    # target N. By construction this can never actually fail
+                    # here — get_next_required_slot only returns None (letting
+                    # summary/confirm/payment be reached at all) once
+                    # sum(cart_items qty) == pending_order_quantity — kept
+                    # anyway so a corrupted/hand-edited row can never place an
+                    # order for pieces that were never actually collected.
+                    # (A cross-sell-accumulated cart has no single N to check
+                    # against — pending_order_quantity there is just the last
+                    # product's own qty — so this check is skipped for it.)
+                    _cart_chk = getattr(conv, "cart_items", None) or []
+                    if not _cart_chk or sum(i["qty"] for i in _cart_chk) != (conv.pending_order_quantity or 0):
+                        _missing_fields.append("cart_items")
 
                 if _missing_fields:
                     logger.error(
@@ -5188,25 +6312,56 @@ async def run_order_payment(
 
                 # All orders start as pending_payment; mark_order_paid() transitions
                 # COD orders to paid immediately after creation.
-                created_order = await order_service.create_order(
-                    db=db,
-                    client_id=client.id,
-                    conversation_id=conv.id,
-                    customer_name=conv.customer_name,
-                    customer_phone=sender_phone,
-                    delivery_address=conv.delivery_address,
-                    mobile_number=getattr(conv, "mobile_number", None),
-                    product_name=product.name if product else "Unknown",
-                    product_sku=product.sku if product else None,
-                    quantity=conv.pending_order_quantity,
-                    unit_price=product.price if product else 0.0,
-                    payment_method=resolved_payment,
-                    product_id=product.id if product else None,
-                    variant_color=getattr(conv, "selected_color", None),
-                    variant_size=getattr(conv, "selected_size", None),
-                    variant_material=getattr(conv, "selected_material", None),
-                    idempotency_key=wamid,
-                )
+                if _is_cart_order:
+                    # Phase 1 cart engine, "different for each" path — one
+                    # Order header + N OrderLineItem rows, one order_number.
+                    _cart_line_items = [
+                        {
+                            "product_id": product.id if product else None,
+                            "product_name": i.get("product_name") or (product.name if product else "Unknown"),
+                            "product_sku": i.get("sku") or (product.sku if product else None),
+                            "variant_color": i.get("color"),
+                            "variant_size": i.get("size"),
+                            "variant_material": i.get("material"),
+                            "quantity": i["qty"],
+                            "unit_price": i.get("unit_price") or (product.price if product else 0.0),
+                        }
+                        for i in (getattr(conv, "cart_items", None) or [])
+                    ]
+                    created_order = await order_service.create_cart_order(
+                        db=db,
+                        client_id=client.id,
+                        conversation_id=conv.id,
+                        customer_name=conv.customer_name,
+                        customer_phone=sender_phone,
+                        delivery_address=conv.delivery_address,
+                        mobile_number=getattr(conv, "mobile_number", None),
+                        line_items=_cart_line_items,
+                        payment_method=resolved_payment,
+                        idempotency_key=wamid,
+                    )
+                else:
+                    # Simple single-item path (no variants, qty=1, or
+                    # variant_mode="same") — unchanged call, unchanged behavior.
+                    created_order = await order_service.create_order(
+                        db=db,
+                        client_id=client.id,
+                        conversation_id=conv.id,
+                        customer_name=conv.customer_name,
+                        customer_phone=sender_phone,
+                        delivery_address=conv.delivery_address,
+                        mobile_number=getattr(conv, "mobile_number", None),
+                        product_name=product.name if product else "Unknown",
+                        product_sku=product.sku if product else None,
+                        quantity=conv.pending_order_quantity,
+                        unit_price=product.price if product else 0.0,
+                        payment_method=resolved_payment,
+                        product_id=product.id if product else None,
+                        variant_color=getattr(conv, "selected_color", None),
+                        variant_size=getattr(conv, "selected_size", None),
+                        variant_material=getattr(conv, "selected_material", None),
+                        idempotency_key=wamid,
+                    )
                 out.order_created = True
                 out.order = created_order
                 _order_initial_status = created_order.status
@@ -5896,6 +7051,19 @@ async def handle_inbound_message(ctx: InboundContext) -> PipelineResult:
     )
     if _switch_confirm_result is not None:
         return _switch_confirm_result
+
+    # ── Cross-product order-switch confirmation resolution ──────────────────
+    # Runs immediately alongside the mid-payment guard above, for the same
+    # reason: a "yes"/"no" reply to the FIX2/FIX4 "Would you like to order
+    # <named product>?" prompt must resolve here, before SKU/name-pinning
+    # (run_sku_and_name_pinning's own interrupted_sku handler only covers
+    # browsing stages, not this order_collection micro-stage) or detect_stage
+    # ever see it.
+    _order_switch_confirm_result = await run_order_switch_confirm_guard(
+        db, conv, client, sender_phone, user_text, wamid, _record_usage,
+    )
+    if _order_switch_confirm_result is not None:
+        return _order_switch_confirm_result
 
     # Gated on _is_availability_question too, not has_reference_pronoun alone —
     # bare "it"/"that" appear in plenty of unrelated instructions ("change it
@@ -6978,6 +8146,7 @@ RULES:
                     pinned_product, variant_info, _pick_just_resolved,
                     _llm_budget, _llm_calls_today, _name_match_count,
                     _multi_match_this_turn,
+                    catalogue_products=catalogue_products,
                 )
                 ai_reply = _routing_outcome.text
                 if _routing_outcome.llm_called:
@@ -7224,6 +8393,22 @@ RULES:
                 _oe_lang, "quantity_exceeds_stock",
                 stock=_oe["stock"], product=_oe_product,
             )
+        elif _oe["kind"] == "product_not_found":
+            # The pinned SKU never resolved to a real catalogue row — product/
+            # order slots were already reset by the phantom-product hard block
+            # above. Never surface a fake summary/payment/success message for
+            # this; tell the customer plainly and invite a fresh search.
+            _PRODUCT_NOT_FOUND_MSG = {
+                "english": "Sorry, we couldn't find that product in our catalogue. What would you like to order?",
+                "hindi": "Maafi, yeh product humare catalogue mein nahi mila. Aap kya order karna chahenge?",
+                "gujarati": "Maaf karo, aa product amara catalogue ma nathi malyo. Tame shu order karva mangho cho?",
+            }
+            if _oe_lang in ("hindi_roman", "hindi_devanagari", "hinglish"):
+                ai_reply = _PRODUCT_NOT_FOUND_MSG["hindi"]
+            elif _oe_lang in ("gujarati_roman", "gujarati_script"):
+                ai_reply = _PRODUCT_NOT_FOUND_MSG["gujarati"]
+            else:
+                ai_reply = _PRODUCT_NOT_FOUND_MSG["english"]
         else:
             # Unclassified failure — fall back to re-asking the pending slot so
             # the customer is always given a clear next step, never silence.

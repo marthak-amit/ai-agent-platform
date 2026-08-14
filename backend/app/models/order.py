@@ -3,22 +3,34 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
+
+if TYPE_CHECKING:
+    from app.models.order_line_item import OrderLineItem
 
 
 class Order(Base):
     """
-    One row per customer order.
+    One row per customer order — the cart/purchase header (Phase 1 cart engine).
 
-    order_number is auto-generated in the format ORD-YYYY-NNNN (per client).
+    order_number is auto-generated in the format ORD-YYYY-NNNN (per client),
+    one per checkout regardless of how many line items it contains.
     payment_method: 'COD' or 'UPI'.
     payment_status: 'pending' / 'paid' / 'failed'.
     status: 'new' / 'confirmed' / 'paid' / 'processing' / 'dispatched' / 'delivered' / 'cancelled'.
+
+    line_items holds the full cart (see app.models.order_line_item.OrderLineItem).
+    The flat product_name/product_sku/variant_color/variant_size/variant_material/
+    quantity/unit_price columns below are a denormalized copy of line_items[0],
+    kept so the seller dashboard and CSV export (which read these flat columns
+    directly and are out of scope for the Phase 1 cart rewrite) keep working
+    unchanged for multi-item carts too. total_amount is the CART GRAND TOTAL
+    across all line items, not just line item 1 — see order_service.create_cart_order().
     """
 
     __tablename__ = "orders"
@@ -80,3 +92,13 @@ class Order(Base):
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     invoice_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     invoice_number: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+    # Cart line items (migration 0058). lazy="selectin" so accessing this
+    # relationship from an async context never triggers a lazy-load / MissingGreenlet.
+    line_items: Mapped[list["OrderLineItem"]] = relationship(
+        "OrderLineItem",
+        back_populates="order",
+        cascade="all, delete-orphan",
+        order_by="OrderLineItem.line_number",
+        lazy="selectin",
+    )

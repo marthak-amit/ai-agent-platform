@@ -797,6 +797,85 @@ async def classify_user_intent(
     return {"intent": "ANSWER", "entities": {}}
 
 
+async def extract_cart_breakdown(
+    user_text: str,
+    variant_info: dict,
+    product_name: str,
+    target_qty: int,
+    conversation_id: int | None = None,
+) -> dict | None:
+    """
+    LLM-assisted parse of a free-text variant breakdown into cart line items —
+    only reached in "different for each" batch mode (remaining pieces above
+    _CART_BATCH_THRESHOLD), where asking one item at a time would be too slow.
+
+    Handles both explicit breakdowns ("40 red L, 30 blue M, 30 green S") and
+    ambiguous/qualitative splits ("100 total, half red half white").
+
+    Returns {"items": [{"qty": int, "color": str|None, "size": str|None}, ...],
+             "inferred_split": bool} or None on LLM/parse failure (caller
+    re-prompts "please recheck" — never guesses).
+
+    inferred_split=True means the LLM computed the split itself because the
+    customer used qualitative language rather than stating a number per
+    variant — callers MUST echo the result back for confirmation before
+    committing it to cart_items, never commit an inferred split silently.
+    """
+    import json as _json
+
+    from openai import AsyncOpenAI
+    from app.config import get_settings
+
+    settings = get_settings()
+    colors = variant_info.get("available_colors") or []
+    sizes = variant_info.get("available_sizes") or []
+
+    prompt = (
+        f"Product: {product_name}. Customer said they want {target_qty} pieces total, "
+        f"split across variants. Available colors: {colors or 'none'}. "
+        f"Available sizes: {sizes or 'none'}.\n\n"
+        f"Customer's breakdown message: '{user_text}'\n\n"
+        "Parse this into a JSON object with this exact shape:\n"
+        '{"items": [{"qty": <int>, "color": <string or null>, "size": <string or null>}, ...], '
+        '"inferred_split": <true or false>}\n\n'
+        "If the customer stated an explicit number for each variant (e.g. "
+        "'40 red L, 30 blue M'), set inferred_split=false and use exactly "
+        "those numbers. If the customer used qualitative language instead of "
+        "numbers per variant (e.g. 'half red half white', 'most in blue, rest "
+        "green'), compute a reasonable numeric split that sums to "
+        f"{target_qty} and set inferred_split=true. Only use colors/sizes from "
+        "the available lists above. Respond with ONLY the JSON object, no "
+        "other text."
+    )
+
+    try:
+        client = AsyncOpenAI(
+            api_key=settings.groq_api_key,
+            base_url="https://api.groq.com/openai/v1",
+            max_retries=0,
+        )
+        resp = await client.chat.completions.create(
+            model=settings.classify_model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=500,
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        _log_groq_usage(conversation_id, "cart_breakdown", settings.classify_model, resp, user_text)
+        raw = (resp.choices[0].message.content or "").strip()
+        parsed = _json.loads(raw)
+        items = parsed.get("items")
+        if not isinstance(items, list) or not items:
+            return None
+        for item in items:
+            if not isinstance(item, dict) or not isinstance(item.get("qty"), int) or item["qty"] < 1:
+                return None
+        return {"items": items, "inferred_split": bool(parsed.get("inferred_split", False))}
+    except Exception as exc:
+        logger.warning("extract_cart_breakdown failed (caller will reprompt): %s", exc)
+        return None
+
+
 async def classify_buy_intent(user_text: str, product_name: str, conversation_id: int | None = None) -> bool:
     """
     LLM-based buy-intent classifier for browsing stages.
@@ -1072,6 +1151,91 @@ def detect_stage(
     return "product_inquiry"
 
 
+# Phase 1 cart-based order engine. Remaining pieces (after line item 1) above
+# which "different for each" collection uses a single free-text breakdown
+# reply instead of asking one item at a time. v1 default, not tuned.
+_CART_BATCH_THRESHOLD = 10
+
+
+def _opportunistic_qty_fallback(
+    conversation, text: str, available_stock: int | None, slot: str
+) -> tuple[str, object] | None:
+    """
+    Bug fix 2: a bare quantity sent while a color/size/material question is
+    pending (e.g. "100 pic leva che" with no color/size keyword) used to be
+    silently discarded — the color loop found no match and returned None,
+    the qty was never recorded, and the customer got re-asked the same
+    question with no acknowledgment of what they'd already said.
+
+    Only fires when no quantity is recorded yet, so it never overwrites an
+    already-captured value.
+    """
+    if getattr(conversation, "pending_order_quantity", None) not in (None, 0):
+        return None
+    match = re.search(r"\b(\d{1,4})\b", text)
+    if not match:
+        return None
+    qv = int(match.group(1))
+    if qv < 1 or (available_stock is not None and qv > available_stock):
+        return None
+    logger.info(
+        "Opportunistic qty capture at %s slot: conv=%s qty=%d",
+        slot, getattr(conversation, "id", None), qv,
+    )
+    return ("pending_order_quantity", qv)
+
+
+# Matches "actually make it 60", "actually 60 not 40", "no wait make it 3" —
+# a customer revising the qty of the cart item just discussed, mid-loop.
+_CART_CORRECTION_RE = re.compile(
+    r"\b(?:actually|no\s*wait|wait|make it|change it to)\b.{0,20}?\b(\d{1,4})\b", re.I
+)
+
+
+def _cart_committed_qty(conversation) -> int:
+    """Sum of quantities already locked into cart_items plus any qty already
+    entered for the in-progress cart_wip_item (used for remaining-quantity math)."""
+    items = getattr(conversation, "cart_items", None) or []
+    wip = getattr(conversation, "cart_wip_item", None) or {}
+    return sum(i["qty"] for i in items) + (wip.get("qty") or 0)
+
+
+def _extract_multi_color_qty_pairs(text: str, available_colors: list[str]) -> list[dict] | None:
+    """
+    Detect 2+ DISTINCT colors each paired with a quantity in one message
+    ("10 red and 10 pink", "2 red, 3 blue and 1 green"). Returns None when
+    fewer than 2 distinct colors are found, so a normal single-color reply
+    ("red please") falls through to the existing single-slot branches
+    completely unchanged — this is additive, not a replacement.
+
+    This is the direct fix for the production bug where "10 red and 10 pink"
+    silently dropped the second color/quantity because the single-slot
+    extractor only ever captured the first matched color.
+    """
+    if not available_colors:
+        return None
+    color_alt = "|".join(re.escape(c) for c in sorted(available_colors, key=len, reverse=True))
+    pairs: list[dict] = []
+    seen: set[str] = set()
+    # "<qty> [pc/pcs/piece(s)] <color>"
+    for m in re.finditer(rf"\b(\d{{1,4}})\b\s*(?:pc|pcs|piece|pieces)?\s*({color_alt})\b", text, re.I):
+        qty_s, color_raw = m.groups()
+        canon = next(c for c in available_colors if c.lower() == color_raw.lower())
+        if canon.lower() not in seen:
+            pairs.append({"color": canon, "qty": int(qty_s)})
+            seen.add(canon.lower())
+    # "<color> ... <qty>" ordering — only tried if the first pass found <2, to
+    # avoid double-counting the same pair matched by both patterns.
+    if len(pairs) < 2:
+        for m in re.finditer(rf"\b({color_alt})\b\D{{0,8}}?(\d{{1,4}})\b", text, re.I):
+            color_raw, qty_s = m.groups()
+            canon = next(c for c in available_colors if c.lower() == color_raw.lower())
+            if canon.lower() not in seen:
+                pairs.append({"color": canon, "qty": int(qty_s)})
+                seen.add(canon.lower())
+    return pairs if len(pairs) >= 2 else None
+
+
 # Section 2 — deterministic multi-slot capture helpers. These let a single
 # message like "red and XL size, 2 pieces" fill color+size+quantity in one
 # turn, each validated against the pinned SKU's real DB variants, instead of
@@ -1102,6 +1266,18 @@ def _extract_size_token(text: str, available_sizes: list[str]) -> str | None:
         if canonical:
             return canonical
     return None
+
+
+# Reasonable upper bound for a single self-serve chat order, applied
+# regardless of whether the product's stock is tracked. See extract_order_field's
+# quantity branch for why this exists — untracked stock (available_stock=None,
+# a normal catalogue state) previously left quantity with NO upper bound at all.
+# Set well above legitimate bulk/wholesale orders (this catalogue's cart engine
+# explicitly supports 100+ unit "different for each" batch orders — see
+# _CART_BATCH_THRESHOLD in this file and test_cart_different_variant_batch)
+# so it only catches genuinely implausible values like the 835 that
+# originally slipped through, not real wholesale-sized orders.
+_MAX_SELF_SERVE_QUANTITY = 500
 
 
 def _maybe_capture_quantity(
@@ -1139,6 +1315,8 @@ def _maybe_capture_quantity(
         if qty < 1:
             continue
         if available_stock is not None and qty > available_stock:
+            continue
+        if qty > _MAX_SELF_SERVE_QUANTITY:
             continue
         conversation.pending_order_quantity = qty
         logger.info(
@@ -1194,6 +1372,29 @@ def extract_order_field(
     text_lower = text.lower()
     words = text.split()
 
+    # ── MULTI-COLOR/QTY SEED (bug fix 1) ────────────────────────────────────────
+    # A reply like "10 red and 10 pink" can plausibly land while we're asking
+    # for color, quantity, or the cart same/different question — check for it
+    # up front, additively. Fires only on 2+ distinct colors, so an ordinary
+    # single-color reply ("red please") is completely unaffected and falls
+    # through to the branches below unchanged.
+    if next_slot in ("color", "quantity", "variant_mode") and vi.get("needs_color"):
+        _pairs = _extract_multi_color_qty_pairs(text, vi.get("available_colors", []))
+        if _pairs:
+            return ("cart_multi_seed", _pairs)
+
+    # ── MID-LOOP CORRECTION ("actually make it 60 not 40") ─────────────────────
+    # Only checked once at least one cart line item has already been
+    # committed (loop mode, item 2+) — corrects the LAST committed item's
+    # qty in place instead of creating a duplicate line or being silently
+    # ignored as an unrecognized reply to whatever slot is currently active.
+    if next_slot in ("cart_item_color", "cart_item_size", "cart_item_material", "cart_item_qty"):
+        _existing_cart = getattr(conversation, "cart_items", None) or []
+        if _existing_cart:
+            _corr = _CART_CORRECTION_RE.search(text)
+            if _corr:
+                return ("cart_correct_last_qty", int(_corr.group(1)))
+
     # ── QUANTITY ──────────────────────────────────────────────────────────────
     if next_slot == "quantity":
         digit_match = re.search(r"\b(\d{1,4})\b", text)
@@ -1206,6 +1407,16 @@ def extract_order_field(
         # it instead of a "0" being silently smuggled in as a valid "1".
         if available_stock is not None and qty > available_stock:
             return ("quantity_invalid", available_stock)
+        # Sanity ceiling independent of tracked stock. When a product's stock
+        # is untracked (available_stock is None — a normal, common catalogue
+        # state), the check above never fires, so ANY 1-4 digit number in the
+        # message (up to 9999) used to be accepted as-is with no upper bound
+        # at all. That's how a garbled/misread quantity once sailed straight
+        # through slot-filling to order confirmation and payment unquestioned.
+        # Reuses the existing quantity_invalid re-ask contract/templates —
+        # the caller re-asks for a smaller number within this ceiling.
+        if qty > _MAX_SELF_SERVE_QUANTITY:
+            return ("quantity_invalid", _MAX_SELF_SERVE_QUANTITY)
         return ("pending_order_quantity", qty)
 
     # ── COLOUR ────────────────────────────────────────────────────────────────
@@ -1234,7 +1445,10 @@ def extract_order_field(
                     conversation, text, available_stock, consumed_tokens=_consumed
                 )
                 return ("selected_color", color)
-        return None
+        # Bug fix 2: an unprompted bare quantity ("100 pic leva che") sent
+        # while the color question is pending used to be silently discarded
+        # here. Capture it opportunistically instead of losing it.
+        return _opportunistic_qty_fallback(conversation, text, available_stock, next_slot)
 
     # ── SIZE ──────────────────────────────────────────────────────────────────
     if next_slot == "size":
@@ -1254,6 +1468,13 @@ def extract_order_field(
                     conversation, text, available_stock, consumed_tokens=(token, canonical),
                 )
                 return ("selected_size", canonical)
+        # Deliberately no opportunistic-qty fallback here (unlike color and
+        # material): this catalogue has numeric sizes ("38"/"40"), so a bare
+        # number that fails to match available_sizes is far more likely to be
+        # an invalid/mistyped SIZE answer than a volunteered quantity — the
+        # original bug report was specifically about the color slot.
+        # Re-interpreting it as quantity would silently misfile the reply
+        # instead of the customer seeing "that size isn't available".
         return None
 
     # ── MATERIAL ─────────────────────────────────────────────────────────────
@@ -1261,6 +1482,79 @@ def extract_order_field(
         for mat in vi.get("available_materials", []):
             if mat.lower() in text_lower:
                 return ("selected_material", mat)
+        return _opportunistic_qty_fallback(conversation, text, available_stock, next_slot)
+
+    # ── CART: SAME OR DIFFERENT ─────────────────────────────────────────────
+    # Asked only once quantity > 1 is known on a variant product. The
+    # already-collected color/size/material becomes line item 1 either way —
+    # "same" means that's the only line item (qty=N on the flat fields,
+    # cart_items stays untouched); "different" starts the cart-building loop.
+    if next_slot == "variant_mode":
+        _norm = text_lower.strip()
+        if _norm in ("same", "1", "same for all", "ek j", "same rakho", "बराबर", "same hi"):
+            return ("cart_variant_mode", "same")
+        if _norm in (
+            "different", "2", "different for each", "alag alag", "juda juda", "different karo",
+        ):
+            return ("cart_variant_mode", "different")
+        return None
+
+    # ── CART ITEM COLOR / SIZE / MATERIAL (loop mode, item 2 onward) ────────
+    if next_slot == "cart_item_color":
+        for color in vi.get("available_colors", []):
+            if color.lower() in text_lower:
+                return ("cart_wip_color", color)
+        return None
+
+    if next_slot == "cart_item_size":
+        # Parity with the "size" branch above: a color name typed here is a
+        # color switch for the item currently being built, not a size answer.
+        for color in vi.get("available_colors", []):
+            if re.search(r"\b" + re.escape(color.lower()) + r"\b", text_lower):
+                return ("cart_wip_color", color)
+        size_map = {s.lower(): s for s in vi.get("available_sizes", [])}
+        for token in words:
+            canonical = size_map.get(token.lower().strip(".,!?"))
+            if canonical:
+                return ("cart_wip_size", canonical)
+        return None
+
+    if next_slot == "cart_item_material":
+        for mat in vi.get("available_materials", []):
+            if mat.lower() in text_lower:
+                return ("cart_wip_material", mat)
+        return None
+
+    if next_slot == "cart_item_qty":
+        # Takes the LAST number in the text, not the first, so a correction
+        # ("actually make it 60 not 40") naturally overwrites the in-progress
+        # item's qty instead of being ignored or creating a duplicate line.
+        _nums = re.findall(r"\b(\d{1,4})\b", text)
+        if not _nums:
+            return None
+        qv = int(_nums[-1])
+        _n = getattr(conversation, "pending_order_quantity", None) or 0
+        _remaining = _n - _cart_committed_qty(conversation)
+        if qv < 1 or qv > _remaining:
+            return ("cart_wip_qty_invalid", _remaining)
+        return ("cart_wip_qty", qv)
+
+    # ── CART BREAKDOWN (batch mode) ─────────────────────────────────────────
+    # Deliberately returns None here — parsing free-text breakdowns needs an
+    # LLM call (await), which this synchronous function can't make. Handled
+    # directly in order_pipeline.py before this function is even called.
+    if next_slot == "cart_breakdown":
+        return None
+
+    # ── CART BREAKDOWN ECHO-CONFIRM ──────────────────────────────────────────
+    # Used when an LLM-inferred quantity split ("half red half white") must
+    # be confirmed before being committed to cart_items — never committed
+    # silently.
+    if next_slot == "cart_breakdown_confirm":
+        if text_lower.strip() in _SLOT_AFFIRMATIVES:
+            return ("cart_breakdown_confirmed", True)
+        if text_lower.strip() in ("no", "nahi", "change", "wrong", "galat"):
+            return ("cart_breakdown_rejected", True)
         return None
 
     # ── CUSTOMER NAME ─────────────────────────────────────────────────────────
@@ -1443,6 +1737,50 @@ def get_next_slot_prompt_instruction(
             f"Do NOT ask about name, address, or payment yet."
         )
 
+    if next_slot == "variant_mode":
+        return (
+            "CURRENT SLOT: SAME OR DIFFERENT VARIANTS\n"
+            "Ask ONLY whether the customer wants the same color/size for every piece, "
+            "or a different color/size for each. Do NOT ask about name, address, or payment yet."
+        )
+
+    if next_slot in ("cart_item_color", "cart_item_size", "cart_item_material", "cart_item_qty"):
+        return (
+            "CURRENT SLOT: NEXT CART ITEM\n"
+            "The customer is building a multi-item order with different variants. "
+            "Ask ONLY for the next missing detail (color, size, material, or quantity) "
+            "of the current item. Do NOT ask about name, address, or payment yet."
+        )
+
+    if next_slot == "cart_breakdown":
+        return (
+            "CURRENT SLOT: CART BREAKDOWN\n"
+            "Ask the customer for a full breakdown of the remaining pieces by variant "
+            "(e.g. '30 blue M, 37 green S'). Do NOT ask about name, address, or payment yet."
+        )
+
+    if next_slot == "cart_breakdown_mismatch":
+        return (
+            "⚠️ CART BREAKDOWN DOESN'T ADD UP — MANDATORY ACTION:\n"
+            "Tell the customer their breakdown total doesn't match the quantity they stated "
+            "earlier and ask them to recheck. Do NOT guess which number is correct. "
+            "Do NOT proceed to any other question."
+        )
+
+    if next_slot == "cart_breakdown_invalid":
+        return (
+            "⚠️ CART BREAKDOWN HAS AN UNKNOWN VARIANT — MANDATORY ACTION:\n"
+            "Tell the customer one of the colors/sizes in their breakdown isn't available "
+            "and list the valid options. Do NOT proceed to any other question."
+        )
+
+    if next_slot == "cart_breakdown_confirm":
+        return (
+            "CURRENT SLOT: CONFIRM INFERRED SPLIT\n"
+            "Echo back the quantity split you computed for the customer and ask them to "
+            "confirm it's correct before it's added to the order."
+        )
+
     if next_slot == "customer_name":
         return (
             "CRITICAL — IGNORE CONVERSATION FLOW: The customer's name has NOT been recorded yet.\n"
@@ -1581,9 +1919,20 @@ def get_next_required_slot(conversation, variant_info: dict) -> str | None:
     """
     Return the first unfilled slot for the current order, or None if all filled.
 
-    Iterates get_order_slots() in order and returns the first slot whose
-    corresponding conversation column is None/empty.  None means all slots are
-    collected and the flow is ready for the final confirmation summary.
+    Leading order is UNCHANGED from before the cart-based order engine
+    (Phase 1): color? -> size? -> material? -> quantity, then straight to
+    customer_name/delivery_address/mobile_number/payment_method for a
+    non-variant product or a variant product with quantity == 1 — this is
+    the "zero UX change for simple sellers" path and is not touched here.
+
+    A NEW branch is only reachable when quantity > 1 on a product that has
+    variants: it asks "same color/size for all N, or different for each?"
+    (cart_variant_mode), and — when the answer is "different" — walks
+    through collecting one cart line item at a time (loop mode) or a single
+    free-text breakdown (batch mode, when the remaining piece count exceeds
+    _CART_BATCH_THRESHOLD). Line item 1 reuses the color/size/material
+    already collected above — it is never re-asked, and the value the
+    customer already gave is never dropped.
 
     Args:
         conversation: Conversation ORM instance.
@@ -1592,14 +1941,76 @@ def get_next_required_slot(conversation, variant_info: dict) -> str | None:
     Returns:
         Slot name string, or None when everything is collected.
     """
-    for slot in get_order_slots(variant_info):
-        field = _SLOT_TO_FIELD[slot]
-        val = getattr(conversation, field, None)
-        # quantity is an int — None or 0 both count as unfilled.
-        if val is None or val == "":
-            return slot
-        if slot == "quantity" and val == 0:
-            return slot
+    vi = variant_info or {}
+    has_variants = bool(vi.get("needs_color") or vi.get("needs_size") or vi.get("needs_material"))
+
+    # Leading slots — unchanged from before Phase 1. Skipped once
+    # cart_variant_mode == "different": either the customer already answered
+    # this question and item 1's color/size/material were captured from it
+    # (never re-asked), or a multi-color single-message reply ("10 red and
+    # 10 pink") seeded cart_items and cart_variant_mode directly without
+    # ever going through selected_color/selected_size at all — per-item
+    # color/size live in cart_items from that point on, not these columns.
+    if has_variants and getattr(conversation, "cart_variant_mode", None) != "different":
+        if vi.get("needs_color") and not getattr(conversation, "selected_color", None):
+            return "color"
+        if vi.get("needs_size") and not getattr(conversation, "selected_size", None):
+            return "size"
+        if vi.get("needs_material") and not getattr(conversation, "selected_material", None):
+            return "material"
+
+    qty = getattr(conversation, "pending_order_quantity", None)
+    if qty is None or qty == 0:
+        return "quantity"
+
+    # Cart branch — only reachable when qty > 1 on a variant product, and
+    # only before the order summary has ever been shown. Once summary_shown
+    # is True, the order's shape is locked — this is what protects orders
+    # that reached awaiting_final_confirmation/payment BEFORE this cart
+    # engine deployed (qty > 1, complete flat fields, no cart_variant_mode
+    # set) from being retroactively kicked back to order_collection and
+    # asked a "same or different?" question about pieces they already
+    # confirmed. A customer who explicitly re-opens editing gets
+    # summary_shown reset to False by that flow, which naturally re-enables
+    # this branch for them.
+    if has_variants and qty > 1 and not getattr(conversation, "summary_shown", False):
+        mode = getattr(conversation, "cart_variant_mode", None)
+        if mode is None:
+            return "variant_mode"
+        if mode == "different":
+            if getattr(conversation, "cart_pending_confirmation", None):
+                return "cart_breakdown_confirm"
+            cart_items = getattr(conversation, "cart_items", None) or []
+            committed = _cart_committed_qty(conversation)
+            if committed < qty:
+                if not cart_items:
+                    # Line item 1: color/size/material are already known from
+                    # the leading slots above — only its own qty is missing.
+                    # Never re-ask color/size/material for item 1.
+                    return "cart_item_qty"
+                if getattr(conversation, "cart_collection_mode", None) == "batch":
+                    return "cart_breakdown"
+                wip = getattr(conversation, "cart_wip_item", None) or {}
+                if vi.get("needs_color") and not wip.get("color"):
+                    return "cart_item_color"
+                if vi.get("needs_size") and not wip.get("size"):
+                    return "cart_item_size"
+                if vi.get("needs_material") and not wip.get("material"):
+                    return "cart_item_material"
+                return "cart_item_qty"
+            # committed == qty: cart is complete, fall through to name/address/...
+        # mode == "same": nothing further to collect for the product itself —
+        # falls through to name/address/... using the flat selected_color/
+        # selected_size/selected_material/pending_order_quantity as-is.
+
+    if not getattr(conversation, "customer_name", None):
+        return "customer_name"
+    if not getattr(conversation, "delivery_address", None):
+        return "delivery_address"
+    if not getattr(conversation, "mobile_number", None):
+        return "mobile_number"
+    if not getattr(conversation, "payment_method", None):
+        return "payment_method"
     return None
 
 

@@ -59,6 +59,16 @@ class FakeConv:
         current_stage="order_collection",
         interrupted_sku=None,
         summary_shown=False,
+        # Phase 1 cart-based order engine (migration 0057). None everywhere
+        # means "simple single-item flow" — matches a real fresh Conversation
+        # row. Tests that put qty > 1 on a variant product and expect the
+        # pre-cart-engine straight-through behavior must pass
+        # cart_variant_mode="same" explicitly.
+        cart_items=None,
+        cart_variant_mode=None,
+        cart_collection_mode=None,
+        cart_wip_item=None,
+        cart_pending_confirmation=None,
     ):
         self.selected_color = selected_color
         self.selected_size = selected_size
@@ -71,6 +81,11 @@ class FakeConv:
         self.current_stage = current_stage
         self.interrupted_sku = interrupted_sku
         self.summary_shown = summary_shown
+        self.cart_items = cart_items
+        self.cart_variant_mode = cart_variant_mode
+        self.cart_collection_mode = cart_collection_mode
+        self.cart_wip_item = cart_wip_item
+        self.cart_pending_confirmation = cart_pending_confirmation
 
 
 class FakeProduct:
@@ -138,18 +153,28 @@ def after_color_size(color="Red", size="M") -> FakeConv:
 
 
 def after_color_size_qty(color="Red", size="M", qty=2) -> FakeConv:
-    return FakeConv(selected_color=color, selected_size=size, pending_order_quantity=qty)
+    # qty defaults to 2 (>1) on a variant product — cart_variant_mode="same"
+    # opts into the pre-cart-engine straight-through behavior these fixtures
+    # were written to exercise, rather than the new "same or different?" ask.
+    return FakeConv(
+        selected_color=color, selected_size=size, pending_order_quantity=qty,
+        cart_variant_mode="same" if qty and qty > 1 else None,
+    )
 
 
 def after_color_size_qty_name(color="Red", size="M", qty=2, name="Priya Shah") -> FakeConv:
-    return FakeConv(selected_color=color, selected_size=size, pending_order_quantity=qty, customer_name=name)
+    return FakeConv(
+        selected_color=color, selected_size=size, pending_order_quantity=qty, customer_name=name,
+        cart_variant_mode="same" if qty and qty > 1 else None,
+    )
 
 
 def fully_filled_variant(color="Red", size="M", qty=2, name="Priya Shah",
                           addr="702 MG Road Surat", payment="COD") -> FakeConv:
     return FakeConv(selected_color=color, selected_size=size,
                     pending_order_quantity=qty, customer_name=name,
-                    delivery_address=addr, payment_method=payment)
+                    delivery_address=addr, payment_method=payment,
+                    cart_variant_mode="same" if qty and qty > 1 else None)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -211,6 +236,7 @@ class TestHappyPathVariant:
             selected_color="Red", selected_size="M",
             pending_order_quantity=2, customer_name="Riya Patel",
             delivery_address="45 Sardar Patel Nagar, Ahmedabad",
+            cart_variant_mode="same",
         )
         result = extract_order_field(conv, "COD karna hai", VI_COLOR_SIZE)
         assert result == ("payment_method", "COD")
@@ -487,6 +513,7 @@ class TestInterruptionsMidOrder:
             selected_color="Red", selected_size="M",
             pending_order_quantity=2, customer_name="Amit Shah",
             delivery_address="123 Main St Surat",
+            cart_variant_mode="same",
         )
         result = extract_order_field(conv, "I'll pay somehow", VI_COLOR_SIZE)
         assert result is None
@@ -542,6 +569,7 @@ class TestConfirmationGate:
             pending_order_quantity=2, customer_name="Priya",
             delivery_address="Ahmedabad",
             payment_method=None,
+            cart_variant_mode="same",
         )
         assert get_next_required_slot(conv, VI_COLOR_SIZE) == "payment_method"
 
@@ -634,6 +662,7 @@ class TestEdgeCases:
         conv = FakeConv(
             selected_color="Red", selected_size="M",
             pending_order_quantity=2, customer_name="Riya Shah",
+            cart_variant_mode="same",
         )
         result = extract_order_field(conv, "SR27754", VI_COLOR_SIZE)
         assert result is None
@@ -683,12 +712,14 @@ class TestEdgeCases:
             selected_color="Red", selected_size="M",
             pending_order_quantity=2, customer_name="Priya",
             delivery_address="Ahmedabad",
+            cart_variant_mode="same",
         )
         for upi_phrase in ["UPI se dunga", "GPAY karuga", "PHONEPE karo", "PAYTM se"]:
             conv = FakeConv(
                 selected_color="Red", selected_size="M",
                 pending_order_quantity=2, customer_name="Priya",
                 delivery_address="Ahmedabad",
+                cart_variant_mode="same",
             )
             result = extract_order_field(conv, upi_phrase, VI_COLOR_SIZE)
             assert result == ("payment_method", "UPI"), f"Failed for: {upi_phrase}"
@@ -749,6 +780,7 @@ class TestStageDetection:
             selected_color="Red", selected_size="M",
             pending_order_quantity=2, customer_name="Amit",
             delivery_address="Surat",
+            cart_variant_mode="same",
         )
         result = extract_order_field(conv, "Cash on delivery karna hai", VI_COLOR_SIZE)
         assert result == ("payment_method", "COD")

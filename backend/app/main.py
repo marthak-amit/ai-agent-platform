@@ -36,6 +36,7 @@ async def lifespan(app: FastAPI):
     _startup_checks()
     await _schema_drift_check()
     await _check_whatsapp_token()
+    await _check_instagram_token()
     start_scheduler()
     yield
     stop_scheduler()
@@ -153,6 +154,73 @@ async def _check_whatsapp_token() -> None:
         else:
             logger.warning(
                 "WhatsApp token: VALID but EXPIRES in %d days on %s. "
+                "Switch to a System User token (never expires).",
+                days_left, expires_iso,
+            )
+    logger.info(sep)
+
+
+async def _check_instagram_token() -> None:
+    """
+    Call the Meta token-debug endpoint at startup and log token validity + expiry.
+
+    Logs CRITICAL if the token is invalid or expires within 7 days so the
+    problem is visible in Railway boot logs — not as silent send failures later.
+    Skips the check when the token is unset or a placeholder test value.
+    """
+    import httpx
+    from app.config import get_settings as _gs
+
+    s = _gs()
+    token = s.instagram_access_token
+    if not token or token in ("test_token", "test-ig", "test-ig-token"):
+        logger.info("Instagram token check: skipped (test/placeholder token)")
+        return
+
+    url = "https://graph.facebook.com/debug_token"
+    params = {"input_token": token, "access_token": token}
+    sep = "=" * 50
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url, params=params)
+        data = resp.json().get("data", {})
+    except Exception as exc:
+        logger.warning("Instagram token check: HTTP error — %s", exc)
+        return
+
+    is_valid = data.get("is_valid", False)
+    expires_at = data.get("expires_at", 0)  # 0 = never expires (System User token)
+    token_type = data.get("type", "unknown")
+    app_name = data.get("application", "unknown")
+    scopes = data.get("scopes", [])
+
+    logger.info(sep)
+    if not is_valid:
+        error = data.get("error", {})
+        logger.critical(
+            "Instagram token INVALID at startup — sends will fail immediately. "
+            "Error: %s (code %s). Regenerate via Meta Business Settings → System Users.",
+            error.get("message", "unknown"),
+            error.get("code", "?"),
+        )
+    elif expires_at == 0:
+        logger.info(
+            "Instagram token: VALID ✓ | type=%s | app=%s | expiry=NEVER (System User) | scopes=%s",
+            token_type, app_name, scopes,
+        )
+    else:
+        import time
+        secs_left = expires_at - int(time.time())
+        days_left = secs_left // 86400
+        expires_iso = datetime.utcfromtimestamp(expires_at).strftime("%Y-%m-%d %H:%M UTC")
+        if days_left <= 7:
+            logger.critical(
+                "Instagram token expires in %d day(s) on %s — rotate NOW via Meta Business Settings → System Users.",
+                days_left, expires_iso,
+            )
+        else:
+            logger.warning(
+                "Instagram token: VALID but EXPIRES in %d days on %s. "
                 "Switch to a System User token (never expires).",
                 days_left, expires_iso,
             )

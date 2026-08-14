@@ -178,6 +178,29 @@ class Conversation(Base):
     # the same conversation being counted twice within one billing month.
     usage_counted_period: Mapped[Optional[str]] = mapped_column(String(7), nullable=True)
 
+    # ── Cart-based order engine (migration 0057) ────────────────────────────
+    # All five NULL by default and stay NULL for the simple single-item/no-
+    # variant flow, which keeps using selected_color/selected_size/
+    # pending_order_quantity exactly as before — these columns are only
+    # populated when a customer actually builds a multi-line-item cart.
+    #
+    # Committed line items: [{sku, product_name, color, size, material, qty,
+    # unit_price}, ...].
+    cart_items: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    # "same" | "different" — answer to "same color/size for all N, or
+    # different for each?", asked only when qty > 1 on a variant product.
+    cart_variant_mode: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # "loop" | "batch" — set once cart_variant_mode becomes "different",
+    # based on how many pieces remain to collect after line item 1.
+    cart_collection_mode: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # In-progress line item being filled one attribute at a time in loop
+    # mode: {color, size, material, qty}, any subset present.
+    cart_wip_item: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    # Proposed-but-unconfirmed line items awaiting an echo-confirm reply
+    # (used when an LLM-inferred quantity split must be confirmed before
+    # being committed to cart_items — never committed silently).
+    cart_pending_confirmation: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+
     messages: Mapped[list[Message]] = relationship(
         "Message", back_populates="conversation", order_by="Message.created_at"
     )

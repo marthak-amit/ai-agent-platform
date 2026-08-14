@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.order import Order
+from app.models.order_line_item import OrderLineItem
 from app.services.language_templates import format_price
 
 logger = logging.getLogger(__name__)
@@ -145,6 +146,116 @@ async def _generate_and_send_invoice(db: AsyncSession, order: Order, client) -> 
     logger.info("Invoice %s generated for order %s.", invoice_number, order.order_number)
 
 
+async def create_cart_order(
+    db: AsyncSession,
+    client_id: int,
+    customer_name: str,
+    customer_phone: str,
+    delivery_address: str,
+    line_items: list[dict],
+    payment_method: str = "COD",
+    mobile_number: Optional[str] = None,
+    conversation_id: Optional[int] = None,
+    initial_status: str = "pending_payment",
+    idempotency_key: Optional[str] = None,
+) -> Order:
+    """
+    Create and persist a new cart-based order (one or more line items), then
+    notify the business owner via WhatsApp.
+
+    One Order row is the purchase/cart header — one order_number per
+    checkout, regardless of how many line items it contains. Its flat
+    product_name/product_sku/variant_*/quantity/unit_price columns are
+    populated from line_items[0] (denormalised so the seller dashboard and
+    CSV export, which read those flat columns directly, keep working
+    unchanged for multi-item carts too). total_amount is the CART GRAND
+    TOTAL across all line items, not just line item 1.
+
+    Args:
+        db: Async DB session.
+        client_id: ID of the client (business) that owns this order.
+        customer_name: Customer's full name.
+        customer_phone: Customer's phone in E.164 format without '+'.
+        delivery_address: Full delivery address.
+        line_items: Non-empty list of dicts, each with keys product_name,
+            quantity, unit_price, and optionally product_id, product_sku,
+            variant_color, variant_size, variant_material.
+        payment_method: 'COD' or 'UPI'.
+        mobile_number: Optional delivery contact number (not identity).
+        conversation_id: Optional linked conversation ID.
+
+    Returns:
+        The newly created and refreshed Order instance, with line_items loaded.
+
+    Raises:
+        AssertionError: if line_items is empty or any item's quantity is not
+            a positive integer — final guard so no order can be placed with
+            qty < 1 regardless of any upstream slot-filling bug.
+    """
+    assert line_items, "cart order must have at least one line item"
+    for li in line_items:
+        assert isinstance(li["quantity"], int) and li["quantity"] >= 1, (
+            f"invalid line item quantity: {li!r}"
+        )
+
+    year = datetime.now(timezone.utc).year
+    count = await _get_order_count_for_year(client_id, year, db)
+    order_number = f"ORD-{year}-{str(count + 1).zfill(4)}"
+    grand_total = sum(li["quantity"] * li["unit_price"] for li in line_items)
+    first = line_items[0]
+
+    order = Order(
+        order_number=order_number,
+        client_id=client_id,
+        conversation_id=conversation_id,
+        customer_name=customer_name,
+        customer_phone=customer_phone,
+        delivery_address=delivery_address,
+        mobile_number=mobile_number,
+        product_id=first.get("product_id"),
+        product_name=first["product_name"],
+        product_sku=first.get("product_sku"),
+        variant_color=first.get("variant_color"),
+        variant_size=first.get("variant_size"),
+        variant_material=first.get("variant_material"),
+        quantity=first["quantity"],
+        unit_price=first["unit_price"],
+        total_amount=grand_total,
+        payment_method=payment_method,
+        status=initial_status,
+        idempotency_key=idempotency_key,
+        # confirmed_at is set only when transitioning to paid (in mark_order_paid).
+        # Orders start as pending_payment regardless of payment method.
+    )
+    db.add(order)
+    await db.flush()  # assign order.id for the line-item FKs below
+
+    for idx, li in enumerate(line_items, start=1):
+        db.add(
+            OrderLineItem(
+                order_id=order.id,
+                product_id=li.get("product_id"),
+                product_name=li["product_name"],
+                product_sku=li.get("product_sku"),
+                variant_color=li.get("variant_color"),
+                variant_size=li.get("variant_size"),
+                variant_material=li.get("variant_material"),
+                quantity=li["quantity"],
+                unit_price=li["unit_price"],
+                subtotal=li["quantity"] * li["unit_price"],
+                line_number=idx,
+            )
+        )
+
+    await db.commit()
+    await db.refresh(order, attribute_names=["line_items"])
+
+    # Phase 4: stock is NEVER decremented at creation — only in mark_order_paid().
+    # No backup deduction here.
+
+    return order
+
+
 async def create_order(
     db: AsyncSession,
     client_id: int,
@@ -166,89 +277,74 @@ async def create_order(
     idempotency_key: Optional[str] = None,
 ) -> Order:
     """
-    Create and persist a new order, then notify the business owner via WhatsApp.
+    Create and persist a new single-product order.
 
-    Args:
-        db: Async DB session.
-        client_id: ID of the client (business) that owns this order.
-        customer_name: Customer's full name.
-        customer_phone: Customer's phone in E.164 format without '+'.
-        delivery_address: Full delivery address.
-        product_name: Product name as a string (denormalised for display).
-        quantity: Number of units ordered.
-        unit_price: Price per unit in INR.
-        payment_method: 'COD' or 'UPI'.
-        mobile_number: Optional delivery contact number (not identity).
-        conversation_id: Optional linked conversation ID.
-        product_sku: Optional product SKU.
-        variant_color: Optional colour variant.
-        variant_size: Optional size variant.
-        variant_material: Optional material variant.
-        product_id: Optional FK to products table.
-
-    Returns:
-        The newly created and refreshed Order instance.
+    Back-compat wrapper around create_cart_order() for the single-item case
+    (the overwhelming majority of orders) — delegates to it with a
+    one-element line_items list, so every existing call site keeps working
+    unchanged.
 
     Raises:
         AssertionError: if quantity is not a positive integer — final guard
             so no order can be placed with qty < 1 regardless of any
             upstream slot-filling bug.
     """
-    assert isinstance(quantity, int) and quantity >= 1, f"invalid order quantity: {quantity!r}"
-    year = datetime.now(timezone.utc).year
-    count = await _get_order_count_for_year(client_id, year, db)
-    order_number = f"ORD-{year}-{str(count + 1).zfill(4)}"
-
-    order = Order(
-        order_number=order_number,
+    return await create_cart_order(
+        db=db,
         client_id=client_id,
-        conversation_id=conversation_id,
         customer_name=customer_name,
         customer_phone=customer_phone,
         delivery_address=delivery_address,
-        mobile_number=mobile_number,
-        product_id=product_id,
-        product_name=product_name,
-        product_sku=product_sku,
-        variant_color=variant_color,
-        variant_size=variant_size,
-        variant_material=variant_material,
-        quantity=quantity,
-        unit_price=unit_price,
-        total_amount=unit_price * quantity,
+        line_items=[
+            {
+                "product_id": product_id,
+                "product_name": product_name,
+                "product_sku": product_sku,
+                "variant_color": variant_color,
+                "variant_size": variant_size,
+                "variant_material": variant_material,
+                "quantity": quantity,
+                "unit_price": unit_price,
+            }
+        ],
         payment_method=payment_method,
-        status=initial_status,
+        mobile_number=mobile_number,
+        conversation_id=conversation_id,
+        initial_status=initial_status,
         idempotency_key=idempotency_key,
-        # confirmed_at is set only when transitioning to paid (in mark_order_paid).
-        # Orders start as pending_payment regardless of payment method.
     )
-
-    db.add(order)
-    await db.commit()
-    await db.refresh(order)
-
-    # Phase 4: stock is NEVER decremented at creation — only in mark_order_paid().
-    # No backup deduction here.
-
-    return order
 
 
 async def _notify_owner_new_order(order: Order, client) -> None:
-    """Send a WhatsApp summary of a new order to the business owner's registered phone."""
+    """Send a WhatsApp summary of a new order to the business owner's registered phone.
+
+    Itemizes every line item when the cart has more than one; otherwise keeps
+    today's single-line "Product × Qty" format unchanged.
+    """
 
     if not client.phone:
         return
 
-    _variant_parts = [
-        p for p in [order.variant_color, order.variant_size, order.variant_material] if p
-    ]
-    _variant_line = f"Variant: {' / '.join(_variant_parts)}\n" if _variant_parts else ""
+    items = getattr(order, "line_items", None) or []
+    if len(items) > 1:
+        _lines = []
+        for li in items:
+            _variant_parts = [p for p in [li.variant_color, li.variant_size, li.variant_material] if p]
+            _suffix = f" ({' / '.join(_variant_parts)})" if _variant_parts else ""
+            _lines.append(f"📦 {li.product_name}{_suffix} × {li.quantity} = {format_price(li.subtotal)}")
+        items_block = "\n".join(_lines) + "\n"
+    else:
+        _variant_parts = [
+            p for p in [order.variant_color, order.variant_size, order.variant_material] if p
+        ]
+        _variant_line = f"Variant: {' / '.join(_variant_parts)}\n" if _variant_parts else ""
+        items_block = f"Product: {order.product_name} × {order.quantity}\n{_variant_line}"
+
     message = (
         f"🛍️ New Order Received!\n"
         f"━━━━━━━━━━━━━━━\n"
         f"Order: #{order.order_number}\n"
-        f"Product: {order.product_name} × {order.quantity}\n"
-        f"{_variant_line}"
+        f"{items_block}"
         f"Amount: {format_price(order.total_amount)}\n"
         f"Customer: {order.customer_name}\n"
         f"Phone: {order.customer_phone}\n"
@@ -458,43 +554,87 @@ async def get_orders_stats(client_id: int, db: AsyncSession) -> dict:
 
 async def _deduct_product_stock(db: AsyncSession, order: Order) -> None:
     """
-    Backup stock deduction called from create_order when product_id is set.
+    Backup stock deduction called from mark_order_paid when product_id is set.
 
     Only runs if order.stock_deducted is False, so it is safe to call even when
     the webhook already handled deduction. Commits once and sets stock_deducted.
+
+    When the order has multiple line items, deducts per-item and recomputes
+    each touched product's aggregate stock once at the end (a cart can name
+    the same product with two different variants). Falls back to the
+    original single-item logic when there are no line items (legacy orders
+    created before migration 0058).
     """
     from app.models.product import Product
     from app.models.product_variant import ProductVariant
 
-    if not order.product_id:
+    items = getattr(order, "line_items", None) or []
+    if not items:
+        if not order.product_id:
+            return
+
+        result = await db.execute(select(Product).where(Product.id == order.product_id))
+        product = result.scalar_one_or_none()
+        if not product:
+            return
+
+        qty = order.quantity
+
+        _variant_material = getattr(order, "variant_material", None)
+        if product.has_variants and (order.variant_color or order.variant_size or _variant_material):
+            stmt = select(ProductVariant).where(ProductVariant.product_id == product.id)
+            if order.variant_color:
+                stmt = stmt.where(ProductVariant.color == order.variant_color)
+            if order.variant_size:
+                stmt = stmt.where(ProductVariant.size == order.variant_size)
+            if _variant_material:
+                stmt = stmt.where(ProductVariant.material == _variant_material)
+            vresult = await db.execute(stmt)
+            variant = vresult.scalar_one_or_none()
+            if variant:
+                variant.stock = max(0, variant.stock - qty)
+                all_result = await db.execute(
+                    select(ProductVariant).where(ProductVariant.product_id == product.id)
+                )
+                product.stock = sum(v.stock for v in all_result.scalars().all())
+        else:
+            product.stock = max(0, (product.stock or 0) - qty)
+
+        order.stock_deducted = True
+        await db.commit()
         return
 
-    result = await db.execute(select(Product).where(Product.id == order.product_id))
-    product = result.scalar_one_or_none()
-    if not product:
-        return
+    touched_product_ids: set[int] = set()
+    for li in items:
+        if not li.product_id:
+            continue
+        touched_product_ids.add(li.product_id)
+        result = await db.execute(select(Product).where(Product.id == li.product_id))
+        product = result.scalar_one_or_none()
+        if not product:
+            continue
 
-    qty = order.quantity
+        if product.has_variants and (li.variant_color or li.variant_size or li.variant_material):
+            stmt = select(ProductVariant).where(ProductVariant.product_id == product.id)
+            if li.variant_color:
+                stmt = stmt.where(ProductVariant.color == li.variant_color)
+            if li.variant_size:
+                stmt = stmt.where(ProductVariant.size == li.variant_size)
+            if li.variant_material:
+                stmt = stmt.where(ProductVariant.material == li.variant_material)
+            vresult = await db.execute(stmt)
+            variant = vresult.scalar_one_or_none()
+            if variant:
+                variant.stock = max(0, variant.stock - li.quantity)
+        else:
+            product.stock = max(0, (product.stock or 0) - li.quantity)
 
-    _variant_material = getattr(order, "variant_material", None)
-    if product.has_variants and (order.variant_color or order.variant_size or _variant_material):
-        stmt = select(ProductVariant).where(ProductVariant.product_id == product.id)
-        if order.variant_color:
-            stmt = stmt.where(ProductVariant.color == order.variant_color)
-        if order.variant_size:
-            stmt = stmt.where(ProductVariant.size == order.variant_size)
-        if _variant_material:
-            stmt = stmt.where(ProductVariant.material == _variant_material)
-        vresult = await db.execute(stmt)
-        variant = vresult.scalar_one_or_none()
-        if variant:
-            variant.stock = max(0, variant.stock - qty)
-            all_result = await db.execute(
-                select(ProductVariant).where(ProductVariant.product_id == product.id)
-            )
+    for pid in touched_product_ids:
+        result = await db.execute(select(Product).where(Product.id == pid))
+        product = result.scalar_one_or_none()
+        if product and product.has_variants:
+            all_result = await db.execute(select(ProductVariant).where(ProductVariant.product_id == pid))
             product.stock = sum(v.stock for v in all_result.scalars().all())
-    else:
-        product.stock = max(0, (product.stock or 0) - qty)
 
     order.stock_deducted = True
     await db.commit()

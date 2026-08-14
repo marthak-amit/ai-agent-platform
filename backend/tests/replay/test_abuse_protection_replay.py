@@ -9,7 +9,8 @@ Scenarios:
   2. Payment stage: cross-product price question answered, order unchanged.
   3. Order_collection: delivery-charge question answered, slot re-asked.
   4. Change-address intent: prefix stripped + validated, or ask for new.
-  5. Cross-product question mid-order: other product price answered, order kept.
+  5. Cross-product question mid-order: other product price answered, order kept
+     unless the customer explicitly confirms the switch-offer (yes/no).
   6. Ack at slot ("I got it"): forward-moving prompt, not full OOS paragraph.
   7. Happy-path end-to-end: order completes despite new validators.
 """
@@ -302,14 +303,9 @@ async def test_s4_change_address_intent(replay_http, replay_session):
 # Scenario 5 — Cross-product question mid-order: answered, active order kept
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_s5_cross_product_question_mid_order(replay_http, replay_session):
-    """
-    FIX 4: Asking price of a different product mid-order answers the price
-    in one line and does NOT switch the active order.
-    """
-    phone = _phone("050001")
-    pnid = _pnid("050001")
+async def _seed_cross_product_scenario(replay_session, *, suffix: str):
+    phone = _phone(suffix)
+    pnid = _pnid(suffix)
     client, product = await _seed(
         replay_session, phone=phone, pnid=pnid,
         product_sku="CP001", product_name="Kanjivaram Saree", price=8400.0,
@@ -335,16 +331,73 @@ async def test_s5_cross_product_question_mid_order(replay_http, replay_session):
         customer_name="Rekha",
         # delivery_address pending
     )
+    return phone, pnid, conv_id
+
+
+@pytest.mark.asyncio
+async def test_s5_cross_product_question_mid_order(replay_http, replay_session):
+    """
+    FIX 4: Asking price of a different product mid-order answers the price
+    in one line and offers to switch the order to it, instead of re-asking
+    the original pinned slot. The active order is NOT switched until the
+    customer confirms (see test_s5b/test_s5c below).
+    """
+    phone, pnid, conv_id = await _seed_cross_product_scenario(replay_session, suffix="050001")
 
     await _msg(replay_http, phone, "give me price of Banarasi Saree?", pnid=pnid)
 
     conv = await _get_conv(replay_session, conv_id)
-    assert conv.pending_product_sku == "CP001", "active SKU must not switch on a question"
-    assert conv.current_stage == "order_collection", "stage must not change"
+    assert conv.pending_product_sku == "CP001", "active SKU must not switch on a mere question"
+    assert conv.current_stage == "awaiting_order_switch_confirm", (
+        "stage must move to the switch-confirm micro-stage, not stay in order_collection"
+    )
+    assert conv.interrupted_sku == "CP002", "named product SKU must be stashed for confirmation"
     reply = await _get_last_assistant_msg(replay_session, conv_id)
     assert "6,500" in reply or "6500" in reply or "banarasi" in reply.lower(), (
         f"reply should mention Banarasi Saree price, got: {reply!r}"
     )
+    assert "yes" in reply.lower() and "no" in reply.lower(), (
+        f"reply should offer to switch the order (Yes/No), got: {reply!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_s5b_cross_product_switch_confirmed(replay_http, replay_session):
+    """
+    Replying 'yes' to the switch-confirm prompt pins the newly-named
+    product, resets variant/qty slots, and starts slot-filling for it.
+    """
+    phone, pnid, conv_id = await _seed_cross_product_scenario(replay_session, suffix="050002")
+    await _msg(replay_http, phone, "give me price of Banarasi Saree?", pnid=pnid)
+
+    await _msg(replay_http, phone, "yes", pnid=pnid)
+
+    conv = await _get_conv(replay_session, conv_id)
+    assert conv.pending_product_sku == "CP002", "confirming 'yes' must switch the pinned SKU"
+    assert conv.current_stage == "order_collection", "must return to order_collection to fill slots"
+    assert conv.interrupted_sku is None, "interrupted_sku must be cleared after resolution"
+    assert not conv.pending_order_quantity, "quantity slot must be reset for the new product"
+    reply = await _get_last_assistant_msg(replay_session, conv_id)
+    assert "banarasi" in reply.lower(), f"reply should confirm/ask about Banarasi Saree, got: {reply!r}"
+
+
+@pytest.mark.asyncio
+async def test_s5c_cross_product_switch_declined(replay_http, replay_session):
+    """
+    Replying 'no' to the switch-confirm prompt keeps the original pinned
+    product/slots untouched and re-asks the slot that was pending before
+    the aside-question interrupted it.
+    """
+    phone, pnid, conv_id = await _seed_cross_product_scenario(replay_session, suffix="050003")
+    await _msg(replay_http, phone, "give me price of Banarasi Saree?", pnid=pnid)
+
+    await _msg(replay_http, phone, "no", pnid=pnid)
+
+    conv = await _get_conv(replay_session, conv_id)
+    assert conv.pending_product_sku == "CP001", "declining must keep the original pinned SKU"
+    assert conv.current_stage == "order_collection", "must return to order_collection"
+    assert conv.interrupted_sku is None, "interrupted_sku must be cleared after resolution"
+    assert conv.pending_order_quantity == 2, "original slots must be untouched"
 
 
 # ---------------------------------------------------------------------------

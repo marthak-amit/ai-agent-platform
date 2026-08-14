@@ -27,6 +27,14 @@ ENGLISH_TEMPLATES: dict[str, str] = {
     "ask_color": "Colour? {colors}",
     "ask_size": "Size? {sizes}",
     "ask_material": "Material? {materials}",
+    "ask_variant_mode": "Got it, {color_size}. Same for all {n}, or different for each? (Same/Different)",
+    "ask_cart_item_color": "Item {item_num} — which color? Available: {colors}",
+    "ask_cart_item_size": "Item {item_num} — which size? Available: {sizes}",
+    "ask_cart_item_qty": "How many of {color_size}? ({remaining} left to assign)",
+    "ask_cart_breakdown": "And the remaining {remaining} — give me the breakdown, e.g. '30 blue M, 37 green S'",
+    "ask_cart_breakdown_confirm": "That's {breakdown}, correct?",
+    "cart_breakdown_mismatch": "Total in your breakdown is {sum}, you said {remaining} remaining. Please recheck.",
+    "cart_breakdown_invalid_variant": "'{invalid}' isn't a variant we carry. Valid colors: {colors}. Valid sizes: {sizes}.",
     "out_of_stock_combo": "{combo} is sold out. Another {last_attr}?",
     "cross_sell": "You also looked at {name} (₹{price}). Add it too? (yes/no)",
     "ask_payment_method": "How would you like to pay — UPI{cod_option}?",
@@ -98,6 +106,22 @@ ENGLISH_TEMPLATES: dict[str, str] = {
         "2️⃣ Add {cs_name} ({cs_price}) too\n"
         "3️⃣ Cancel"
     ),
+    "cart_order_summary": (
+        "We currently accept payments via UPI only.\n\n"
+        "✅ Order Summary\n"
+        "━━━━━━━━━━━━━━━\n"
+        "{items_block}\n"
+        "Total: {total}\n"
+        "👤 {name}\n"
+        "📍 {address}\n"
+        "💳 {payment}\n"
+        "🚚 Delivery in {delivery_time}\n"
+        "━━━━━━━━━━━━━━━\n"
+        "Reply:\n"
+        "1️⃣ Confirm & pay\n"
+        "2️⃣ Add another item\n"
+        "3️⃣ Cancel"
+    ),
     "order_confirmed": "Order confirmed! ✅ {qty} × {product} = {total}. Delivery in {delivery_time}.",
     "order_confirmed_cod": (
         "🎉 Your order has been placed successfully! ✅\n"
@@ -109,6 +133,22 @@ ENGLISH_TEMPLATES: dict[str, str] = {
     "order_confirmed_paid": (
         "🎉 Your order has been placed successfully! ✅\n"
         "📦 {product} {variant_part}× {qty} = {total}\n"
+        "🚚 Delivery in {delivery_time}\n\n"
+        "Thank you for shopping with us! 😊\n"
+        "{catalogue_line}"
+    ),
+    "order_confirmed_cod_cart": (
+        "🎉 Your order has been placed successfully! ✅\n"
+        "{items_block}\n"
+        "Total: {total}\n"
+        "🚚 Delivery in {delivery_time}\n\n"
+        "Thank you for shopping with us! 😊\n"
+        "{catalogue_line}"
+    ),
+    "order_confirmed_paid_cart": (
+        "🎉 Your order has been placed successfully! ✅\n"
+        "{items_block}\n"
+        "Total: {total}\n"
         "🚚 Delivery in {delivery_time}\n\n"
         "Thank you for shopping with us! 😊\n"
         "{catalogue_line}"
@@ -184,6 +224,14 @@ HINDI_TEMPLATES: dict[str, str] = {
     "ask_color": "Color? {colors}",
     "ask_size": "Size? {sizes}",
     "ask_material": "Material? {materials}",
+    "ask_variant_mode": "Theek hai, {color_size}. Sabhi {n} same chahiye, ya alag alag? (Same/Different)",
+    "ask_cart_item_color": "Item {item_num} — kaunsa color? Available: {colors}",
+    "ask_cart_item_size": "Item {item_num} — kaunsa size? Available: {sizes}",
+    "ask_cart_item_qty": "{color_size} ke kitne? ({remaining} baaki hain)",
+    "ask_cart_breakdown": "Aur baaki {remaining} ka breakdown batao — jaise '30 blue M, 37 green S'",
+    "ask_cart_breakdown_confirm": "Yeh hai {breakdown}, sahi hai?",
+    "cart_breakdown_mismatch": "Aapke breakdown ka total {sum} hai, aapne {remaining} bataya tha. Please recheck karein.",
+    "cart_breakdown_invalid_variant": "'{invalid}' hamare paas nahi hai. Valid colors: {colors}. Valid sizes: {sizes}.",
     "out_of_stock_combo": "{combo} sold out. Koi aur {last_attr}?",
     "cross_sell": "Aapne {name} (₹{price}) bhi dekha tha. Isko bhi add karein? (haan/nahi)",
     "ask_payment_method": "Aap UPI se denge{cod_option}?",
@@ -255,6 +303,22 @@ HINDI_TEMPLATES: dict[str, str] = {
         "2️⃣ {cs_name} ({cs_price}) bhi add karein\n"
         "3️⃣ Cancel"
     ),
+    "cart_order_summary": (
+        "Hum sirf UPI se payment accept karte hain.\n\n"
+        "✅ Order Summary\n"
+        "━━━━━━━━━━━━━━━\n"
+        "{items_block}\n"
+        "Total: {total}\n"
+        "👤 {name}\n"
+        "📍 {address}\n"
+        "💳 {payment}\n"
+        "🚚 Delivery in {delivery_time}\n"
+        "━━━━━━━━━━━━━━━\n"
+        "Reply karein:\n"
+        "1️⃣ Confirm & pay\n"
+        "2️⃣ Ek aur item add karein\n"
+        "3️⃣ Cancel"
+    ),
     "order_confirmed": "Order confirm ho gaya! ✅ {qty} × {product} = {total}. {delivery_time} mein delivery.",
     "order_confirmed_cod": (
         "🎉 Aapka order place ho gaya! ✅\n"
@@ -266,6 +330,22 @@ HINDI_TEMPLATES: dict[str, str] = {
     "order_confirmed_paid": (
         "🎉 Aapka order place ho gaya! ✅\n"
         "📦 {product} {variant_part}× {qty} = {total}\n"
+        "🚚 Delivery in {delivery_time}\n\n"
+        "Shopping karne ke liye shukriya! 😊\n"
+        "{catalogue_line}"
+    ),
+    "order_confirmed_cod_cart": (
+        "🎉 Aapka order place ho gaya! ✅\n"
+        "{items_block}\n"
+        "Total: {total}\n"
+        "🚚 Delivery in {delivery_time}\n\n"
+        "Shopping karne ke liye shukriya! 😊\n"
+        "{catalogue_line}"
+    ),
+    "order_confirmed_paid_cart": (
+        "🎉 Aapka order place ho gaya! ✅\n"
+        "{items_block}\n"
+        "Total: {total}\n"
         "🚚 Delivery in {delivery_time}\n\n"
         "Shopping karne ke liye shukriya! 😊\n"
         "{catalogue_line}"
@@ -342,6 +422,14 @@ GUJARATI_TEMPLATES: dict[str, str] = {
     "ask_color": "Color? {colors}",
     "ask_size": "Size? {sizes}",
     "ask_material": "Material? {materials}",
+    "ask_variant_mode": "Bhalu, {color_size}. Badha {n} same joiye, ke alag alag? (Same/Different)",
+    "ask_cart_item_color": "Item {item_num} — kayo color? Available: {colors}",
+    "ask_cart_item_size": "Item {item_num} — kayo size? Available: {sizes}",
+    "ask_cart_item_qty": "{color_size} na ketla? ({remaining} baaki chhe)",
+    "ask_cart_breakdown": "Ane baaki {remaining} nu breakdown aapo — jem ke '30 blue M, 37 green S'",
+    "ask_cart_breakdown_confirm": "Aa che {breakdown}, barabar chhe?",
+    "cart_breakdown_mismatch": "Tamara breakdown no total {sum} chhe, tame {remaining} kahyu hatu. Please recheck karo.",
+    "cart_breakdown_invalid_variant": "'{invalid}' amara paase nathi. Valid colors: {colors}. Valid sizes: {sizes}.",
     "out_of_stock_combo": "{combo} sold out. Bijo {last_attr}?",
     "cross_sell": "Tamey {name} (₹{price}) joi hatu. Ene pan add karvu chhe? (ha/na)",
     "ask_payment_method": "Kem bharvu chhe — UPI{cod_option}?",
@@ -413,6 +501,22 @@ GUJARATI_TEMPLATES: dict[str, str] = {
         "2️⃣ {cs_name} ({cs_price}) pan add karo\n"
         "3️⃣ Cancel"
     ),
+    "cart_order_summary": (
+        "Hum sirf UPI thi payment accept karie chhe.\n\n"
+        "✅ Order Summary\n"
+        "━━━━━━━━━━━━━━━\n"
+        "{items_block}\n"
+        "Total: {total}\n"
+        "👤 {name}\n"
+        "📍 {address}\n"
+        "💳 {payment}\n"
+        "🚚 Delivery in {delivery_time}\n"
+        "━━━━━━━━━━━━━━━\n"
+        "Reply karo:\n"
+        "1️⃣ Confirm & pay\n"
+        "2️⃣ Bijo item add karo\n"
+        "3️⃣ Cancel"
+    ),
     "order_confirmed": "Order confirm thai gayu! ✅ {qty} × {product} = {total}. {delivery_time} maa delivery.",
     "order_confirmed_cod": (
         "🎉 Tamaro order place thai gayu! ✅\n"
@@ -424,6 +528,22 @@ GUJARATI_TEMPLATES: dict[str, str] = {
     "order_confirmed_paid": (
         "🎉 Tamaro order place thai gayu! ✅\n"
         "📦 {product} {variant_part}× {qty} = {total}\n"
+        "🚚 Delivery in {delivery_time}\n\n"
+        "Shopping karva mate aabhar! 😊\n"
+        "{catalogue_line}"
+    ),
+    "order_confirmed_cod_cart": (
+        "🎉 Tamaro order place thai gayu! ✅\n"
+        "{items_block}\n"
+        "Total: {total}\n"
+        "🚚 Delivery in {delivery_time}\n\n"
+        "Shopping karva mate aabhar! 😊\n"
+        "{catalogue_line}"
+    ),
+    "order_confirmed_paid_cart": (
+        "🎉 Tamaro order place thai gayu! ✅\n"
+        "{items_block}\n"
+        "Total: {total}\n"
         "🚚 Delivery in {delivery_time}\n\n"
         "Shopping karva mate aabhar! 😊\n"
         "{catalogue_line}"

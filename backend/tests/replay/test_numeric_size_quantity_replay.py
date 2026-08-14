@@ -154,6 +154,10 @@ async def test_numeric_size_then_quantity_orders_correct_amount(
         f"expected qty 2, got {conv.pending_order_quantity}"
     )
 
+    # Phase 1 cart engine — qty > 1 on a variant product asks "same or
+    # different?" before the summary is shown.
+    await send_message(replay_http, phone, "same")
+
     await send_message(replay_http, phone, "yes")  # confirm summary
 
     orders = await _orders(replay_session, conv_id)
