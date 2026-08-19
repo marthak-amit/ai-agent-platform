@@ -142,6 +142,34 @@ pip install -r requirements.txt
 
 This downloads and installs all the Python libraries the backend needs (FastAPI, SQLAlchemy, Google Gemini SDK, etc.). Takes 1–3 minutes on first run.
 
+If `pip install` fails with an `externally-managed-environment` error (this happens outside the venv, e.g. on Homebrew-managed system Python), install the one affected package directly instead:
+
+```bash
+pip install pytesseract --break-system-packages
+```
+
+---
+
+### Step 5b — Install the Tesseract OCR binary (macOS)
+
+`pytesseract` (in `requirements.txt`) is only a thin Python wrapper — it calls out to a real `tesseract` binary that pip does **not** install. On macOS, install it via Homebrew:
+
+```bash
+brew install tesseract
+```
+
+Verify it installed correctly and is on your PATH:
+
+```bash
+tesseract --version
+```
+
+You should see version output like `tesseract 5.x.x`. If instead you get `command not found`, Homebrew's bin directory isn't on your PATH — check `brew --prefix`/bin is in your shell profile.
+
+The backend also checks this automatically on startup (`app/services/ocr_service.check_tesseract_installed()`, called from `main.py`'s startup checks) and logs a `CRITICAL` line with these same instructions if the binary is missing — watch for it in the `uvicorn` startup logs.
+
+In production (Railway), the binary is installed via `apt-get install tesseract-ocr` in `backend/Dockerfile` — no action needed there, it's already part of the image build.
+
 ---
 
 ### Step 6 — Set up your environment variables (.env file)

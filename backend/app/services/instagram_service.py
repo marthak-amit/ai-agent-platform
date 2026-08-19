@@ -111,6 +111,60 @@ async def _raw_send_quick_replies(
         return response.status_code == 200
 
 
+async def _raw_send_generic_template(
+    ig_user_id: str, recipient_igsid: str, elements: list[dict]
+) -> bool:
+    """
+    Send an IG Generic Template (carousel) message — up to 10 product cards,
+    each with an image, title, subtitle, and a postback button.
+
+    Bool-return, non-raising — same convention as _raw_send_quick_replies
+    (as opposed to _raw_send_image/_raw_send_dm, which raise) so callers can
+    fall back to plain text cleanly on any failure.
+
+    Args:
+        ig_user_id:      The Instagram Business Account ID.
+        recipient_igsid: The Instagram-Scoped ID of the message recipient.
+        elements:        List of ≤10 dicts: {"title", "subtitle", "image_url"
+                         (optional), "buttons": [{"type": "postback",
+                         "title": str, "payload": str}]}.
+
+    Returns:
+        True if Meta accepted the message (HTTP 200), False otherwise.
+    """
+    settings = get_settings()
+    url = f"{META_API_BASE_URL}/{META_API_VERSION}/{ig_user_id}/messages"
+
+    headers = {
+        "Authorization": f"Bearer {settings.instagram_access_token}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "recipient": {"id": recipient_igsid},
+        "message": {
+            "attachment": {
+                "type": "template",
+                "payload": {
+                    "template_type": "generic",
+                    "elements": elements[:10],
+                },
+            }
+        },
+        "messaging_type": "RESPONSE",
+    }
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.post(url, headers=headers, json=payload)
+        if response.status_code != 200:
+            logger.warning(
+                "send_generic_template failed %s: %s",
+                response.status_code,
+                response.text,
+            )
+        return response.status_code == 200
+
+
 async def _raw_send_image(ig_user_id: str, recipient_igsid: str, image_url: str) -> dict:
     """
     Send a product image (by public URL) to an Instagram user.

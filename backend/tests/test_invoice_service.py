@@ -170,13 +170,46 @@ def test_generate_order_invoice_bad_logo_bytes_does_not_raise():
 
 # ── save_order_invoice_pdf ─────────────────────────────────────────────────────
 
-def test_save_order_invoice_pdf_writes_file_and_returns_url(tmp_path, monkeypatch):
-    """save_order_invoice_pdf writes the PDF to disk and returns an absolute URL."""
+def test_save_order_invoice_pdf_uploads_to_r2_when_configured():
+    """When R2 is configured, save_order_invoice_pdf uploads there and skips local disk."""
+    with patch(
+        "app.services.storage_service.upload_file",
+        return_value="https://media.example.com/invoices/order_invoice_42.pdf",
+    ) as mock_upload:
+        url = invoice_service.save_order_invoice_pdf(42, b"%PDF-fake-content")
+
+    assert url == "https://media.example.com/invoices/order_invoice_42.pdf"
+    mock_upload.assert_called_once_with(
+        "invoices/order_invoice_42.pdf", b"%PDF-fake-content", "application/pdf"
+    )
+
+
+def test_save_order_invoice_pdf_falls_back_to_local_disk_without_r2(tmp_path, monkeypatch):
+    """Without R2 configured, save_order_invoice_pdf writes to disk and returns an absolute URL."""
     monkeypatch.setattr(invoice_service, "_INVOICES_DIR", str(tmp_path))
 
     settings = MagicMock(backend_public_url="https://app.example.com")
-    with patch("app.services.invoice_service.get_settings", return_value=settings):
+    with (
+        patch("app.services.storage_service.upload_file", return_value=None),
+        patch("app.services.invoice_service.get_settings", return_value=settings),
+    ):
         url = invoice_service.save_order_invoice_pdf(42, b"%PDF-fake-content")
 
     assert url == "https://app.example.com/invoices/order_invoice_42.pdf"
     assert (tmp_path / "order_invoice_42.pdf").read_bytes() == b"%PDF-fake-content"
+
+
+def test_save_order_invoice_pdf_warns_when_backend_public_url_unset(tmp_path, monkeypatch, caplog):
+    """A relative invoice link (the actual cause of the WhatsApp 400) is now logged loudly."""
+    monkeypatch.setattr(invoice_service, "_INVOICES_DIR", str(tmp_path))
+
+    settings = MagicMock(backend_public_url="")
+    with (
+        patch("app.services.storage_service.upload_file", return_value=None),
+        patch("app.services.invoice_service.get_settings", return_value=settings),
+        caplog.at_level("WARNING"),
+    ):
+        url = invoice_service.save_order_invoice_pdf(42, b"%PDF-fake-content")
+
+    assert url == "/invoices/order_invoice_42.pdf"
+    assert "BACKEND_PUBLIC_URL is unset" in caplog.text

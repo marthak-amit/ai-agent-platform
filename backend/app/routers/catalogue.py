@@ -15,18 +15,17 @@ Endpoints:
 """
 
 import logging
-import os
-import uuid
 from typing import Annotated, Optional, Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from PIL import UnidentifiedImageError
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.models.client import Client
 from app.routers.auth import get_current_client, require_permission
-from app.services import catalogue_service
+from app.services import catalogue_service, storage_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(
@@ -35,7 +34,6 @@ router = APIRouter(
     dependencies=[Depends(require_permission("catalog_edit"))],
 )
 
-UPLOADS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB
 
@@ -187,23 +185,28 @@ class StockLogOut(BaseModel):
 
 @router.post("/products/upload-image", status_code=status.HTTP_200_OK)
 async def upload_product_image(
+    current_client: Annotated[Client, Depends(get_current_client)],
     file: UploadFile = File(...),
-    current_client: Client = Depends(get_current_client),
+    product_id: Optional[int] = Form(default=None),
 ) -> dict:
     """
-    Upload a product image and return its public URL.
+    Upload a product (or variant) image, compress it, and return its public URL.
 
-    Saves to backend/uploads/ served as /uploads/{filename} via StaticFiles.
+    Uploaded before the product form is saved, so product_id is only known
+    when editing an existing product/variant — new-product uploads are
+    stored under an "unassigned" prefix. Stores to R2 when configured
+    (see storage_service), else falls back to local /uploads/.
 
     Args:
-        file:           Uploaded image file (JPEG, PNG, WebP, GIF; max 5 MB).
         current_client: JWT-authenticated Client.
+        file:           Uploaded image file (JPEG, PNG, WebP, GIF; max 5 MB).
+        product_id:     Parent product ID, if the product already exists.
 
     Returns:
-        {"url": "/uploads/{filename}"}
+        {"url": "<public image url>"}
 
     Raises:
-        HTTPException 400: If file type is not allowed or exceeds size limit.
+        HTTPException 400: If file type/size is invalid or isn't a readable image.
     """
     if file.content_type not in ALLOWED_IMAGE_TYPES:
         raise HTTPException(
@@ -218,16 +221,16 @@ async def upload_product_image(
             detail="Image exceeds 5 MB limit.",
         )
 
-    ext = (file.filename or "image.jpg").rsplit(".", 1)[-1].lower()
-    filename = f"{current_client.id}_{uuid.uuid4().hex[:12]}.{ext}"
+    try:
+        url = storage_service.upload_product_image(current_client.id, contents, product_id)
+    except UnidentifiedImageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Could not read this image file. Please upload a valid JPEG/PNG/WebP photo.",
+        ) from exc
 
-    os.makedirs(UPLOADS_DIR, exist_ok=True)
-    filepath = os.path.join(UPLOADS_DIR, filename)
-    with open(filepath, "wb") as f:
-        f.write(contents)
-
-    logger.info("Image uploaded: %s by client %d", filename, current_client.id)
-    return {"url": f"/uploads/{filename}"}
+    logger.info("Image uploaded by client %d (product_id=%s): %s", current_client.id, product_id, url)
+    return {"url": url}
 
 
 # ── Product CRUD ──────────────────────────────────────────────────────────────

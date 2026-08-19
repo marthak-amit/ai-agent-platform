@@ -270,6 +270,45 @@ def test_is_not_order_aside_question():
         assert not _is_order_aside_question(text), f"should NOT detect as question: {text!r}"
 
 
+def test_is_image_request():
+    from app.services.order_pipeline import _is_image_request
+
+    requests = [
+        "send image",
+        "give me images",
+        "show photo",
+        "picture please",
+        "SEND ME A PHOTO",
+        "snap please",
+        "Image",  # bare single-word
+        "image",
+        "Cna you please share images",  # typo elsewhere in the message, keyword intact
+        "pic",  # bare single-word "pic" — no digit context, must be caught
+        "send pic",
+        "can you send pics?",
+        "Pics please",
+    ]
+    for text in requests:
+        assert _is_image_request(text), f"should detect as image request: {text!r}"
+
+
+def test_is_not_image_request():
+    from app.services.order_pipeline import _is_image_request
+
+    non_requests = [
+        "what is the price",
+        "what topic is this",  # "pic" substring inside "topic" — must not false-positive
+        "100 pic leva che",  # Gujarati-Roman "want 100 pieces" — "pic" means "piece" here
+        "5pics",  # no space, still digit-adjacent — quantity, not a photo request
+        "Blue",
+        "M",
+        "42 MG Road Pune",
+        "how much delivery charges?",
+    ]
+    for text in non_requests:
+        assert not _is_image_request(text), f"should NOT detect as image request: {text!r}"
+
+
 def test_is_simple_ack():
     from app.services.order_pipeline import _is_simple_ack
 

@@ -163,9 +163,10 @@ export async function deleteProduct(id: number): Promise<void> {
   await api.delete(`/catalogue/products/${id}`);
 }
 
-export async function uploadProductImage(file: File): Promise<string> {
+export async function uploadProductImage(file: File, productId?: number): Promise<string> {
   const form = new FormData();
   form.append("file", file);
+  if (productId != null) form.append("product_id", String(productId));
   const { data } = await api.post<{ url: string }>("/catalogue/products/upload-image", form, {
     headers: { "Content-Type": "multipart/form-data" },
   });

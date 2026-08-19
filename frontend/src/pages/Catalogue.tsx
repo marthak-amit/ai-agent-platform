@@ -1024,7 +1024,7 @@ export default function Catalogue() {
     try {
       let imageUrl = form.image_url;
       if (imageFile) {
-        try { imageUrl = await uploadProductImage(imageFile); }
+        try { imageUrl = await uploadProductImage(imageFile, modal === "edit" ? selected?.id : undefined); }
         catch { setFormError("Image upload failed. Product saved without image."); imageUrl = form.image_url; }
       }
 

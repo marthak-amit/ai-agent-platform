@@ -109,6 +109,28 @@ async def _stamp_optout_confirmed(db, customer) -> None:
 
 # ─── WhatsApp ────────────────────────────────────────────────────────────────
 
+async def send_typing_indicator(
+    wamid: str,
+    phone_number_id: str | None = None,
+) -> dict | None:
+    """
+    Mark an inbound WhatsApp message read and show "typing..." to its sender.
+
+    Bypasses send_gate.check_send() on purpose: this isn't a business-
+    initiated message, it's a read receipt + typing cue tied to a specific
+    inbound wamid the customer just sent us. Meta exempts it from the 24h
+    window, and it carries no opt-out/marketing content to police. Never
+    raises — a transport failure here must not affect the real reply.
+    """
+    try:
+        return await whatsapp_service._raw_send_typing_indicator(
+            wamid=wamid, phone_number_id=phone_number_id
+        )
+    except Exception as exc:
+        logger.debug("send_typing_indicator failed for wamid=%s: %s", wamid, exc)
+        return None
+
+
 async def send_text(
     to_phone_number: str,
     message_text: str,
@@ -332,6 +354,28 @@ async def ig_send_image(
         return None
     return await instagram_service._raw_send_image(
         ig_user_id=ig_user_id, recipient_igsid=recipient_igsid, image_url=image_url
+    )
+
+
+async def ig_send_generic_template(
+    ig_user_id: str,
+    recipient_igsid: str,
+    elements: list[dict],
+    *,
+    kind: MessageKind,
+    db=None,
+    client_id: int | None = None,
+    conversation_id: int | None = None,
+    customer=None,
+) -> bool:
+    """Gated IG Generic Template (carousel) send. Returns False if suppressed, rejected, or failed."""
+    decision, customer = await _gate(
+        db, client_id, recipient_igsid, kind, "instagram", conversation_id, customer,
+    )
+    if not decision.allowed:
+        return False
+    return await instagram_service._raw_send_generic_template(
+        ig_user_id=ig_user_id, recipient_igsid=recipient_igsid, elements=elements
     )
 
 

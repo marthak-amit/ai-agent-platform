@@ -126,12 +126,13 @@ def test_verify_signature_missing_prefix(mock_settings):
 @patch("app.services.order_pipeline.lead_service.tag_lead", new_callable=AsyncMock)
 @patch("app.services.order_pipeline.gemini_service.generate_reply", new_callable=AsyncMock)
 @patch("app.services.whatsapp_service._raw_send_text_message", new_callable=AsyncMock)
+@patch("app.services.whatsapp_service._raw_send_typing_indicator", new_callable=AsyncMock)
 @patch("app.services.order_pipeline._get_system_prompt", return_value=None)
 @patch("app.services.order_pipeline._get_catalogue_context", new_callable=AsyncMock)
 @patch("app.services.order_pipeline._record_usage", new_callable=AsyncMock)
 @patch("app.routers.webhook._get_client_by_phone_number_id", new_callable=AsyncMock)
 def test_receive_message_success(
-    mock_get_client, mock_usage, mock_catalogue, mock_prompt, mock_send, mock_gemini, mock_lead, mock_update_stage, mock_save, mock_history, mock_conv, mock_db, client
+    mock_get_client, mock_usage, mock_catalogue, mock_prompt, mock_typing, mock_send, mock_gemini, mock_lead, mock_update_stage, mock_save, mock_history, mock_conv, mock_db, client
 ):
     """Valid signed payload triggers full pipeline and returns 200."""
     mock_get_client.return_value = MagicMock(

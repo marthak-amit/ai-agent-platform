@@ -32,7 +32,8 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.services import billing_service, catalogue_service, conversation_flow, conversation_service, customer_service
 from app.services import cost_log, escalation_service, gemini_service, lead_service, order_service, order_state_machine
-from app.services import language_service as _lang_svc, usage_service, vision_service, voice_service
+from app.services import language_service as _lang_svc, usage_service, voice_service
+from app.services import ocr_service, storage_service
 from app.services.delivery_service import get_delivery_time_str
 from app.services.language_templates import format_price, get_template
 from app.services.order_state_machine import RenderError
@@ -76,6 +77,16 @@ class ListOptionSpec:
 
 
 @dataclass
+class CarouselItemSpec:
+    """One product card in an Instagram Generic Template carousel."""
+
+    sku: str
+    title: str
+    subtitle: str
+    image_url: str | None = None
+
+
+@dataclass
 class PipelineResult:
     """
     Channel-neutral outcome of processing one inbound message.
@@ -105,6 +116,17 @@ class PipelineResult:
                   text/buttons/list — mirrors webhook.py's original deferred
                   product-image queue (sent after the text reply so a failed
                   image send never blocks/aborts the text).
+    pre_images:   List of (image_url, caption) tuples to send BEFORE the main
+                  text/buttons/list — the inverse of `images`, used when a
+                  photo must go out first (e.g. an explicit "send me a
+                  photo" request) followed by the text reply as a fully
+                  separate message.
+    carousel_items: Instagram-only — product cards (image + name + price,
+                  one tappable "Select" postback per card) for a Generic
+                  Template carousel, used instead of buttons/list_options
+                  when 2+ products matched (WhatsApp has no image-bearing
+                  equivalent without a Meta Commerce catalog, so this is
+                  never set when is_whatsapp=True).
     nonce:        New button nonce to persist, if the adapter needs to know it.
     skip_send:    True when the pipeline already decided nothing should be
                   sent to the customer at all (distinct from text=None with a
@@ -125,6 +147,8 @@ class PipelineResult:
     list_header: str | None = None
     list_button_text: str | None = None
     images: list[tuple[str, str]] | None = None
+    pre_images: list[tuple[str, str | None]] | None = None
+    carousel_items: list[CarouselItemSpec] | None = None
     nonce: str | None = None
     skip_send: bool = False
     pre_texts: list[str] | None = None
@@ -301,6 +325,27 @@ def _is_availability_question(text: str) -> bool:
     if "available" in lower or "availability" in lower or "in stock" in lower or "out of stock" in lower:
         return True
     return lower.startswith("do you have") or lower.startswith("is there")
+
+
+# Word-boundary match (not a plain substring frozenset like
+# _ORDER_QUESTION_KEYWORDS).
+_IMAGE_REQUEST_RE = re.compile(
+    r"\b(image|images|photo|photos|picture|pictures|snap|snaps)\b",
+    re.IGNORECASE,
+)
+
+# "pic"/"pics" matched separately, guarded against a preceding number: in
+# Gujarati-Roman/Hindi-Roman quantity phrasing "pic" means "piece" (e.g.
+# "100 pic leva che" = "want to take 100 pieces"), so a bare word-boundary
+# match would collide with a quantity slot answer. Only counts as an image
+# request when NOT immediately preceded by a digit (with or without a
+# space) — "pic", "send pic", "pics please" match; "100 pic", "5pics" don't.
+_PIC_WORD_RE = re.compile(r"(?<!\d)(?<!\d\s)\b(pic|pics)\b", re.IGNORECASE)
+
+
+def _is_image_request(text: str) -> bool:
+    """True when the message is asking to be sent a product photo/image."""
+    return bool(_IMAGE_REQUEST_RE.search(text)) or bool(_PIC_WORD_RE.search(text))
 
 
 # Common saree/garment colour words used to spot a colour named in an
@@ -965,10 +1010,14 @@ async def run_stale_paid_guard(
         return None
 
     _pg_lang = getattr(conv, "last_customer_language", None) or "english"
-    if _pg_lang in ("hindi_roman", "hindi_devanagari", "hinglish"):
+    if _pg_lang in ("hindi_roman", "hinglish"):
         _pg_reply = "Woh order cancel ho chuka tha. Kya aap naya order dena chahte hain?"
-    elif _pg_lang in ("gujarati_roman", "gujarati_script"):
+    elif _pg_lang == "hindi_devanagari":
+        _pg_reply = "वह ऑर्डर पहले ही कैंसल हो चुका था। क्या आप नया ऑर्डर देना चाहते हैं?"
+    elif _pg_lang == "gujarati_roman":
         _pg_reply = "Pehelo order cancel thai gayo hato. Navo order karva maango chho?"
+    elif _pg_lang == "gujarati_script":
+        _pg_reply = "પહેલો ઓર્ડર કેન્સલ થઈ ગયો હતો. નવો ઓર્ડર કરવા માંગો છો?"
     else:
         _pg_reply = "That order was already cancelled — want to start a new one?"
     logger.info(
@@ -1110,10 +1159,14 @@ async def run_cancel_in_payment_guard(
         logger.error("Payment-stage cancel stage reset: %s", exc)
 
     _pc_lang = getattr(conv, "last_customer_language", None) or "english"
-    if _pc_lang in ("hindi_roman", "hindi_devanagari", "hinglish"):
+    if _pc_lang in ("hindi_roman", "hinglish"):
         _pc_reply = "Order cancel kar diya gaya. ✅ Kya main kuch aur help kar sakta hoon?"
-    elif _pc_lang in ("gujarati_roman", "gujarati_script"):
+    elif _pc_lang == "hindi_devanagari":
+        _pc_reply = "ऑर्डर कैंसल कर दिया गया। ✅ क्या मैं कुछ और मदद कर सकता हूँ?"
+    elif _pc_lang == "gujarati_roman":
         _pc_reply = "Order cancel thai gayu. ✅ Koi biju kaam hoy to kaho!"
+    elif _pc_lang == "gujarati_script":
+        _pc_reply = "ઓર્ડર કેન્સલ થઈ ગયું. ✅ કોઈ બીજું કામ હોય તો કહો!"
     else:
         _pc_reply = "Order cancelled. ✅ Anything else I can help you with?"
     logger.info(
@@ -1228,15 +1281,25 @@ async def run_duplicate_payment_word_guard(
     ):
         return None
     _prev_lang = getattr(conv, "last_customer_language", "english") or "english"
-    if _prev_lang in ("hindi_roman", "hinglish", "hindi_devanagari"):
+    if _prev_lang in ("hindi_roman", "hinglish"):
         _payment_dup_reply = (
             "Aapka order confirm ho chuka hai ✅ Delivery 3-5 business days mein hogi. "
             "Koi aur help chahiye? 🙏"
         )
-    elif _prev_lang in ("gujarati_roman", "gujarati_script"):
+    elif _prev_lang == "hindi_devanagari":
+        _payment_dup_reply = (
+            "आपका ऑर्डर कन्फर्म हो चुका है ✅ डिलीवरी 3-5 बिज़नेस डेज़ में होगी। "
+            "कोई और मदद चाहिए? 🙏"
+        )
+    elif _prev_lang == "gujarati_roman":
         _payment_dup_reply = (
             "Tamaro order confirm thai gayo chhe ✅ Delivery 3-5 business days maa thase. "
             "Koi madad joiye? 🙏"
+        )
+    elif _prev_lang == "gujarati_script":
+        _payment_dup_reply = (
+            "તમારો ઓર્ડર કન્ફર્મ થઈ ગયો છે ✅ ડિલિવરી 3-5 બિઝનેસ ડેઝમાં થશે. "
+            "કોઈ મદદ જોઈએ? 🙏"
         )
     else:
         _payment_dup_reply = (
@@ -1288,6 +1351,9 @@ async def run_switch_confirm_guard(
         "yes", "haan", "ha", "han", "ok", "okay", "sure", "y", "yep", "yeah",
         "bilkul", "हाँ", "ہاں",
     }
+    # Set only in the decline/unclear branch below when the reply turns out
+    # to be a genuine new question rather than a decline.
+    _sc_answer = ""
 
     if _confirm_yes and _candidate_sku:
         try:
@@ -1295,6 +1361,14 @@ async def run_switch_confirm_guard(
             conv.pending_product_sku = _candidate_sku
             await conversation_service.update_order_field(db, conv.id, "interrupted_sku", None)
             conv.interrupted_sku = None
+            # This guard runs BEFORE run_sku_and_name_pinning (and its
+            # multi-choice ladder) on this turn — an open "which one?" list
+            # from an earlier, unrelated inquiry would otherwise survive this
+            # re-pin untouched, since the ladder never gets a chance to see
+            # (and clear) it this turn.
+            if getattr(conv, "pending_choice_skus", None):
+                await conversation_service.set_pending_choice_skus(db, conv.id, None)
+                conv.pending_choice_skus = None
             await conversation_service.update_stage(db, conv.id, "payment")
             conv.current_stage = "payment"
         except Exception as exc:
@@ -1310,10 +1384,72 @@ async def run_switch_confirm_guard(
         except Exception as exc:
             logger.error("Switch-confirm no/other error: %s", exc)
         _render_action_sc = "reask_payment"
-        logger.info(
-            "Switch declined/unclear: conv=%s — kept pending_product_sku=%r",
-            conv.id, getattr(conv, "pending_product_sku", None),
-        )
+
+        # A reply that isn't yes/no but names a recognizable SKU/product
+        # (e.g. "PR10983 is available?") is a genuine new availability/aside
+        # question, not a decline — answering nothing and silently re-showing
+        # the payment prompt would swallow it. Mirrors
+        # run_order_switch_confirm_guard's identical guard for the
+        # order_collection-side switch offer.
+        _sc_pinned_sku = getattr(conv, "pending_product_sku", None)
+        _sc_named_product = None
+        _sc_not_found_label = None
+        if client:
+            try:
+                for _sc_sku in catalogue_service.extract_skus_from_text(user_text):
+                    if _sc_sku == _candidate_sku:
+                        continue
+                    _sc_match = await catalogue_service.find_product_by_sku(db, client.id, _sc_sku)
+                    if _sc_match is not None:
+                        _sc_named_product = _sc_match
+                        break
+                    _sc_not_found_label = _sc_sku
+                if _sc_named_product is None and _sc_not_found_label is None:
+                    _sc_all_prods = await catalogue_service.list_products(db, client.id)
+                    _sc_scored = catalogue_service.search_products_with_scores(
+                        _sc_all_prods, user_text, top_k=3
+                    )
+                    for _sc_sc, _sc_cp in _sc_scored:
+                        if _sc_sc >= 3 and getattr(_sc_cp, "sku", None) not in (_sc_pinned_sku, _candidate_sku):
+                            _sc_named_product = _sc_cp
+                            break
+            except Exception as _sc_exc:
+                logger.warning("Switch-confirm new-query lookup failed: %s", _sc_exc)
+
+        if _sc_named_product is None and _sc_not_found_label:
+            _sc_answer = f"Sorry, we don't carry {_sc_not_found_label}."
+        elif _sc_named_product is not None and _is_availability_question(user_text):
+            try:
+                _sc_target_vi = await catalogue_service.get_product_variant_info(db, _sc_named_product)
+            except Exception as _sc_vi_exc:
+                logger.warning("Switch-confirm new-query variant_info fetch failed: %s", _sc_vi_exc)
+                _sc_target_vi = {}
+            _sc_target_stock = (
+                None if getattr(_sc_named_product, "has_variants", False)
+                else (getattr(_sc_named_product, "stock", None) or 0)
+            )
+            _sc_answer = _build_availability_answer(
+                user_text, _sc_named_product, _sc_target_vi, _sc_target_stock,
+            )
+
+        if not _sc_answer and _sc_named_product is not None:
+            # Confident named-product match on a non-availability question
+            # (price, "do you have X?", etc.) — more specific than silence.
+            _sc_answer = (
+                f"{_sc_named_product.name} — ₹{int(getattr(_sc_named_product, 'price', 0) or 0):,}."
+            )
+
+        if _sc_answer:
+            logger.info(
+                "Switch-confirm new-query: conv=%s named=%s pinned=%s — answered, cancelled switch offer, "
+                "re-showing payment prompt",
+                conv.id, getattr(_sc_named_product, "sku", None), _sc_pinned_sku,
+            )
+        else:
+            logger.info(
+                "Switch declined/unclear: conv=%s — kept pending_product_sku=%r",
+                conv.id, getattr(conv, "pending_product_sku", None),
+            )
 
     try:
         reply = await _render_order_reply(
@@ -1324,6 +1460,8 @@ async def run_switch_confirm_guard(
     except RenderError as exc:
         logger.error("Switch-confirm render error: %s", exc)
         return PipelineResult(text=None, skip_send=True, status="render_error")
+    if _sc_answer:
+        reply = f"{_sc_answer}\n\n{reply}"
 
     try:
         await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
@@ -1347,9 +1485,14 @@ async def run_switch_confirm_guard(
 # instead of confusingly re-asking the ORIGINAL pinned slot. The candidate
 # SKU is stashed in interrupted_sku (the same field the payment-stage
 # run_switch_confirm_guard uses) under a dedicated micro-stage,
-# 'awaiting_order_switch_confirm' — distinct from payment's
-# 'awaiting_switch_confirm' since resolution must return to order_collection
-# slot-filling, not payment. This guard resolves that confirmation on the
+# 'awaiting_order_switch_confirm' (return stage: order_collection) or, when
+# the interrupt happened at the summary/confirm step instead,
+# 'awaiting_afc_switch_confirm' (return stage: awaiting_final_confirmation)
+# — both distinct from payment's 'awaiting_switch_confirm'. On decline,
+# each micro-stage resumes exactly where it was interrupted (re-ask the
+# pinned slot, or re-show the pending summary) instead of always dropping
+# back to order_collection.
+# This guard resolves the confirmation on the
 # customer's NEXT turn, entirely before SKU/name-pinning runs, so a bare
 # "yes"/"no" is never mistaken for a fresh SKU search or swallowed by the
 # browsing-stage interrupted_sku handler (run_sku_and_name_pinning).
@@ -1359,13 +1502,23 @@ async def run_order_switch_confirm_guard(
     db, conv, client, sender_phone: str, user_text: str, wamid: "str | None", record_usage,
 ) -> "PipelineResult | None":
     """
-    Resolve a pending cross-product order-switch confirmation prompt.
+    Resolve a pending cross-product order-switch confirmation prompt, raised
+    either from order_collection ('awaiting_order_switch_confirm') or from
+    the AFC summary/confirm step ('awaiting_afc_switch_confirm').
 
     Returns None (caller continues normal dispatch) whenever current_stage
-    isn't 'awaiting_order_switch_confirm' — i.e. on every ordinary turn.
+    is neither of those — i.e. on every ordinary turn.
     """
-    if (getattr(conv, "current_stage", None) or "") != "awaiting_order_switch_confirm":
+    _swg_origin_stage = getattr(conv, "current_stage", None) or ""
+    if _swg_origin_stage not in ("awaiting_order_switch_confirm", "awaiting_afc_switch_confirm"):
         return None
+    _swg_decline_stage = (
+        "awaiting_final_confirmation" if _swg_origin_stage == "awaiting_afc_switch_confirm"
+        else "order_collection"
+    )
+    _swg_decline_render_action = (
+        "show_summary" if _swg_origin_stage == "awaiting_afc_switch_confirm" else "ask_slot"
+    )
 
     _candidate_sku = getattr(conv, "interrupted_sku", None)
     _lang = getattr(conv, "last_customer_language", None) or "english"
@@ -1377,6 +1530,11 @@ async def run_order_switch_confirm_guard(
     _new_product = None
     if _confirm_yes and _candidate_sku and client:
         _new_product = await catalogue_service.find_product_by_sku(db, client.id, _candidate_sku)
+
+    # Set only in the decline/unclear branch below when the reply turns out
+    # to be a genuine new question rather than a decline; prepended to the
+    # re-ask reply after the branch so the render block stays shared.
+    _swg_answer = ""
 
     if _new_product is not None:
         # Reuse the NEW_PRODUCT re-pin primitive (see run_slot_state_machine's
@@ -1401,6 +1559,12 @@ async def run_order_switch_confirm_guard(
             ("pending_order_quantity", None), ("selected_color", None),
             ("selected_size", None), ("selected_material", None),
             ("summary_shown", False),
+            # This guard runs BEFORE run_sku_and_name_pinning (and its
+            # multi-choice ladder) on this turn — an open "which one?" list
+            # from an earlier, unrelated inquiry would otherwise survive this
+            # re-pin untouched, since the ladder never gets a chance to see
+            # (and clear) it this turn.
+            ("pending_choice_skus", None),
         ]
         for _rf, _rv in _reset_fields:
             try:
@@ -1424,21 +1588,27 @@ async def run_order_switch_confirm_guard(
             _variant_info = {}
         _next_slot = conversation_flow.get_next_required_slot(conv, _variant_info)
         _is_first_slot = True
+        _swg_render_action = "ask_slot"
         logger.info(
             "Cross-product switch confirmed: conv=%s → pending_product_sku=%s (was %s)",
             conv.id, _candidate_sku, _old_sku,
         )
     else:
-        # "No", an unclear reply, or the candidate no longer resolves — keep
-        # the original pinned product/slots untouched and simply re-ask the
-        # slot that was pending before the aside-question interrupted it.
+        # "No", an unclear reply, the candidate no longer resolves, or the
+        # customer asked a genuine new question instead of answering
+        # yes/no — in every case the switch offer is cancelled and the
+        # original pinned product/slots stay untouched. Resume wherever the
+        # switch offer interrupted (order_collection slot-filling, or the
+        # AFC pending summary) instead of always falling back to
+        # order_collection.
         try:
             await conversation_service.update_order_field(db, conv.id, "interrupted_sku", None)
             conv.interrupted_sku = None
-            await conversation_service.update_stage(db, conv.id, "order_collection")
-            conv.current_stage = "order_collection"
+            await conversation_service.update_stage(db, conv.id, _swg_decline_stage)
+            conv.current_stage = _swg_decline_stage
         except Exception as exc:
             logger.error("Cross-product switch-confirm no/other error: %s", exc)
+        _swg_render_action = _swg_decline_render_action
         _pinned_sku_reask = getattr(conv, "pending_product_sku", None)
         _pinned_product_reask = (
             await catalogue_service.find_product_by_sku(db, client.id, _pinned_sku_reask)
@@ -1454,14 +1624,85 @@ async def run_order_switch_confirm_guard(
             _variant_info = {}
         _next_slot = conversation_flow.get_next_required_slot(conv, _variant_info)
         _is_first_slot = False
-        logger.info(
-            "Cross-product switch declined/unclear: conv=%s — kept pending_product_sku=%r",
-            conv.id, _pinned_sku_reask,
-        )
+
+        # A reply that isn't yes/no but names a recognizable SKU/product
+        # (e.g. "PR10983 is available?") is a genuine new availability/aside
+        # question, not a decline — answering nothing and silently keeping
+        # the pinned SKU here would swallow it, the same swallow-new-query
+        # bug class already fixed for the multi-choice-open guard (mirrors
+        # its extract_skus_from_text / search_products_with_scores use, and
+        # FIX2/FIX4's availability-answer logic in run_slot_state_machine).
+        # Only a truly ambiguous reply (no SKU/product found either way)
+        # falls through to the plain decline/unclear re-ask below.
+        _swg_named_product = None
+        _swg_not_found_label = None
+        if client:
+            try:
+                for _swg_sku in catalogue_service.extract_skus_from_text(user_text):
+                    if _swg_sku == _candidate_sku:
+                        continue
+                    if _swg_sku == _pinned_sku_reask:
+                        _swg_named_product = _pinned_product_reask
+                        break
+                    _swg_match = await catalogue_service.find_product_by_sku(db, client.id, _swg_sku)
+                    if _swg_match is not None:
+                        _swg_named_product = _swg_match
+                        break
+                    _swg_not_found_label = _swg_sku
+                if _swg_named_product is None and _swg_not_found_label is None:
+                    _swg_all_prods = await catalogue_service.list_products(db, client.id)
+                    _swg_scored = catalogue_service.search_products_with_scores(
+                        _swg_all_prods, user_text, top_k=3
+                    )
+                    for _swg_sc, _swg_cp in _swg_scored:
+                        if _swg_sc >= 3 and getattr(_swg_cp, "sku", None) not in (_pinned_sku_reask, _candidate_sku):
+                            _swg_named_product = _swg_cp
+                            break
+            except Exception as _swg_exc:
+                logger.warning("Switch-offer new-query lookup failed: %s", _swg_exc)
+
+        if _swg_named_product is None and _swg_not_found_label:
+            # An explicit product code was named but isn't in the catalogue —
+            # say so directly rather than silently falling back to decline.
+            _swg_answer = f"Sorry, we don't carry {_swg_not_found_label}."
+        elif _swg_named_product is not None and _is_availability_question(user_text):
+            if _swg_named_product.sku == _pinned_sku_reask:
+                _swg_target_vi = _variant_info
+            else:
+                try:
+                    _swg_target_vi = await catalogue_service.get_product_variant_info(db, _swg_named_product)
+                except Exception as _swg_vi_exc:
+                    logger.warning("Switch-offer new-query variant_info fetch failed: %s", _swg_vi_exc)
+                    _swg_target_vi = {}
+            _swg_target_stock = (
+                None if getattr(_swg_named_product, "has_variants", False)
+                else (getattr(_swg_named_product, "stock", None) or 0)
+            )
+            _swg_answer = _build_availability_answer(
+                user_text, _swg_named_product, _swg_target_vi, _swg_target_stock,
+            )
+
+        if not _swg_answer and _swg_named_product is not None:
+            # Confident named-product match on a non-availability question
+            # (price, "do you have X?", etc.) — more specific than silence.
+            _swg_answer = (
+                f"{_swg_named_product.name} — ₹{int(getattr(_swg_named_product, 'price', 0) or 0):,}."
+            )
+
+        if _swg_answer:
+            logger.info(
+                "Switch-offer new-query: conv=%s named=%s pinned=%s — answered, cancelled offer, re-asking pinned slot",
+                conv.id, getattr(_swg_named_product, "sku", None), _pinned_sku_reask,
+            )
+        else:
+            logger.info(
+                "Cross-product switch declined/unclear: conv=%s — kept pending_product_sku=%r",
+                conv.id, _pinned_sku_reask,
+            )
 
     try:
         reply = await _render_order_reply(
-            action="ask_slot", conv=conv, db=db, client=client,
+            action=_swg_render_action, conv=conv, db=db, client=client,
             next_slot=_next_slot, variant_info=_variant_info, customer_profile=None,
             available_stock=None, declined_saved_address=False, lang=_lang,
             is_first_slot=_is_first_slot,
@@ -1469,6 +1710,9 @@ async def run_order_switch_confirm_guard(
     except RenderError as exc:
         logger.error("Cross-product switch-confirm render error: %s", exc)
         return PipelineResult(text=None, skip_send=True, status="render_error")
+
+    if _swg_answer:
+        reply = f"{_swg_answer}\n\n{reply}"
 
     try:
         await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
@@ -1817,6 +2061,10 @@ async def run_sku_and_name_pinning(
                             ("delivery_address", None),
                             ("payment_method", None),
                             ("summary_shown", False),
+                            # An open "which one?" list from an earlier,
+                            # unrelated inquiry must not survive an explicit
+                            # switch to a different SKU.
+                            ("pending_choice_skus", None),
                         ]
                         for _rf, _rv in _order_reset_fields:
                             try:
@@ -1868,6 +2116,10 @@ async def run_sku_and_name_pinning(
                         ("selected_size", None), ("selected_material", None),
                         ("customer_name", None), ("delivery_address", None),
                         ("payment_method", None), ("summary_shown", False),
+                        # An open "which one?" list from an earlier, unrelated
+                        # inquiry must not survive an explicit switch to a
+                        # different SKU.
+                        ("pending_choice_skus", None),
                     ]
                     for _rf, _rv in _multi_reset_fields:
                         try:
@@ -2248,6 +2500,24 @@ async def run_sku_and_name_pinning(
                         pass
                     out.early_result = PipelineResult(text=_reask_msg)
                     return out
+            elif _is_foreign_sku_ref:
+                # BUG 2 FIX: customer named an explicit SKU that is NOT one of
+                # the shown choices — a deliberate switch, handled by falling
+                # through to the normal SKU-pin flow below. Without clearing
+                # pending_choice_skus here it survives into later turns (e.g.
+                # an unrelated size-slot question) and leaks stale product
+                # options into decide_send_instruction's button-building.
+                logger.info(
+                    "Multi-choice open: reply names a foreign SKU %s not in pending choices %s — "
+                    "clearing pending choice, falling through to normal SKU-pin flow.",
+                    _foreign_skus, _pending_choice_skus_list,
+                )
+                try:
+                    await conversation_service.set_pending_choice_skus(db, conv.id, None)
+                    conv.pending_choice_skus = None
+                except Exception as exc:
+                    logger.error("Multi-choice clear (foreign-sku fallthrough) error: %s", exc)
+                _pending_choice_skus_list = []
 
     # ── P0-3: repin last_shown_sku on a bare affirmative after reset ─────────
     # After order completion/cancel, pending_product_sku is cleared but a new
@@ -2400,6 +2670,7 @@ async def run_sku_and_name_pinning(
                     ("selected_size", None), ("selected_material", None),
                     ("customer_name", None), ("delivery_address", None),
                     ("payment_method", None), ("summary_shown", False),
+                    ("pending_choice_skus", None),
                 ]
                 for _rf, _rv in _isku_reset_fields:
                     try:
@@ -2614,6 +2885,13 @@ async def run_sku_and_name_pinning(
                                 ("selected_size", None), ("selected_material", None),
                                 ("customer_name", None), ("delivery_address", None),
                                 ("payment_method", None), ("summary_shown", False),
+                                # This block runs AFTER the multi-choice ladder
+                                # above (same turn) but uses its own, looser
+                                # match criteria — it can pin a product the
+                                # ladder's own redirect check didn't recognize
+                                # as "new", leaving an old "which one?" list
+                                # stale unless explicitly cleared here too.
+                                ("pending_choice_skus", None),
                             ]
                             for _rf, _rv in _name_reset_fields:
                                 try:
@@ -3033,6 +3311,9 @@ async def run_slot_state_machine(
             try:
                 await conversation_service.update_order_field(db, conv.id, "pending_product_sku", _sku_val)
                 conv.pending_product_sku = _sku_val
+                if getattr(conv, "pending_choice_skus", None):
+                    await conversation_service.set_pending_choice_skus(db, conv.id, None)
+                    conv.pending_choice_skus = None
                 pinned_product = await catalogue_service.find_product_by_sku(db, client.id, _sku_val)
                 if pinned_product:
                     variant_info = await catalogue_service.get_product_variant_info(db, pinned_product)
@@ -3384,10 +3665,14 @@ async def run_slot_state_machine(
             except Exception as exc:
                 logger.error("AFC cancel stage reset: %s", exc)
             _afc_lang = getattr(conv, "last_customer_language", None) or "english"
-            if _afc_lang in ("hindi_roman", "hindi_devanagari", "hinglish"):
+            if _afc_lang in ("hindi_roman", "hinglish"):
                 _cancel_reply = "Order cancel kar diya gaya. ✅ Kya main kuch aur help kar sakta hoon?"
-            elif _afc_lang in ("gujarati_roman", "gujarati_script"):
+            elif _afc_lang == "hindi_devanagari":
+                _cancel_reply = "ऑर्डर कैंसल कर दिया गया। ✅ क्या मैं कुछ और मदद कर सकता हूँ?"
+            elif _afc_lang == "gujarati_roman":
                 _cancel_reply = "Order cancel thai gayu. ✅ Koi biju kaam hoy to kaho!"
+            elif _afc_lang == "gujarati_script":
+                _cancel_reply = "ઓર્ડર કેન્સલ થઈ ગયું. ✅ કોઈ બીજું કામ હોય તો કહો!"
             else:
                 _cancel_reply = "Order cancelled. ✅ Anything else I can help you with?"
             logger.info("conv=%s AFC CANCEL — all slots reset, stage=greeting", conv.id)
@@ -3514,10 +3799,14 @@ async def run_slot_state_machine(
                     if _ac_new_attempts >= _SLOT_ATTEMPT_ESCALATE:
                         # Escalate exactly like the slot-cap path below (Improvement 1):
                         # stop re-prompting, hand off to a human.
-                        if _ac_lang_cap in ("hindi_roman", "hindi_devanagari", "hinglish"):
+                        if _ac_lang_cap in ("hindi_roman", "hinglish"):
                             _ac_reprompt = "Hamara team aapki madad karega. 👋\n\nPlease reply *yes* to use this address, or *change* to enter a new one."
-                        elif _ac_lang_cap in ("gujarati_roman", "gujarati_script"):
+                        elif _ac_lang_cap == "hindi_devanagari":
+                            _ac_reprompt = "हमारी टीम आपकी मदद करेगी। 👋\n\nPlease reply *yes* to use this address, or *change* to enter a new one."
+                        elif _ac_lang_cap == "gujarati_roman":
                             _ac_reprompt = "Amari team tamne madad karse. 👋\n\nPlease reply *yes* to use this address, or *change* to enter a new one."
+                        elif _ac_lang_cap == "gujarati_script":
+                            _ac_reprompt = "અમારી ટીમ તમને મદદ કરશે. 👋\n\nPlease reply *yes* to use this address, or *change* to enter a new one."
                         else:
                             _ac_reprompt = "Our team will assist you shortly. 👋\n\nPlease reply *yes* to use this address, or *change* to enter a new one."
                         logger.warning(
@@ -3564,10 +3853,14 @@ async def run_slot_state_machine(
                     product_name=_cap_prod,
                     attempt_count=_current_slot_attempts,
                 )
-                if _cap_lang in ("hindi_roman", "hindi_devanagari", "hinglish"):
+                if _cap_lang in ("hindi_roman", "hinglish"):
                     _cap_reply = f"Hamara team aapki madad karega. 👋\n\n{_cap_sq}"
-                elif _cap_lang in ("gujarati_roman", "gujarati_script"):
+                elif _cap_lang == "hindi_devanagari":
+                    _cap_reply = f"हमारी टीम आपकी मदद करेगी। 👋\n\n{_cap_sq}"
+                elif _cap_lang == "gujarati_roman":
                     _cap_reply = f"Amari team tamne madad karse. 👋\n\n{_cap_sq}"
+                elif _cap_lang == "gujarati_script":
+                    _cap_reply = f"અમારી ટીમ તમને મદદ કરશે. 👋\n\n{_cap_sq}"
                 else:
                     _cap_reply = f"Our team will assist you shortly. 👋\n\n{_cap_sq}"
                 logger.warning(
@@ -3838,6 +4131,104 @@ async def run_slot_state_machine(
                     return out
                 # No deterministic answer — fall through to normal intent classification.
 
+            # ── Image request — send product photo, re-ask slot ────────────────
+            # A customer asking for a photo mid-order ("give me images", "show
+            # photo") must never be treated as a slot answer. Mirrors FIX2/FIX4
+            # above: resolve which product they mean (a differently-named
+            # product wins over the pinned one, via the same
+            # _find_confident_product_match helper the payment-stage FIX2 dup
+            # already reuses — not a third copy of the inline SKU/fuzzy
+            # matcher), queue its image to go out BEFORE the text reply via the
+            # pre_images field, then re-ask the still-pending PINNED slot. No
+            # pending_product_sku / stage / slot_attempt_* writes happen here,
+            # even when a different product's photo was shown — this is a
+            # photo lookup, not an order-switch offer (unlike FIX4's cross-
+            # product branch above, which deliberately does switch the order).
+            if message.type == "text" and _is_image_request(user_text):
+                _ir_pinned_sku = getattr(conv, "pending_product_sku", None)
+                _ir_named_product = (
+                    await _find_confident_product_match(db, client, user_text, exclude_sku=_ir_pinned_sku)
+                    if client else None
+                )
+                _ir_target = _ir_named_product or pinned_product
+
+                if _ir_target is not None:
+                    _ir_vi = (
+                        await catalogue_service.get_product_variant_info(db, _ir_target)
+                        if _ir_named_product is not None else variant_info
+                    )
+                    _ir_lines = [
+                        f"{_ir_target.name} [{getattr(_ir_target, 'sku', None)}] — "
+                        f"{format_price(getattr(_ir_target, 'price', 0) or 0)}"
+                    ]
+                    if _ir_vi.get("available_colors"):
+                        _ir_lines.append(f"Available colors: {', '.join(_ir_vi['available_colors'])}")
+                    if _ir_vi.get("available_sizes"):
+                        _ir_lines.append(f"Available sizes: {', '.join(_ir_vi['available_sizes'])}")
+                    if _ir_named_product is not None:
+                        # Only ask order-intent when the photo shown is of a
+                        # DIFFERENT product than the one already pinned/
+                        # confirmed for this order. When _ir_target IS the
+                        # pinned product, order intent was already confirmed
+                        # (originally, or via the cross-product switch-confirm
+                        # "yes") — re-asking here is redundant; the slot
+                        # question appended below already continues that
+                        # confirmed order.
+                        _ir_lines.append("")
+                        _ir_lines.append("Would you like to order? (Yes / No)")
+                    _ir_card = "\n".join(_ir_lines)
+
+                    _ir_lang = getattr(conv, "last_customer_language", None) or language or "english"
+                    _ir_prod_name = getattr(pinned_product, "name", "the product") or "the product"
+                    _ir_slot_q = _build_slot_question(
+                        _next_slot_pre, conv, variant_info, _ir_lang,
+                        customer_profile=customer_profile,
+                        accepts_cod=getattr(client, "accepts_cod", False) if client else False,
+                        available_stock=available_stock,
+                        product_name=_ir_prod_name,
+                        declined_saved_address=False,  # image request, not a "change" negation
+                        attempt_count=_current_slot_attempts,
+                    )
+                    _ir_order_ctx = ""
+                    if getattr(conv, "pending_order_quantity", None):
+                        _ir_order_ctx = f"Your current order: {_ir_prod_name} x{conv.pending_order_quantity}. "
+                    _ir_reply = f"{_ir_card}\n\n{_ir_order_ctx}{_ir_slot_q}" if _ir_slot_q else _ir_card
+
+                    _ir_image_url = getattr(_ir_target, "image_url", None)
+                    if _is_valid_image_url(_ir_image_url) and client:
+                        # Watermark at send-time only — never touches the original
+                        # stored in R2 (storage_service.get_watermarked_image_url).
+                        # Falls back to the raw image_url if watermarking fails.
+                        _ir_image_url = (
+                            await storage_service.get_watermarked_image_url(
+                                client.id, getattr(_ir_target, "sku", "") or "", _ir_image_url
+                            )
+                            or _ir_image_url
+                        )
+                    _ir_pre_images = [(_ir_image_url, None)] if _is_valid_image_url(_ir_image_url) else None
+                    if not _ir_pre_images:
+                        logger.debug(
+                            "Image request: conv=%s sku=%s — no valid image_url set, text-only fallback",
+                            conv.id, getattr(_ir_target, "sku", None),
+                        )
+                    logger.info(
+                        "Image request: conv=%s sku=%s sent=%s",
+                        conv.id, getattr(_ir_target, "sku", None), bool(_ir_pre_images),
+                    )
+                    try:
+                        await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+                        await conversation_service.save_message(db, conv.id, "assistant", _ir_reply)
+                    except Exception:
+                        pass
+                    try:
+                        await record_usage(db, client, conv)
+                    except Exception:
+                        pass
+                    out.early_result = PipelineResult(text=_ir_reply, pre_images=_ir_pre_images)
+                    return out
+                # No product context at all (nothing pinned, nothing named) —
+                # fall through to normal intent classification.
+
             # ── Smart greeting during active slot-filling ──────────────────────
             # A pure greeting ("hi"/"hello"/"namaste"/…) with nothing else mixed
             # in must never be treated as a slot-answer attempt: extract_order_field
@@ -3858,20 +4249,24 @@ async def run_slot_state_machine(
                 _greet_name = getattr(conv, "customer_name", None) or getattr(customer_profile, "name", None)
                 _GREET_WELCOME = {
                     "english": f"Hey {_greet_name}! Welcome back 👋" if _greet_name else "Hey! Welcome back 👋",
-                    "hindi": f"Hey {_greet_name}! Vapas aane ke liye shukriya 👋" if _greet_name else "Hey! Vapas aane ke liye shukriya 👋",
-                    "gujarati": f"Hey {_greet_name}! Pacha aavva badal aabhar 👋" if _greet_name else "Hey! Pacha aavva badal aabhar 👋",
+                    "hindi_roman": f"Hey {_greet_name}! Vapas aane ke liye shukriya 👋" if _greet_name else "Hey! Vapas aane ke liye shukriya 👋",
+                    "hindi_devanagari": f"Hey {_greet_name}! वापस आने के लिए शुक्रिया 👋" if _greet_name else "Hey! वापस आने के लिए शुक्रिया 👋",
+                    "gujarati_roman": f"Hey {_greet_name}! Pacha aavva badal aabhar 👋" if _greet_name else "Hey! Pacha aavva badal aabhar 👋",
+                    "gujarati_script": f"Hey {_greet_name}! પાછા આવવા બદલ આભાર 👋" if _greet_name else "Hey! પાછા આવવા બદલ આભાર 👋",
                 }
                 _GREET_BACK = {
                     "english": "Let's finish your order now 🙂",
-                    "hindi": "Chaliye aapka order poora karte hain 🙂",
-                    "gujarati": "Chalo, tamaru order pooru karie 🙂",
+                    "hindi_roman": "Chaliye aapka order poora karte hain 🙂",
+                    "hindi_devanagari": "चलिए आपका ऑर्डर पूरा करते हैं 🙂",
+                    "gujarati_roman": "Chalo, tamaru order pooru karie 🙂",
+                    "gujarati_script": "ચાલો, તમારો ઓર્ડર પૂરો કરીએ 🙂",
                 }
-                if _greet_lang in ("hindi_roman", "hindi_devanagari", "hinglish"):
-                    _greet_welcome = _GREET_WELCOME["hindi"]
-                    _greet_reply = _GREET_BACK["hindi"]
-                elif _greet_lang in ("gujarati_roman", "gujarati_script"):
-                    _greet_welcome = _GREET_WELCOME["gujarati"]
-                    _greet_reply = _GREET_BACK["gujarati"]
+                if _greet_lang in ("hindi_roman", "hinglish"):
+                    _greet_welcome = _GREET_WELCOME["hindi_roman"]
+                    _greet_reply = _GREET_BACK["hindi_roman"]
+                elif _greet_lang in _GREET_WELCOME:
+                    _greet_welcome = _GREET_WELCOME[_greet_lang]
+                    _greet_reply = _GREET_BACK[_greet_lang]
                 else:
                     _greet_welcome = _GREET_WELCOME["english"]
                     _greet_reply = _GREET_BACK["english"]
@@ -4054,6 +4449,7 @@ async def run_slot_state_machine(
                             ("pending_order_quantity", None), ("selected_color", None),
                             ("selected_size", None), ("selected_material", None),
                             ("summary_shown", False),
+                            ("pending_choice_skus", None),
                         ]
                         for _rf, _rv in _sw_reset_fields:
                             try:
@@ -4497,15 +4893,27 @@ async def run_slot_state_machine(
                                 "no_structure": "Mujhe pura delivery address chahiye — ghar/area, shahar aur 6-digit pincode.",
                                 "too_short": "Yeh address incomplete lagta hai. Kripaya ghar/area, shahar aur 6-digit pincode ke saath poora address bhejein.",
                             },
+                            "hindi_devanagari": {
+                                "bad_pincode": "यह पिनकोड छोटा लग रहा है — मुझे 6-अंकों का पिनकोड चाहिए। पूरा एड्रेस पिनकोड के साथ भेजें।",
+                                "no_structure": "मुझे पूरा डिलीवरी एड्रेस चाहिए — घर/एरिया, शहर और 6-अंकों का पिनकोड।",
+                                "too_short": "यह एड्रेस अधूरा लग रहा है। कृपया घर/एरिया, शहर और 6-अंकों के पिनकोड के साथ पूरा एड्रेस भेजें।",
+                            },
                             "gujarati": {
                                 "bad_pincode": "Aa pincode tunko lagi rahyo che — mane 6-digit pincode joiye. Pooro address pincode saathe moklo.",
                                 "no_structure": "Mane tamaru pooru delivery address joiye — ghar/area, shaher ane 6-digit pincode.",
                                 "too_short": "Aa address adhuro lagche. Meherbani kari ghar/area, shaher ane 6-digit pincode saathe pooro address moklo.",
                             },
+                            "gujarati_script": {
+                                "bad_pincode": "આ પિનકોડ ટૂંકો લાગે છે — મને 6-અંકનો પિનકોડ જોઈએ. પૂરું એડ્રેસ પિનકોડ સાથે મોકલો.",
+                                "no_structure": "મને તમારું પૂરું ડિલિવરી એડ્રેસ જોઈએ — ઘર/એરિયા, શહેર અને 6-અંકનો પિનકોડ.",
+                                "too_short": "આ એડ્રેસ અધૂરું લાગે છે. કૃપા કરી ઘર/એરિયા, શહેર અને 6-અંકના પિનકોડ સાથે પૂરું એડ્રેસ મોકલો.",
+                            },
                         }
-                        if _addr_rej_lang in ("hindi_roman", "hindi_devanagari", "hinglish"):
+                        if _addr_rej_lang in ("hindi_roman", "hinglish"):
                             _addr_rej = _ADDR_REJ_MSGS["hindi"][_addr_reason]
-                        elif _addr_rej_lang in ("gujarati_roman", "gujarati_script"):
+                        elif _addr_rej_lang in _ADDR_REJ_MSGS:
+                            _addr_rej = _ADDR_REJ_MSGS[_addr_rej_lang][_addr_reason]
+                        elif _addr_rej_lang == "gujarati_roman":
                             _addr_rej = _ADDR_REJ_MSGS["gujarati"][_addr_reason]
                         else:
                             _addr_rej = _ADDR_REJ_MSGS["english"][_addr_reason]
@@ -4551,10 +4959,14 @@ async def run_slot_state_machine(
                                 "english": "Sorry, we don't have {value} in {slot}. Available {slot}s: {opts}",
                                 "hindi": "Maafi, {value} {slot} available nahi hai. Available {slot}: {opts}",
                                 "gujarati": "Maaf karo, {value} {slot} available nathi. Available {slot}: {opts}",
+                                "hindi_devanagari": "माफी, {slot} में {value} उपलब्ध नहीं है। उपलब्ध {slot}: {opts}",
+                                "gujarati_script": "માફ કરશો, {slot} માં {value} ઉપલબ્ધ નથી. ઉપલબ્ધ {slot}: {opts}",
                             }
-                            if _vs_lang in ("hindi_roman", "hindi_devanagari", "hinglish"):
+                            if _vs_lang in ("hindi_roman", "hinglish"):
                                 _vs_tpl = _VS_REJ["hindi"]
-                            elif _vs_lang in ("gujarati_roman", "gujarati_script"):
+                            elif _vs_lang in _VS_REJ:
+                                _vs_tpl = _VS_REJ[_vs_lang]
+                            elif _vs_lang == "gujarati_roman":
                                 _vs_tpl = _VS_REJ["gujarati"]
                             else:
                                 _vs_tpl = _VS_REJ["english"]
@@ -5200,10 +5612,83 @@ async def run_summary_confirmation(
         # SLOTS_DONE→show_summary transition below, silently re-dumping
         # the summary over an unanswered question (e.g. "Can I get
         # delivery in delhi?" with a KB entry that was never surfaced).
-        # Answer from KB (preferred) or a cheap-model fallback, then
-        # re-show the pending confirm prompt — never advance state.
+        # Answer from catalog/variants (FIX2/FIX4's SKU/name-lookup tier,
+        # reused verbatim — this stage was previously missing it entirely,
+        # so a specific-product question like "is PR17761 available?" had
+        # no way to get a real answer) → KB → deterministic fact table →
+        # localized "don't know" template, then re-show the pending confirm
+        # prompt — never advance state.
         _afc_q_answer = ""
+        _afc_pinned_sku = getattr(conv, "pending_product_sku", None)
+        _afc_named_product = None
+        _afc_named_not_found_label = None
         if client:
+            try:
+                for _afc_named_sku in catalogue_service.extract_skus_from_text(user_text):
+                    if _afc_named_sku == _afc_pinned_sku:
+                        continue
+                    _afc_sku_match = await catalogue_service.find_product_by_sku(db, client.id, _afc_named_sku)
+                    if _afc_sku_match is not None:
+                        _afc_named_product = _afc_sku_match
+                        break
+                    # An explicit SKU-shaped code was named but doesn't
+                    # resolve — remember it in case no other token in the
+                    # message resolves to a real product either.
+                    _afc_named_not_found_label = _afc_named_sku
+                if _afc_named_product is None:
+                    _afc_all_prods = await catalogue_service.list_products(db, client.id)
+                    _afc_scored = catalogue_service.search_products_with_scores(
+                        _afc_all_prods, user_text, top_k=3
+                    )
+                    for _afc_sc, _afc_cp in _afc_scored:
+                        if _afc_sc >= 3 and getattr(_afc_cp, "sku", None) != _afc_pinned_sku:
+                            _afc_named_product = _afc_cp
+                            _afc_named_not_found_label = None
+                            break
+            except Exception as _afce:
+                logger.warning("AFC cross-product lookup failed: %s", _afce)
+
+        if _afc_named_product is None and _afc_named_not_found_label:
+            # An explicit product code was named but isn't in the
+            # catalogue — say so directly rather than silently falling
+            # back to the pinned product's answer instead.
+            _afc_q_answer = f"Sorry, we don't carry {_afc_named_not_found_label}."
+
+        if not _afc_q_answer and _is_availability_question(user_text):
+            if _afc_named_product is not None:
+                _afc_named_variant_info = await catalogue_service.get_product_variant_info(db, _afc_named_product)
+                _afc_named_stock = (
+                    None if getattr(_afc_named_product, "has_variants", False)
+                    else (getattr(_afc_named_product, "stock", None) or 0)
+                )
+                _afc_q_answer = _build_availability_answer(
+                    user_text, _afc_named_product, _afc_named_variant_info, _afc_named_stock,
+                )
+                if _afc_q_answer:
+                    logger.info(
+                        "AFC availability question: conv=%s answered about named product sku=%s "
+                        "(pinned=%s), skipping KB",
+                        conv.id, getattr(_afc_named_product, "sku", None), _afc_pinned_sku,
+                    )
+            else:
+                _afc_q_answer = _build_availability_answer(
+                    user_text, pinned_product, variant_info, available_stock,
+                )
+                if _afc_q_answer:
+                    logger.info(
+                        "AFC availability question: conv=%s answered from catalog/variants, skipping KB",
+                        conv.id,
+                    )
+
+        # A confident named-product match on a non-availability question
+        # (price, "do you have X?", etc.) is more specific than the KB/fact
+        # table tiers below.
+        if not _afc_q_answer and _afc_named_product is not None:
+            _afc_q_answer = (
+                f"{_afc_named_product.name} — ₹{int(getattr(_afc_named_product, 'price', 0) or 0):,}."
+            )
+
+        if not _afc_q_answer and client:
             try:
                 from app.services import knowledge_service as _afc_kb
                 _afc_kb_entries = await _afc_kb.search_knowledge(
@@ -5223,41 +5708,53 @@ async def run_summary_confirmation(
             _afc_dt = get_delivery_time_str(pinned_product, client) or "3–7 business days"
             _afc_q_answer = _build_order_aside_answer(user_text, conv, client, pinned_product, _afc_dt)
         if not _afc_q_answer:
+            # No deterministic answer anywhere (catalog, KB, fact table) —
+            # never fall back to an ungrounded LLM guess here: it has no
+            # product context to answer from, and prompting it to "say
+            # you'll check and get back" promises a follow-up this bot has
+            # no way to deliver. Use the localized "don't know" template
+            # instead — matches FIX2/FIX4's behavior of never guessing.
+            _afc_q_answer = get_template(lang, "aside_question_no_info")
+
+        if _afc_named_product is not None:
+            # FIX4 parity: the question was about a DIFFERENT, named product
+            # than the one pending confirmation/payment. Re-showing the OLD
+            # order summary right after answering (like the branch below
+            # does for same-product/generic asides) reads as a non-sequitur
+            # — offer to switch instead, reusing the exact switch-offer
+            # format/logic already used for this scenario at order_collection
+            # (FIX4 in run_slot_state_machine), resolved by the same
+            # run_order_switch_confirm_guard on the customer's next turn
+            # (now stage-aware: declining resumes THIS summary, not
+            # order_collection).
+            _afc_switch_prompt = f"Would you like to order {_afc_named_product.name}? (Yes / No)"
+            _afc_reply = f"{_afc_q_answer}\n\n{_afc_switch_prompt}"
             try:
-                from openai import AsyncOpenAI as _AfcOpenAI
-                from app.config import get_settings as _afc_get_settings
-                _afc_settings = _afc_get_settings()
-                _afc_client_llm = _AfcOpenAI(
-                    api_key=_afc_settings.groq_api_key,
-                    base_url="https://api.groq.com/openai/v1",
-                    max_retries=0,
+                await conversation_service.update_order_field(
+                    db, conv.id, "interrupted_sku", _afc_named_product.sku
                 )
-                _afc_resp = await _afc_client_llm.chat.completions.create(
-                    model="llama-3.1-8b-instant",
-                    messages=[{
-                        "role": "user",
-                        "content": (
-                            f"A customer asked: '{user_text}'. Answer in one short, "
-                            "friendly sentence using only general retail knowledge "
-                            "(no specific prices/policies you don't know). If you "
-                            "cannot answer confidently, say you'll check and get back."
-                        ),
-                    }],
-                    max_tokens=60,
-                    temperature=0.3,
-                )
-                if getattr(_afc_resp, "usage", None) is not None:
-                    cost_log.log(
-                        conv.id, "IN", user_text,
-                        path="LLM", model="llama-3.1-8b-instant",
-                        in_tok=_afc_resp.usage.prompt_tokens,
-                        out_tok=_afc_resp.usage.completion_tokens,
-                        call_kind="reply",
-                    )
-                _afc_q_answer = (_afc_resp.choices[0].message.content or "").strip()
-            except Exception as _afc_llm_exc:
-                logger.warning("AFC cheap-model fallback failed: %s", _afc_llm_exc)
-                _afc_q_answer = "Let me check that for you."
+                conv.interrupted_sku = _afc_named_product.sku
+                await conversation_service.update_stage(db, conv.id, "awaiting_afc_switch_confirm")
+                conv.current_stage = "awaiting_afc_switch_confirm"
+            except Exception as _afc_stash_exc:
+                logger.error("AFC switch-offer stash error: %s", _afc_stash_exc)
+            logger.info(
+                "AFC cross-product aside: conv=%s named=%s pinned=%s — offering switch instead of "
+                "re-showing pending summary",
+                conv.id, getattr(_afc_named_product, "sku", None), _afc_pinned_sku,
+            )
+            try:
+                await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+                await conversation_service.save_message(db, conv.id, "assistant", _afc_reply)
+            except Exception:
+                pass
+            try:
+                await record_usage(db, client, conv)
+            except Exception:
+                pass
+            out.early_result = PipelineResult(text=_afc_reply)
+            return out
+
         try:
             _afc_summary = await _render_order_reply(
                 action="show_summary",
@@ -5275,7 +5772,7 @@ async def run_summary_confirmation(
             _afc_summary = ""
         ai_reply = f"{_afc_q_answer}\n\n{_afc_summary}" if _afc_summary else _afc_q_answer
         logger.info(
-            "Question at order stage → answered from KB/LLM, re-prompting conv=%s",
+            "Question at AFC stage → answered (sku/name/KB/fact-table tier), re-prompting conv=%s",
             conv.id,
         )
         try:
@@ -5346,6 +5843,11 @@ async def run_summary_confirmation(
                 ("pending_order_quantity", None), ("selected_color", None),
                 ("selected_size", None), ("selected_material", None),
                 ("summary_shown", False),
+                # Includes a name-match fallback (not just explicit SKU), so
+                # it can pin a product the multi-choice ladder's own,
+                # differently-thresholded redirect check didn't catch earlier
+                # this turn — clear explicitly rather than relying on that.
+                ("pending_choice_skus", None),
             ]
             for _rf, _rv in _afc_switch_reset_fields:
                 try:
@@ -5498,11 +6000,16 @@ class RoutingOutcome:
     llm_usage:  gemini_service.get_last_usage() result when llm_called is
                 True, else None — the caller splices this into _llm_usage
                 for cost logging, exactly as the original inline code did.
+    pre_images: Set only by the image-request template (a validated
+                (image_url, caption) tuple to send before `text`) — the
+                browsing-stage counterpart of run_slot_state_machine's
+                image-request handler. None on every other route.
     """
 
     text: str = ""
     llm_called: bool = False
     llm_usage: dict | None = None
+    pre_images: list[tuple[str, str | None]] | None = None
 
 
 async def run_llm_routing(
@@ -5563,10 +6070,63 @@ async def run_llm_routing(
     ai_reply = ""
     _llm_called_this_turn = False
     _llm_usage = None
+    _llm_pre_images: list[tuple[str, str | None]] | None = None
     _BROWSING_STAGES_GATE = frozenset({
         "greeting", "product_inquiry", "qualification",
         "objection_handling", "offer_making",
     })
+
+    # ── Image/photo request → template (no LLM) ──────────────────────
+    # Browsing-stage counterpart of run_slot_state_machine's image-request
+    # handler (order_collection only). Without this, "Image"/"pic"/typo
+    # phrasings sent before any product is pinned for order fell through
+    # to the full tier-3 LLM call (build_master_system_prompt embeds the
+    # ENTIRE catalogue regardless of message content — expensive for a
+    # one-word message). Only fires when we actually know which product
+    # to show (pinned_product from an earlier turn, or a fresh name/SKU
+    # match this turn) — an image request with zero product context still
+    # falls through to the LLM below, since there's nothing deterministic
+    # to answer with.
+    _img_target = pinned_product or (_canonical_browse_products[0] if _canonical_browse_products else None)
+    if _is_image_request(user_text) and _img_target is not None:
+        _img_vi = (
+            variant_info if _img_target is pinned_product
+            else await catalogue_service.get_product_variant_info(db, _img_target)
+        )
+        _img_lines = [
+            f"{_img_target.name} [{getattr(_img_target, 'sku', None)}] — "
+            f"{format_price(getattr(_img_target, 'price', 0) or 0)}"
+        ]
+        if _img_vi.get("available_colors"):
+            _img_lines.append(f"Available colors: {', '.join(_img_vi['available_colors'])}")
+        if _img_vi.get("available_sizes"):
+            _img_lines.append(f"Available sizes: {', '.join(_img_vi['available_sizes'])}")
+        _img_lines.append("")
+        _img_lines.append("Would you like to order? (Yes / No)")
+        ai_reply = "\n".join(_img_lines)
+
+        _img_url = getattr(_img_target, "image_url", None)
+        if _is_valid_image_url(_img_url) and client:
+            # Watermark at send-time only — see run_slot_state_machine's
+            # image-request branch for the order-stage counterpart of this.
+            _img_url = (
+                await storage_service.get_watermarked_image_url(
+                    client.id, getattr(_img_target, "sku", "") or "", _img_url
+                )
+                or _img_url
+            )
+        _llm_pre_images = [(_img_url, None)] if _is_valid_image_url(_img_url) else None
+        if not _llm_pre_images:
+            logger.debug(
+                "Image request (browsing): conv=%s sku=%s — no valid image_url set, text-only fallback",
+                conv.id, getattr(_img_target, "sku", None),
+            )
+        _log_route(conv.id, "TEMPLATE", "image_request", extra=f"sku={getattr(_img_target, 'sku', None)}")
+        logger.info(
+            "Image request (browsing): conv=%s sku=%s sent=%s",
+            conv.id, getattr(_img_target, "sku", None), bool(_llm_pre_images),
+        )
+        return RoutingOutcome(text=ai_reply, pre_images=_llm_pre_images)
 
     # ── Known-fact: delivery time → template (no LLM) ───────────────
     # Short delivery-time queries ("delivery kitne din?", "how long?")
@@ -5619,9 +6179,9 @@ async def run_llm_routing(
                 "english": "Want to order?",
                 "hindi_roman": "Order karein?",
                 "hinglish": "Order karein?",
-                "hindi_devanagari": "Order karein?",
+                "hindi_devanagari": "ऑर्डर करें?",
                 "gujarati_roman": "Order karvo chhe?",
-                "gujarati_script": "Order karvo chhe?",
+                "gujarati_script": "ઓર્ડર કરવો છે?",
             }.get(_dt_lang, "Want to order?")
             ai_reply = f"{ai_reply} {_order_cta}"
         _log_route(conv.id, "TEMPLATE", "delivery_query", extra=f"lang={_dt_lang}")
@@ -6474,6 +7034,7 @@ async def decide_send_instruction(
     next_slot: str | None,
     is_whatsapp: bool,
     pinned_product,
+    variant_info: dict | None = None,
 ) -> PipelineResult:
     """
     Decide HOW this turn's reply should be delivered: plain text, payment
@@ -6503,6 +7064,7 @@ async def decide_send_instruction(
     offer_buttons: list[dict] = []
     choice_buttons: list[dict] = []
     choice_list_rows: list[dict] = []
+    carousel_items: list[dict] = []
 
     # ── E2: interactive buttons/list for product offers and multi-option choices ──
     # Purely additive on top of the text reply already built above — typing
@@ -6519,7 +7081,31 @@ async def decide_send_instruction(
                 {"id": "offer_yes", "title": "Yes"},
                 {"id": "offer_no", "title": "No"},
             ]
-        else:
+        elif next_slot in ("color", "size", "material"):
+            # BUG 2 FIX: a slot question's buttons must always come from that
+            # slot's real option list (variant_info), never from
+            # pending_choice_skus — that field holds an unrelated multi-product
+            # choice (possibly stale/leftover from earlier in the conversation)
+            # and must never leak into a variant-slot question's buttons.
+            _slot_opts_key = {
+                "color": "available_colors",
+                "size": "available_sizes",
+                "material": "available_materials",
+            }[next_slot]
+            _slot_opts = (variant_info or {}).get(_slot_opts_key) or []
+            if 2 <= len(_slot_opts) <= 3:
+                button_type = "choice_buttons"
+                for _opt in _slot_opts:
+                    choice_buttons.append({"id": _opt, "title": _opt[:20]})
+            elif len(_slot_opts) >= 4:
+                button_type = "choice_list"
+                for _opt in _slot_opts[:10]:
+                    choice_list_rows.append({"id": _opt, "title": _opt[:24], "description": ""})
+        elif next_slot is None:
+            # Multi-product choice buttons only make sense when no slot is
+            # pending — this is the true product-choice case pending_choice_skus
+            # represents. Guarding on next_slot (not just the slot-question
+            # cases above) closes the same leak for quantity/name/address/etc.
             pcs_for_buttons: list = []
             try:
                 pcs_raw_btn = getattr(conv, "pending_choice_skus", None)
@@ -6553,6 +7139,47 @@ async def decide_send_instruction(
                             "title": (cb_p.name or cb_p.sku)[:24],
                             "description": format_price(getattr(cb_p, "price", 0) or 0),
                         })
+    elif not is_whatsapp and button_type == "text" and next_slot is None:
+        # Instagram equivalent of the WhatsApp choice_buttons/choice_list
+        # branch above — same pending_choice_skus source, rendered as a
+        # Generic Template carousel (image + name + price per card) instead,
+        # since IG has no image-bearing button/list message type. Same
+        # next_slot is None guard as the WhatsApp branch: a stale multi-product
+        # choice must never leak into a slot-question turn.
+        pcs_for_carousel: list = []
+        try:
+            pcs_raw_ig = getattr(conv, "pending_choice_skus", None)
+            if pcs_raw_ig:
+                pcs_for_carousel = _json.loads(pcs_raw_ig)
+        except Exception:
+            pcs_for_carousel = []
+        if pcs_for_carousel and client:
+            carousel_products = []
+            for ig_sku in pcs_for_carousel:
+                try:
+                    ig_p = await catalogue_service.find_product_by_sku(db, client.id, ig_sku)
+                except Exception:
+                    ig_p = None
+                if ig_p:
+                    carousel_products.append(ig_p)
+            if len(carousel_products) >= 2:
+                button_type = "carousel"
+                if len(carousel_products) > 10:
+                    # IG Generic Template caps at 10 elements — show the top 10
+                    # (already score-ranked upstream) and drop the rest, same
+                    # "top N, no crash on overflow" behavior WhatsApp's
+                    # choice_list[:10] slice above already uses.
+                    logger.info(
+                        "Multi-product reply: conv=%s route=carousel_truncated total=%s shown=10",
+                        conv.id, len(carousel_products),
+                    )
+                for ig_p in carousel_products[:10]:
+                    carousel_items.append({
+                        "sku": ig_p.sku,
+                        "title": (ig_p.name or ig_p.sku)[:80],
+                        "subtitle": format_price(getattr(ig_p, "price", 0) or 0),
+                        "image_url": getattr(ig_p, "image_url", None),
+                    })
 
     # Hard safety net: the "Order confirmed!" message must NEVER carry interactive
     # buttons regardless of what happened inside the order creation block.
@@ -6643,6 +7270,16 @@ async def decide_send_instruction(
             ],
             list_header="Choose an option",
             list_button_text="View options",
+        )
+
+    if button_type == "carousel":
+        logger.info(
+            "Multi-product reply: conv=%s route=carousel count=%s",
+            conv.id, len(carousel_items),
+        )
+        return PipelineResult(
+            text=ai_reply,
+            carousel_items=[CarouselItemSpec(**c) for c in carousel_items],
         )
 
     return PipelineResult(text=ai_reply)
@@ -7105,6 +7742,10 @@ async def handle_inbound_message(ctx: InboundContext) -> PipelineResult:
     # aborts the pin path or prevents the text from reaching the customer.
     # Entries: (image_url, caption)
     _pending_product_images: list[tuple[str, str]] = []
+    # Set only when run_llm_routing() resolves a browsing-stage image
+    # request (see RoutingOutcome.pre_images) — sent BEFORE ai_reply,
+    # unlike _pending_product_images above which goes out after.
+    _pending_pre_images: list[tuple[str, str | None]] | None = None
 
     # ── SLICE 3: SKU / product-name pinning + match (delegated to order_pipeline) ──
     _pin_outcome = await run_sku_and_name_pinning(
@@ -7509,17 +8150,29 @@ RULES:
         )
         _business = getattr(client, "business_name", "our store") or "our store"
         _lang_cat = getattr(conv, "last_customer_language", "english") or "english"
-        if _lang_cat in ("hindi_roman", "hindi_devanagari", "hinglish"):
+        if _lang_cat in ("hindi_roman", "hinglish"):
             _cat_reply = (
                 f"Zaroor! Hamara poora collection yahan dekh sakte hain 🛍️\n"
                 f"{_cat_url}\n\nKoi bhi product pasand aaye toh SKU ya naam bhejein, "
                 f"main details share karta hoon! 😊"
             )
-        elif _lang_cat in ("gujarati_roman", "gujarati_script"):
+        elif _lang_cat == "hindi_devanagari":
+            _cat_reply = (
+                f"ज़रूर! हमारा पूरा कलेक्शन यहाँ देख सकते हैं 🛍️\n"
+                f"{_cat_url}\n\nकोई भी प्रोडक्ट पसंद आए तो SKU या नाम भेजें, "
+                f"मैं डिटेल्स शेयर करता हूँ! 😊"
+            )
+        elif _lang_cat == "gujarati_roman":
             _cat_reply = (
                 f"Jarur! Amaru pooru collection aaiya joi shakay chho 🛍️\n"
                 f"{_cat_url}\n\nKoi product game to SKU ya naam moklo, "
                 f"hu details share karish! 😊"
+            )
+        elif _lang_cat == "gujarati_script":
+            _cat_reply = (
+                f"જરૂર! અમારું પૂરું કલેક્શન અહીં જોઈ શકો છો 🛍️\n"
+                f"{_cat_url}\n\nકોઈ પ્રોડક્ટ ગમે તો SKU અથવા નામ મોકલો, "
+                f"હું ડિટેલ્સ શેર કરીશ! 😊"
             )
         else:
             _cat_reply = (
@@ -7664,17 +8317,25 @@ RULES:
             _ot_phone = getattr(client, "phone", None)
             _contact_parts = []
             if _ot_cat_url:
-                if _ot_idle_lang in ("hindi_roman", "hindi_devanagari", "hinglish"):
+                if _ot_idle_lang in ("hindi_roman", "hinglish"):
                     _contact_parts.append(f"Humari products ke baare mein jaankari ke liye hamara catalogue dekhein: {_ot_cat_url}")
-                elif _ot_idle_lang in ("gujarati_roman", "gujarati_script"):
+                elif _ot_idle_lang == "hindi_devanagari":
+                    _contact_parts.append(f"हमारे प्रोडक्ट्स के बारे में जानकारी के लिए हमारा कैटलॉग देखें: {_ot_cat_url}")
+                elif _ot_idle_lang == "gujarati_roman":
                     _contact_parts.append(f"Amara products vishe mahiti mate amaru catalogue joi lo: {_ot_cat_url}")
+                elif _ot_idle_lang == "gujarati_script":
+                    _contact_parts.append(f"અમારા પ્રોડક્ટ્સ વિશે માહિતી માટે અમારું કેટલોગ જુઓ: {_ot_cat_url}")
                 else:
                     _contact_parts.append(f"For info about our products, visit our catalogue: {_ot_cat_url}")
             if _ot_phone:
-                if _ot_idle_lang in ("hindi_roman", "hindi_devanagari", "hinglish"):
+                if _ot_idle_lang in ("hindi_roman", "hinglish"):
                     _contact_parts.append(f"Ya call karein: {_ot_phone}")
-                elif _ot_idle_lang in ("gujarati_roman", "gujarati_script"):
+                elif _ot_idle_lang == "hindi_devanagari":
+                    _contact_parts.append(f"या कॉल करें: {_ot_phone}")
+                elif _ot_idle_lang == "gujarati_roman":
                     _contact_parts.append(f"Ya call karo: {_ot_phone}")
+                elif _ot_idle_lang == "gujarati_script":
+                    _contact_parts.append(f"અથવા કૉલ કરો: {_ot_phone}")
                 else:
                     _contact_parts.append(f"Or call us: {_ot_phone}")
             _contact_line = "\n".join(_contact_parts) + "\n\n" if _contact_parts else ""
@@ -7795,74 +8456,83 @@ RULES:
                 original_type = "image"
             else:
                 image_bytes = await ctx.download_media(message.image.id)
-                # Image messages carry no product code in user_text ("[image]"), so
-                # the keyword-search catalogue_context is usually empty. Pass the
-                # FULL catalogue instead — a customer asking "is this available?" about
-                # a photo should get a matched OR similar product suggestion, never a
-                # flat "no product code found" dead end.
-                image_catalogue_context = catalogue_context
-                if not image_catalogue_context and client:
-                    try:
-                        all_products = await catalogue_service.list_products(db, client.id)
-                        image_catalogue_context = catalogue_service.format_catalogue_context(
-                            all_products, for_display=True
-                        )
-                    except Exception:
-                        image_catalogue_context = ""
-                ai_reply = await vision_service.analyze_product_image(
-                    image_bytes,
-                    image_catalogue_context or "",
-                )
-                if ai_reply is None:
-                    # Vision call failed (already logged in vision_service) — fall
-                    # back to text-only handling for this message instead of
-                    # crashing or stalling the order flow.
-                    ai_reply = (
-                        "Image abhi process nahi ho payi 🙏 Aap product ka naam ya "
-                        "SKU type kar denge? Turant help karta/karti hoon."
-                    )
                 original_type = "image"
 
-            # Parse MATCHED_SKU prefix emitted by vision_service prompt.
-            # Strip it from the customer-facing reply and use it for SKU pinning.
-            import re as _re_img
-            _sku_prefix_match = _re_img.match(r"\[MATCHED_SKU:([A-Za-z0-9]+)\]\s*", ai_reply)
-            if _sku_prefix_match:
-                ai_reply = ai_reply[_sku_prefix_match.end():]
-                _vision_sku = _sku_prefix_match.group(1).upper()
-                if _vision_sku != "NONE" and client:
-                    _vision_browsing = (conv.current_stage or "greeting") not in (
+                # OCR-based product identification: reads the fixed-position
+                # "SKU: XXXXX" watermark storage_service.watermark_sku() burns
+                # into every outgoing product photo (see get_watermarked_image_url
+                # call sites above), so a customer who screenshots a product photo
+                # and re-sends it later — often with no text at all — still
+                # resolves to the right product. Chosen over the Groq vision LLM
+                # (vision_service.analyze_product_image) for this specific case:
+                # local, free, and no external model to 404/drift under us.
+                _ocr_sku = ocr_service.detect_sku_from_image(image_bytes)
+                _ocr_product = (
+                    await catalogue_service.find_product_by_sku(db, client.id, _ocr_sku)
+                    if _ocr_sku and client else None
+                )
+                logger.info(
+                    "Image OCR: conv=%s detected_sku=%s matched=%s",
+                    conv.id, _ocr_sku, bool(_ocr_product),
+                )
+
+                if _ocr_product is None:
+                    ai_reply = (
+                        "I couldn't identify a product from that image — could you "
+                        "tell me the product name or code?"
+                    )
+                else:
+                    _ocr_vi = await catalogue_service.get_product_variant_info(db, _ocr_product)
+                    _ocr_lines = [
+                        f"{_ocr_product.name} [{_ocr_product.sku}] — "
+                        f"{format_price(getattr(_ocr_product, 'price', 0) or 0)}"
+                    ]
+                    if _ocr_vi.get("available_colors"):
+                        _ocr_lines.append(f"Available colors: {', '.join(_ocr_vi['available_colors'])}")
+                    if _ocr_vi.get("available_sizes"):
+                        _ocr_lines.append(f"Available sizes: {', '.join(_ocr_vi['available_sizes'])}")
+                    _ocr_lines.append("")
+                    _ocr_lines.append("Would you like to order? (Yes / No)")
+                    ai_reply = "\n".join(_ocr_lines)
+
+                    # Treat the OCR'd SKU exactly like a typed-SKU pin — same
+                    # slot-reset + pending_product_sku write the vision-LLM match
+                    # used to do — but only outside an active order, matching the
+                    # order-stage guard the _in_order_flow branch above enforces.
+                    _ocr_browsing = (conv.current_stage or "greeting") not in (
                         "order_collection", "awaiting_final_confirmation", "payment", "completed"
                     )
-                    if _vision_browsing:
-                        _v_product = await catalogue_service.find_product_by_sku(
-                            db, client.id, _vision_sku
-                        )
-                        if _v_product:
-                            _img_reset_fields = [
-                                ("pending_order_quantity", None), ("selected_color", None),
-                                ("selected_size", None), ("selected_material", None),
-                                ("customer_name", None), ("delivery_address", None),
-                                ("payment_method", None), ("summary_shown", False),
-                            ]
-                            for _rf, _rv in _img_reset_fields:
-                                try:
-                                    await conversation_service.update_order_field(
-                                        db, conv.id, _rf, _rv
-                                    )
-                                    setattr(conv, _rf, _rv)
-                                except Exception as _exc:
-                                    logger.error("Vision SKU slot reset (%s): %s", _rf, _exc)
+                    if _ocr_browsing:
+                        _img_reset_fields = [
+                            ("pending_order_quantity", None), ("selected_color", None),
+                            ("selected_size", None), ("selected_material", None),
+                            ("customer_name", None), ("delivery_address", None),
+                            ("payment_method", None), ("summary_shown", False),
+                            # Image messages never reach the multi-choice
+                            # ladder (gated on message.type in ("text",
+                            # "interactive")), so an open "which one?" list
+                            # from an earlier inquiry gets no other chance to
+                            # be cleared before this re-pin.
+                            ("pending_choice_skus", None),
+                        ]
+                        for _rf, _rv in _img_reset_fields:
                             try:
                                 await conversation_service.update_order_field(
-                                    db, conv.id, "pending_product_sku", _vision_sku
+                                    db, conv.id, _rf, _rv
                                 )
-                                conv.pending_product_sku = _vision_sku
+                                setattr(conv, _rf, _rv)
                             except Exception as _exc:
-                                logger.error("Vision SKU pin error: %s", _exc)
-                            logger.info(
-                                "Vision-match pin: conv=%s SKU=%s", conv.id, _vision_sku
+                                logger.error("OCR SKU slot reset (%s): %s", _rf, _exc)
+                        try:
+                            await conversation_service.update_order_field(
+                                db, conv.id, "pending_product_sku", _ocr_product.sku
                             )
+                            conv.pending_product_sku = _ocr_product.sku
+                        except Exception as _exc:
+                            logger.error("OCR SKU pin error: %s", _exc)
+                        logger.info(
+                            "OCR-match pin: conv=%s SKU=%s", conv.id, _ocr_product.sku
+                        )
         elif message.type == "audio" and message.audio is not None:
             logger.info("Audio message from %s, media_id=%s", sender_phone, message.audio.id)
             # NOTE: the "🎤 Voice note suna..." acknowledgement is sent immediately
@@ -7962,15 +8632,83 @@ RULES:
                         _pq_dt = get_delivery_time_str(pinned_product, client) or "3–7 business days"
                         _pq_answer = ""
 
-                        # FIX 4: cross-product question during payment — try a confident
-                        # named-product catalogue match FIRST. _build_order_aside_answer's
-                        # generic "price"/"total" branches always answer with the pinned
-                        # product, so they must only run as a fallback or this never fires.
-                        _pq_cp = await _find_confident_product_match(
-                            db, client, user_text, getattr(conv, "pending_product_sku", None)
-                        )
-                        if _pq_cp is not None:
-                            _pq_answer = f"{_pq_cp.name} — ₹{int(getattr(_pq_cp, 'price', 0) or 0):,}."
+                        # Same tier order as order_collection (FIX2/FIX4) and the
+                        # AFC fix: exact-SKU lookup → confident name match →
+                        # availability answered from real stock/variant data →
+                        # KB → deterministic fact table. Previously this stage
+                        # only ever did a fuzzy name/description match (never
+                        # checked the SKU field, so a raw code like "PR17761"
+                        # never resolved) and, even on a match, only ever
+                        # returned price — never an actual availability answer —
+                        # so a pinned-product availability question fell through
+                        # everything and was silently swallowed by the generic
+                        # payment reminder below.
+                        _pq_pinned_sku = getattr(conv, "pending_product_sku", None)
+                        _pq_named_product = None
+                        _pq_named_not_found_label = None
+                        if client:
+                            try:
+                                for _pq_sku in catalogue_service.extract_skus_from_text(user_text):
+                                    if _pq_sku == _pq_pinned_sku:
+                                        continue
+                                    _pq_sku_match = await catalogue_service.find_product_by_sku(db, client.id, _pq_sku)
+                                    if _pq_sku_match is not None:
+                                        _pq_named_product = _pq_sku_match
+                                        break
+                                    # An explicit SKU-shaped code was named but doesn't
+                                    # resolve — remember it in case no other token in
+                                    # the message resolves to a real product either.
+                                    _pq_named_not_found_label = _pq_sku
+                                if _pq_named_product is None:
+                                    _pq_named_product = await _find_confident_product_match(
+                                        db, client, user_text, _pq_pinned_sku
+                                    )
+                            except Exception as _pqe:
+                                logger.warning("Payment-stage cross-product lookup failed: %s", _pqe)
+
+                        if _pq_named_product is None and _pq_named_not_found_label:
+                            # An explicit product code was named but isn't in the
+                            # catalogue — say so directly rather than silently
+                            # falling back to the pinned product's answer instead.
+                            _pq_answer = f"Sorry, we don't carry {_pq_named_not_found_label}."
+
+                        # Availability questions ("is X available?") resolved from
+                        # the CATALOG / variant's real stock, never the KB — KB
+                        # keyword overlap on a word like "available" can return an
+                        # unrelated FAQ.
+                        if not _pq_answer and _is_availability_question(user_text):
+                            if _pq_named_product is not None:
+                                _pq_named_variant_info = await catalogue_service.get_product_variant_info(db, _pq_named_product)
+                                _pq_named_stock = (
+                                    None if getattr(_pq_named_product, "has_variants", False)
+                                    else (getattr(_pq_named_product, "stock", None) or 0)
+                                )
+                                _pq_answer = _build_availability_answer(
+                                    user_text, _pq_named_product, _pq_named_variant_info, _pq_named_stock,
+                                )
+                                if _pq_answer:
+                                    logger.info(
+                                        "Payment availability question: conv=%s answered about named product sku=%s "
+                                        "(pinned=%s), skipping KB",
+                                        conv.id, getattr(_pq_named_product, "sku", None), _pq_pinned_sku,
+                                    )
+                            else:
+                                _pq_answer = _build_availability_answer(
+                                    user_text, pinned_product, variant_info, available_stock,
+                                )
+                                if _pq_answer:
+                                    logger.info(
+                                        "Payment availability question: conv=%s answered from catalog/variants, skipping KB",
+                                        conv.id,
+                                    )
+
+                        # A confident named-product match on a non-availability
+                        # question (price, "do you have X?", etc.) is more
+                        # specific than the KB/fact-table tiers below.
+                        if not _pq_answer and _pq_named_product is not None:
+                            _pq_answer = (
+                                f"{_pq_named_product.name} — ₹{int(getattr(_pq_named_product, 'price', 0) or 0):,}."
+                            )
 
                         # Issue A: KB takes priority over the deterministic fact table.
                         if not _pq_answer and client:
@@ -8003,7 +8741,7 @@ RULES:
                             )
                             _pq_reply = _pq_answer + _pq_suffix
                             logger.info(
-                                "Question at order stage → answered from KB/LLM, re-prompting conv=%s",
+                                "Question at payment stage → answered (sku/name/KB/fact-table tier), re-prompting conv=%s",
                                 conv.id,
                             )
                             logger.info(
@@ -8152,6 +8890,8 @@ RULES:
                 if _routing_outcome.llm_called:
                     _llm_called_this_turn = True
                     _llm_usage = _routing_outcome.llm_usage
+                if _routing_outcome.pre_images:
+                    _pending_pre_images = _routing_outcome.pre_images
     except Exception as exc:
         logger.error("AI processing error: %s", exc)
         _busy_msg = "Sorry, I'm a bit busy right now — please try again in a moment, or contact us directly."
@@ -8402,10 +9142,14 @@ RULES:
                 "english": "Sorry, we couldn't find that product in our catalogue. What would you like to order?",
                 "hindi": "Maafi, yeh product humare catalogue mein nahi mila. Aap kya order karna chahenge?",
                 "gujarati": "Maaf karo, aa product amara catalogue ma nathi malyo. Tame shu order karva mangho cho?",
+                "hindi_devanagari": "माफी, यह प्रोडक्ट हमारे कैटलॉग में नहीं मिला। आप क्या ऑर्डर करना चाहेंगे?",
+                "gujarati_script": "માફ કરશો, આ પ્રોડક્ટ અમારા કેટલોગમાં નથી મળ્યું. તમે શું ઓર્ડર કરવા માંગો છો?",
             }
-            if _oe_lang in ("hindi_roman", "hindi_devanagari", "hinglish"):
+            if _oe_lang in ("hindi_roman", "hinglish"):
                 ai_reply = _PRODUCT_NOT_FOUND_MSG["hindi"]
-            elif _oe_lang in ("gujarati_roman", "gujarati_script"):
+            elif _oe_lang in _PRODUCT_NOT_FOUND_MSG:
+                ai_reply = _PRODUCT_NOT_FOUND_MSG[_oe_lang]
+            elif _oe_lang == "gujarati_roman":
                 ai_reply = _PRODUCT_NOT_FOUND_MSG["gujarati"]
             else:
                 ai_reply = _PRODUCT_NOT_FOUND_MSG["english"]
@@ -8453,11 +9197,14 @@ RULES:
     # Only WhatsApp supports interactive messages; Instagram always gets text.
     _send_instruction = await decide_send_instruction(
         db, conv, client, stage, ai_reply, _next_slot, ctx.is_whatsapp, pinned_product,
+        variant_info=variant_info,
     )
     if _pre_texts:
         _send_instruction.pre_texts = _pre_texts
     if _pending_product_images:
         _send_instruction.images = list(_pending_product_images)
+    if _pending_pre_images:
+        _send_instruction.pre_images = list(_pending_pre_images)
 
     logger.info(
         "CONV-TRANSCRIPT conv=%s\n%s",

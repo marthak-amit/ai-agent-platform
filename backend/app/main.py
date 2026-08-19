@@ -230,6 +230,7 @@ async def _check_instagram_token() -> None:
 def _startup_checks() -> None:
     """Log a structured startup banner so Railway logs show config state immediately."""
     from app.config import get_settings as _gs
+    from app.services import ocr_service
     s = _gs()
     sep = "=" * 50
     logger.info(sep)
@@ -249,6 +250,7 @@ def _startup_checks() -> None:
         "configured" if s.razorpay_key_id else "not set",
     )
     logger.info(sep)
+    ocr_service.check_tesseract_installed()
 
 
 app = FastAPI(

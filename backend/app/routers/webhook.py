@@ -68,6 +68,12 @@ async def _is_rate_limited(phone: str) -> bool:
         return False
 
 
+async def _send_typing_indicator(wamid: str, phone_number_id: str | None) -> None:
+    """Fire-and-forget: show "typing..." to the sender of *wamid*. Never raises."""
+    try:
+        await outbound.send_typing_indicator(wamid, phone_number_id)
+    except Exception as exc:
+        logger.debug("Typing indicator send failed for wamid=%s: %s", wamid, exc)
 
 
 @router.get("", response_class=PlainTextResponse)
@@ -333,6 +339,20 @@ async def receive_message(
             logger.info("Duplicate message %s — skipping.", wamid)
             return {"status": "ok"}
 
+    # Resolve phone_number_id from webhook metadata now (pure in-memory parse,
+    # no I/O) so the typing indicator can fire before any DB/LLM/OCR work.
+    webhook_phone_number_id: str | None = None
+    try:
+        webhook_phone_number_id = payload.entry[0].changes[0].value.metadata.phone_number_id
+    except (IndexError, AttributeError):
+        pass
+
+    # Show "typing..." as early as possible — only for messages that survived
+    # rate-limit + dedup and are about to enter real processing. Fire-and-
+    # forget: never awaited, never allowed to delay or break the reply.
+    if wamid:
+        asyncio.create_task(_send_typing_indicator(wamid, webhook_phone_number_id))
+
     # Stash nonce parsed from interactive button IDs; validated after conv is loaded.
     _btn_nonce_parsed: tuple[str, str, str] | None = None
 
@@ -424,12 +444,6 @@ async def receive_message(
     # Resolve the client that owns this WhatsApp number.
     # display_phone_number in the webhook metadata is the business's number —
     # match it against client.whatsapp_number set during onboarding.
-    webhook_phone_number_id: str | None = None
-    try:
-        meta = payload.entry[0].changes[0].value.metadata
-        webhook_phone_number_id = meta.phone_number_id
-    except (IndexError, AttributeError):
-        pass
     client = await _get_client_by_phone_number_id(db, webhook_phone_number_id)
 
     try:

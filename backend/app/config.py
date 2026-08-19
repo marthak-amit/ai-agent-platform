@@ -32,6 +32,17 @@ class Settings(BaseSettings):
     cloudinary_cloud_name: str = ""
     cloudinary_api_key: str = ""
     cloudinary_api_secret: str = ""
+    # Cloudflare R2 (S3-compatible) — product/catalogue image storage.
+    r2_account_id: str = ""
+    r2_access_key_id: str = ""
+    r2_secret_access_key: str = ""
+    r2_bucket_name: str = ""
+    r2_endpoint: str = ""
+    # Public base URL images are served from once the bucket's public access
+    # is enabled (Cloudflare dashboard → bucket → Settings → Public access):
+    # either the bucket's r2.dev URL or a custom domain. Empty = R2 upload
+    # is disabled and product image uploads fall back to local /uploads/.
+    r2_public_base_url: str = ""
     frontend_url: str = "http://localhost:5173"
     secret_key: str = "change-me-in-production"
     admin_secret_key: str = "change-me-admin-secret"

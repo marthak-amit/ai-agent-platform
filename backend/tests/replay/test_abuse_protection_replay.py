@@ -382,6 +382,31 @@ async def test_s5b_cross_product_switch_confirmed(replay_http, replay_session):
 
 
 @pytest.mark.asyncio
+async def test_s5b2_image_request_after_switch_confirm_no_redundant_order_prompt(replay_http, replay_session):
+    """
+    After confirming a cross-product switch ('yes'), order intent for the
+    newly-pinned product is already settled. A subsequent image request for
+    that SAME (already-pinned) product must not re-ask "Would you like to
+    order? (Yes / No)" — it should just show the photo/card and continue
+    slot-filling. Regression test for the redundant re-ask bug.
+    """
+    phone, pnid, conv_id = await _seed_cross_product_scenario(replay_session, suffix="050005")
+    await _msg(replay_http, phone, "give me price of Banarasi Saree?", pnid=pnid)
+    await _msg(replay_http, phone, "yes", pnid=pnid)
+
+    conv = await _get_conv(replay_session, conv_id)
+    assert conv.pending_product_sku == "CP002", "sanity: switch must have been confirmed"
+
+    await _msg(replay_http, phone, "send me images", pnid=pnid)
+
+    reply = await _get_last_assistant_msg(replay_session, conv_id)
+    assert "would you like to order" not in reply.lower(), (
+        f"order intent was already confirmed by the switch 'yes' — must not re-ask, got: {reply!r}"
+    )
+    assert "banarasi" in reply.lower(), f"reply should still show the pinned product's card, got: {reply!r}"
+
+
+@pytest.mark.asyncio
 async def test_s5c_cross_product_switch_declined(replay_http, replay_session):
     """
     Replying 'no' to the switch-confirm prompt keeps the original pinned
@@ -398,6 +423,48 @@ async def test_s5c_cross_product_switch_declined(replay_http, replay_session):
     assert conv.current_stage == "order_collection", "must return to order_collection"
     assert conv.interrupted_sku is None, "interrupted_sku must be cleared after resolution"
     assert conv.pending_order_quantity == 2, "original slots must be untouched"
+
+
+@pytest.mark.asyncio
+async def test_s5d_cross_product_switch_offer_new_query_not_swallowed(replay_http, replay_session):
+    """
+    Replying to the switch-confirm prompt with an explicit, valid availability
+    query about a THIRD product (neither the pinned nor the offered one) must
+    be answered, not silently treated as a decline. Regression test for the
+    swallow-new-query bug in run_order_switch_confirm_guard's decline/unclear
+    branch (same bug class already fixed for the multi-choice-open guard).
+    """
+    phone, pnid, conv_id = await _seed_cross_product_scenario(replay_session, suffix="050004")
+
+    from app.models.product import Product as PModel
+    conv_before = await _get_conv(replay_session, conv_id)
+    third = PModel(
+        client_id=conv_before.client_id,
+        name="Designer Lehenga",
+        sku="CP1099",
+        price=12000.0,
+        stock=4,
+        is_active=True,
+        has_variants=False,
+    )
+    replay_session.add(third)
+    await replay_session.commit()
+
+    await _msg(replay_http, phone, "give me price of Banarasi Saree?", pnid=pnid)
+    conv = await _get_conv(replay_session, conv_id)
+    assert conv.current_stage == "awaiting_order_switch_confirm"
+
+    await _msg(replay_http, phone, "CP1099 is available?", pnid=pnid)
+
+    conv = await _get_conv(replay_session, conv_id)
+    assert conv.pending_product_sku == "CP001", "a genuine new query must not switch the pinned SKU"
+    assert conv.current_stage == "order_collection", "switch offer must be cancelled, back to order_collection"
+    assert conv.interrupted_sku is None, "interrupted_sku must be cleared after resolution"
+    assert conv.pending_order_quantity == 2, "original slots must be untouched"
+    reply = await _get_last_assistant_msg(replay_session, conv_id)
+    assert "lehenga" in reply.lower() or "12,000" in reply or "12000" in reply, (
+        f"reply must answer the availability question about the named product, got: {reply!r}"
+    )
 
 
 # ---------------------------------------------------------------------------

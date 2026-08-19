@@ -59,6 +59,15 @@ class InstagramMessage(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+class InstagramPostback(BaseModel):
+    """Payload of a tapped Generic Template postback button."""
+
+    payload: Optional[str] = None
+    title: Optional[str] = None
+
+    model_config = ConfigDict(extra="allow")
+
+
 class InstagramMessaging(BaseModel):
     """One DM event inside entry.messaging."""
 
@@ -66,6 +75,7 @@ class InstagramMessaging(BaseModel):
     recipient: dict
     timestamp: int
     message: Optional[InstagramMessage] = None
+    postback: Optional[InstagramPostback] = None
 
     def get_sender_id(self) -> Optional[str]:
         """Return the sender IGSID, or None."""
@@ -74,6 +84,10 @@ class InstagramMessaging(BaseModel):
     def get_text(self) -> Optional[str]:
         """Return the DM text, or None."""
         return self.message.text if self.message else None
+
+    def get_postback_payload(self) -> Optional[str]:
+        """Return the tapped postback button's payload (e.g. a SKU), or None."""
+        return self.postback.payload if self.postback else None
 
     def get_message_type(self) -> str:
         """Return the message type: 'text', 'image', 'audio', or 'unknown'."""

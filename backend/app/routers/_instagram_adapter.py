@@ -50,6 +50,9 @@ async def send_pipeline_result(
     """
     Send *result* via the Instagram Graph API.
 
+    - carousel_items present -> Generic Template (image + name + price per
+      card, one "Select" postback per card); on failure, fall back to plain
+      text (the numbered list already in result.text).
     - No buttons/list_options -> plain text.
     - buttons present, within the quick-reply cap -> send_quick_replies; on
       failure (or no `sent` truthy result), fall back to plain text.
@@ -66,13 +69,40 @@ async def send_pipeline_result(
         conversation_id=getattr(conv, "id", None),
     )
 
+    for _pre_img_url, _pre_img_caption in (result.pre_images or []):
+        try:
+            await outbound.ig_send_image(ig_user_id, recipient_igsid, _pre_img_url, **_gate_kw)
+            if _pre_img_caption:
+                await outbound.ig_send_dm(ig_user_id, recipient_igsid, _pre_img_caption, **_gate_kw)
+        except Exception as _pre_img_exc:
+            logger.error("Pre-text image send error (non-fatal): %s", _pre_img_exc)
+
     for _pre in (result.pre_texts or []):
         try:
             await outbound.ig_send_dm(ig_user_id, recipient_igsid, _pre, **_gate_kw)
         except Exception:
             pass
 
-    if result.buttons and len(result.buttons) <= _IG_QUICK_REPLY_MAX:
+    if result.carousel_items:
+        elements = [
+            {
+                "title": item.title,
+                "subtitle": item.subtitle,
+                **({"image_url": item.image_url} if item.image_url else {}),
+                "buttons": [{"type": "postback", "title": "Select", "payload": item.sku}],
+            }
+            for item in result.carousel_items[:10]
+        ]
+        sent = await outbound.ig_send_generic_template(
+            ig_user_id, recipient_igsid, elements, **_gate_kw,
+        )
+        if not sent:
+            logger.info(
+                "Multi-product reply: conv=%s route=text_fallback count=%s",
+                getattr(conv, "id", None), len(result.carousel_items),
+            )
+            await outbound.ig_send_dm(ig_user_id, recipient_igsid, result.text, **_gate_kw)
+    elif result.buttons and len(result.buttons) <= _IG_QUICK_REPLY_MAX:
         sent = await outbound.ig_send_quick_replies(
             ig_user_id, recipient_igsid, result.text,
             [{"id": b.id, "title": b.title} for b in result.buttons],

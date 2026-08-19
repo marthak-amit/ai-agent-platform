@@ -80,6 +80,54 @@ async def _raw_send_text_message(
         return response.json()
 
 
+async def _raw_send_typing_indicator(
+    wamid: str,
+    phone_number_id: str | None = None,
+    access_token: str | None = None,
+) -> dict:
+    """
+    Mark an inbound message read and show the "typing..." indicator to its sender.
+
+    Meta displays the indicator for up to 25 seconds or until the real reply
+    is sent, whichever comes first. This responds to a specific inbound
+    message (by wamid), not a business-initiated send, so it is exempt from
+    the 24h customer-service window — see app/services/outbound.py for why
+    the wrapper doesn't route it through send_gate.check_send().
+
+    Args:
+        wamid:            The incoming message's id to mark as read.
+        phone_number_id:  Optional per-client WhatsApp phone number ID.
+        access_token:     Optional per-client access token.
+
+    Returns:
+        The parsed JSON response dict from Meta API on success.
+
+    Raises:
+        httpx.HTTPStatusError: If Meta API returns a 4xx or 5xx response.
+    """
+    settings = get_settings()
+
+    pid = phone_number_id or settings.whatsapp_phone_number_id
+    url = f"{META_API_BASE_URL}/{META_API_VERSION}/{pid}/messages"
+
+    headers = {
+        "Authorization": f"Bearer {access_token or settings.whatsapp_access_token}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": wamid,
+        "typing_indicator": {"type": "text"},
+    }
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        return response.json()
+
+
 async def _raw_send_button_message(
     to_phone_number: str,
     body_text: str,

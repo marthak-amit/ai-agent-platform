@@ -7,10 +7,13 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # gcc + libpq-dev are required to compile asyncpg from source.
+# tesseract-ocr is the actual OCR engine pytesseract binds to at runtime
+# (pytesseract itself, in requirements.txt, is just the Python wrapper).
 # Using --no-install-recommends keeps the image lean.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc \
         libpq-dev \
+        tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies first (own layer — cached unless requirements change).

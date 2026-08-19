@@ -351,6 +351,10 @@ async def replay_http(replay_db_url, _clean_replay_db, monkeypatch):
         mock.AsyncMock(return_value=None),
     )
     monkeypatch.setattr(
+        "app.services.whatsapp_service._raw_send_typing_indicator",
+        mock.AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
         "app.services.gemini_service.generate_reply",
         mock.AsyncMock(return_value="__AI_REPLY__"),
     )

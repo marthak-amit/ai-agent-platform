@@ -60,6 +60,12 @@ async def send_pipeline_result(
         conversation_id=conv.id,
     )
 
+    for _pre_img_url, _pre_img_caption in (result.pre_images or []):
+        try:
+            await outbound.send_image(sender_phone, _pre_img_url, _pre_img_caption, **_gate_kw)
+        except Exception as _pre_img_exc:
+            logger.error("Pre-text image send error (non-fatal): %s", _pre_img_exc)
+
     for _pre in (result.pre_texts or []):
         try:
             await outbound.send_text(sender_phone, _pre, **_gate_kw)

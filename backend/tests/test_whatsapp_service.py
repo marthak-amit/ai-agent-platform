@@ -126,6 +126,49 @@ async def test_send_document_message_success(mock_httpx_client, mock_settings):
     assert payload["to"] == "919999999999"
 
 
+async def test_send_typing_indicator_success(mock_httpx_client, mock_settings):
+    """send_typing_indicator posts a read+typing status keyed by the wamid, not 'to'."""
+    from app.services.whatsapp_service import _raw_send_typing_indicator as send_typing_indicator
+
+    mock_client, _ = mock_httpx_client
+
+    with patch("app.services.whatsapp_service.httpx.AsyncClient", return_value=mock_client):
+        result = await send_typing_indicator("wamid.abc123")
+
+    assert result == {"messages": [{"id": "wamid.reply123"}]}
+
+    call_args = mock_client.post.call_args
+    url = call_args[0][0]
+    assert "1234567890" in url
+    assert "v21.0" in url
+
+    payload = call_args[1]["json"]
+    assert payload["messaging_product"] == "whatsapp"
+    assert payload["status"] == "read"
+    assert payload["message_id"] == "wamid.abc123"
+    assert payload["typing_indicator"] == {"type": "text"}
+    assert "to" not in payload
+
+
+async def test_send_typing_indicator_raises_on_http_error(mock_settings):
+    """send_typing_indicator propagates HTTPStatusError on 4xx/5xx."""
+    from app.services.whatsapp_service import _raw_send_typing_indicator as send_typing_indicator
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "400 Bad Request", request=MagicMock(), response=MagicMock()
+    )
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(return_value=mock_response)
+
+    with patch("app.services.whatsapp_service.httpx.AsyncClient", return_value=mock_client):
+        with pytest.raises(httpx.HTTPStatusError):
+            await send_typing_indicator("wamid.abc123")
+
+
 async def test_send_document_message_without_caption_omits_key(mock_httpx_client, mock_settings):
     """send_document_message omits the caption key entirely when none is given."""
     from app.services.whatsapp_service import _raw_send_document_message as send_document_message

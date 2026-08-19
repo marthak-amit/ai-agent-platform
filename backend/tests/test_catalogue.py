@@ -2,7 +2,7 @@
 Tests for app/services/catalogue_service.py and app/routers/catalogue.py.
 """
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -362,3 +362,51 @@ def test_delete_product_not_found_returns_404(client, mock_db, mock_settings, ma
         )
 
     assert response.status_code == 404
+
+
+# ── upload-image endpoint ────────────────────────────────────────────────────
+
+def _auth_headers(mock_db, make_test_user):
+    """Build an Authorization header and wire mock_db to resolve the JWT client."""
+    from app.services.auth_service import create_access_token
+    from app.models.client import Client
+
+    token = create_access_token({"sub": "owner@biz.com"})
+    existing_client = Client(id=1, email="owner@biz.com", hashed_password="h", is_active=True)
+    auth_result = MagicMock()
+    auth_result.scalar_one_or_none.return_value = make_test_user(existing_client)
+    mock_db.execute.return_value = auth_result
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_upload_product_image_returns_url(client, mock_db, mock_settings, make_test_user):
+    """POST /catalogue/products/upload-image stores the file and returns its URL."""
+    headers = _auth_headers(mock_db, make_test_user)
+
+    with patch(
+        "app.routers.catalogue.storage_service.upload_product_image",
+        return_value="https://media.example.com/1/42/abc123.jpg",
+    ) as mock_upload:
+        response = client.post(
+            "/catalogue/products/upload-image",
+            files={"file": ("photo.jpg", b"fake-image-bytes", "image/jpeg")},
+            data={"product_id": "42"},
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"url": "https://media.example.com/1/42/abc123.jpg"}
+    mock_upload.assert_called_once_with(1, b"fake-image-bytes", 42)
+
+
+def test_upload_product_image_rejects_disallowed_content_type(client, mock_db, mock_settings, make_test_user):
+    """POST /catalogue/products/upload-image returns 400 for a non-image content type."""
+    headers = _auth_headers(mock_db, make_test_user)
+
+    response = client.post(
+        "/catalogue/products/upload-image",
+        files={"file": ("doc.pdf", b"%PDF-1.4", "application/pdf")},
+        headers=headers,
+    )
+
+    assert response.status_code == 400

@@ -15,6 +15,7 @@ served via the /invoices StaticFiles mount (app/main.py).
 from __future__ import annotations
 
 import io
+import logging
 import os
 from datetime import datetime
 from typing import Optional
@@ -29,6 +30,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.models.order import Order
+
+logger = logging.getLogger(__name__)
 
 # Same directory/convention as app/routers/payment.py's _INVOICES_DIR.
 _INVOICES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "invoices")
@@ -405,24 +408,42 @@ def generate_order_invoice(
 
 def save_order_invoice_pdf(order_id: int, pdf_bytes: bytes) -> str:
     """
-    Write an order-invoice PDF to local disk and return its absolute URL.
+    Store an order-invoice PDF and return its publicly reachable URL.
 
-    Uses the same backend/invoices/ directory as the Payment/GST invoice
-    flow, with a distinct filename prefix to avoid collisions.
+    Uploads to R2 when configured (same bucket/public-URL setup as product
+    images — see storage_service.py), so the link survives Railway
+    redeploys, which wipe local disk. Falls back to backend/invoices/ on
+    local disk (same directory/convention as the Payment/GST invoice flow)
+    when R2 isn't configured, matching upload_product_image's fallback.
 
     Args:
         order_id:  Order row ID (used in the filename).
         pdf_bytes: PDF content to write.
 
     Returns:
-        Absolute URL built from settings.backend_public_url, e.g.
-        "https://app.example.com/invoices/order_invoice_42.pdf".
+        Publicly fetchable URL to the PDF. WhatsApp's document send requires
+        this to be an absolute HTTPS URL — see the backend_public_url warning
+        below if it isn't.
     """
-    os.makedirs(_INVOICES_DIR, exist_ok=True)
+    from app.services.storage_service import upload_file
+
     filename = f"order_invoice_{order_id}.pdf"
+
+    r2_url = upload_file(f"invoices/{filename}", pdf_bytes, "application/pdf")
+    if r2_url:
+        return r2_url
+
+    os.makedirs(_INVOICES_DIR, exist_ok=True)
     filepath = os.path.join(_INVOICES_DIR, filename)
     with open(filepath, "wb") as f:
         f.write(pdf_bytes)
 
     settings = get_settings()
+    if not settings.backend_public_url:
+        logger.warning(
+            "BACKEND_PUBLIC_URL is unset and R2 isn't configured — invoice link "
+            "for order %s will be a relative path, and WhatsApp's document send "
+            "will fail with a 400. Set BACKEND_PUBLIC_URL or configure R2.",
+            order_id,
+        )
     return f"{settings.backend_public_url}/invoices/{filename}"

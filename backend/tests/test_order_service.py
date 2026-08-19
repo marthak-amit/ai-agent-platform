@@ -6,6 +6,8 @@ new invoice-generation-and-send behavior it triggers.
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
+
 from app.models.client import Client
 from app.models.conversation import Conversation
 from app.models.order import Order
@@ -161,3 +163,47 @@ async def test_mark_order_paid_no_conversation_skips_document_send(mock_db):
     assert result is True
     mock_db.execute.assert_not_called()  # no Conversation lookup without conversation_id
     mock_send_doc.assert_not_called()
+
+
+async def test_mark_order_paid_logs_meta_response_body_on_send_failure(mock_db, caplog):
+    """A WhatsApp 400 on invoice send logs Meta's response body (not just the status code)
+    and alerts the owner — reproduces the ORD-2026-0037 incident (relative invoice_url
+    rejected by Meta's document-link validation)."""
+    order = _make_order()
+    client = _make_client(phone="918888888888")
+    mock_db.execute.return_value = _conv_result("whatsapp")
+
+    request = httpx.Request("POST", "https://graph.facebook.com/v21.0/123/messages")
+    response = httpx.Response(
+        400,
+        json={"error": {"message": "Param document[link] is not a valid URL", "code": 100}},
+        request=request,
+    )
+    send_error = httpx.HTTPStatusError("400 Bad Request", request=request, response=response)
+
+    with patch.object(
+        order_service, "_deduct_product_stock", new=AsyncMock()
+    ), patch(
+        "app.services.invoice_service.generate_invoice_number", new=AsyncMock(return_value="INV-7-0001")
+    ), patch(
+        "app.services.invoice_service.load_client_logo_bytes", new=AsyncMock(return_value=None)
+    ), patch(
+        "app.services.invoice_service.generate_order_invoice", return_value=b"%PDF-fake"
+    ), patch(
+        "app.services.invoice_service.save_order_invoice_pdf",
+        return_value="/invoices/order_invoice_1.pdf",  # the actual malformed-URL bug
+    ), patch(
+        "app.services.outbound.send_document", new=AsyncMock(side_effect=send_error)
+    ), patch(
+        "app.services.outbound.send_owner_text", new=AsyncMock()
+    ) as mock_owner_alert, caplog.at_level("ERROR"):
+        result = await order_service.mark_order_paid(mock_db, order, client)
+
+    assert result is True  # paid transition still succeeds
+    assert "Param document[link] is not a valid URL" in caplog.text
+    assert "400" in caplog.text
+    # New-order notification fires first; invoice-failure alert is the second owner text.
+    assert mock_owner_alert.call_count == 2
+    failure_alert = mock_owner_alert.call_args_list[1].args[1]
+    assert "Invoice delivery failed" in failure_alert
+    assert "ORD-2026-0001" in failure_alert

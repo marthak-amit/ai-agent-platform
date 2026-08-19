@@ -208,7 +208,7 @@ async def receive_instagram_event(
     ig_user_id = payload.get_ig_user_id()
 
     dm = payload.get_first_dm()
-    if dm and dm.message is not None:
+    if dm and (dm.message is not None or dm.postback is not None):
         return await _handle_dm(db, ig_user_id, dm)
 
     comment = payload.get_first_comment()
@@ -224,8 +224,9 @@ async def _handle_dm(
     dm: InstagramMessaging,
 ) -> dict:
     """
-    Process an incoming Instagram DM (text, image, or audio) through the
-    same channel-neutral order pipeline WhatsApp uses.
+    Process an incoming Instagram DM (text, image, audio, or a tapped
+    carousel postback button) through the same channel-neutral order
+    pipeline WhatsApp uses.
 
     Builds a WhatsAppMessage-shaped InboundContext (text/image/audio are all
     expressed via the same schema WhatsApp's webhook router already builds —
@@ -245,7 +246,15 @@ async def _handle_dm(
     """
     sender_igsid = dm.get_sender_id()
     msg_type = dm.get_message_type()
-    mid = dm.message.mid if dm.message else None
+    # Postback taps carry no Meta message id — synthesize a stable one (same
+    # non-Meta-wamid pattern ig_comment_service.py already uses with
+    # comment_id) so the dedup check right below still protects against Meta
+    # retrying a postback webhook delivery on timeout, same as every other
+    # message type.
+    mid = dm.message.mid if dm.message else (
+        f"ig_postback:{sender_igsid}:{dm.get_postback_payload()}:{dm.timestamp}"
+        if dm.postback else None
+    )
 
     client = await _get_active_client(db, ig_user_id)
 
@@ -299,6 +308,18 @@ async def _handle_dm(
             audio=AudioContent(id=audio_url or "", mime_type="audio/mp4"),
         )
         user_text = "[voice note]"
+    elif dm.postback is not None:
+        # A tapped Generic Template carousel button — payload is the SKU the
+        # customer picked. Synthesized as a plain text message so it flows
+        # into the exact same pending_choice_skus resolution ladder a typed
+        # "2" or a decoded WhatsApp button tap already uses (order_pipeline.py's
+        # message.type in ("text", "interactive") gate) — no separate
+        # resolution path needed.
+        user_text = dm.get_postback_payload() or ""
+        message = WhatsAppMessage(
+            id=mid or "", **{"from": sender_igsid}, timestamp="0", type="text",
+            text=TextContent(body=user_text),
+        )
     else:
         logger.info("Skipping unsupported Instagram message type '%s'.", msg_type)
         return {"status": "ok"}

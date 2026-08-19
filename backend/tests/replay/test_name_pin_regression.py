@@ -551,10 +551,13 @@ async def test_gujarati_fallback_reply_stays_gujarati(replay_http, replay_sessio
     assert "i'd be happy to help" not in reply_lower, (
         f"Fallback guard reply is still the hardcoded English string. Got: {reply!r}"
     )
-    # The Gujarati "which_item" template (language_templates.GUJARATI_TEMPLATES)
-    # renders "... Tamne kayu item joiye chhe?" — assert on its distinctive tail.
-    assert "kayu item joiye chhe" in reply_lower, (
-        f"Reply must use the Gujarati which_item template. Got: {reply!r}"
+    # The customer wrote in Gujarati SCRIPT, so the reply must use the
+    # script-accurate "which_item" template (language_templates.
+    # GUJARATI_SCRIPT_TEMPLATES), not the romanized one — assert on its
+    # distinctive Gujarati-script tail.
+    assert "કયું આઇટમ જોઈએ છે" in reply, (
+        f"Reply must use the Gujarati SCRIPT which_item template, not the "
+        f"romanized fallback. Got: {reply!r}"
     )
 
     # Confirm the conversation's persisted language was actually set from this

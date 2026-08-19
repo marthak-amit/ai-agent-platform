@@ -12,6 +12,7 @@ import logging
 from datetime import date, datetime, timezone
 from typing import Optional
 
+import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -97,8 +98,17 @@ async def mark_order_paid(
     # transition above (which has already committed).
     try:
         await _generate_and_send_invoice(db, order, client)
+    except httpx.HTTPStatusError as exc:
+        # raise_for_status() alone only gives the status code — Meta's response
+        # body has the actual reason (invalid link, unsupported media, etc.).
+        logger.error(
+            "mark_order_paid: invoice send failed for %s — %s %s: %s",
+            order.order_number, exc.response.status_code, exc.request.url, exc.response.text,
+        )
+        await _notify_owner_invoice_failed(order, client)
     except Exception as exc:
         logger.warning("mark_order_paid: invoice generation failed for %s: %s", order.order_number, exc)
+        await _notify_owner_invoice_failed(order, client)
 
     logger.info("mark_order_paid: order %s → paid, stock deducted.", order.order_number)
     return True
@@ -351,6 +361,31 @@ async def _notify_owner_new_order(order: Order, client) -> None:
         f"Address: {order.delivery_address}\n"
         f"Payment: {order.payment_method}\n"
         f"━━━━━━━━━━━━━━━\n"
+        f"View in dashboard: /orders"
+    )
+
+    from app.services import outbound
+    await outbound.send_owner_text(client.phone, message)
+
+
+async def _notify_owner_invoice_failed(order: Order, client) -> None:
+    """Alert the business owner via WhatsApp when a customer's invoice PDF fails to send.
+
+    Best-effort — the customer already didn't receive their invoice, so this
+    at least surfaces the failure to the business instead of it sitting
+    silently in a log, so they can share the PDF manually. Full error detail
+    goes to the logger (see the caller in mark_order_paid), not this message.
+    """
+    if not client.phone:
+        return
+
+    message = (
+        f"⚠️ Invoice delivery failed\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"Order: #{order.order_number}\n"
+        f"Customer: {order.customer_name} ({order.customer_phone})\n"
+        f"The invoice PDF could not be sent on WhatsApp — please share it "
+        f"with the customer manually.\n"
         f"View in dashboard: /orders"
     )
 
