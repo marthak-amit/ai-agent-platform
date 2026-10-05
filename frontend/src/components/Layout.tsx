@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useAuth } from "../context/AuthContext";
+import { useRealtime } from "../context/RealtimeContext";
 import Logo from "./Logo";
 import type { CurrentUser, PermissionKey } from "../types";
 import {
@@ -22,6 +23,8 @@ import {
   ExternalLink,
   FlaskConical,
   Brain,
+  Wallet,
+  AlertTriangle,
 } from "lucide-react";
 
 const APP_BASE_URL = (import.meta.env.VITE_APP_URL as string) || "http://localhost:5173";
@@ -32,6 +35,7 @@ const NAV_ITEMS: { path: string; key: string; icon: typeof LayoutDashboard; perm
   { path: "/dashboard",     key: "nav.dashboard",     icon: LayoutDashboard },
   { path: "/conversations", key: "nav.conversations", icon: MessageSquare, permission: "manual_reply" },
   { path: "/orders",        key: "nav.orders",        icon: ClipboardList, permission: "order_view" },
+  { path: "/payments",      key: "nav.payments",      icon: Wallet, permission: "payment_verify" },
   { path: "/leads",         key: "nav.leads",         icon: Users, ownerOnly: true },
   { path: "/customers",     key: "nav.customers",     icon: UserCheck, ownerOnly: true },
   { path: "/analytics",     key: "nav.analytics",     icon: BarChart2, permission: "analytics_view" },
@@ -82,6 +86,7 @@ function AgentStatusDot({ client }: { client: { whatsapp_phone_number_id?: strin
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const { client, signOut, changeLanguage } = useAuth();
+  const { pendingCount, setupAlert } = useRealtime();
   const { t } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
@@ -132,7 +137,15 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 }`}
               >
                 <Icon size={18} className={active ? "text-white" : "text-gray-400"} />
-                {t(item.key)}
+                <span className="flex-1">{t(item.key)}</span>
+                {item.path === "/payments" && pendingCount > 0 && (
+                  <span
+                    className="min-w-[20px] h-5 px-1.5 rounded-full bg-brand-warning text-brand-secondary text-[11px] font-bold flex items-center justify-center"
+                    aria-label={`${pendingCount} ${t("payments.tab_verify")}`}
+                  >
+                    {pendingCount > 99 ? "99+" : pendingCount}
+                  </span>
+                )}
               </Link>
             );
           })}
@@ -227,6 +240,19 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           </button>
           <Logo className="h-8 w-auto" />
         </div>
+
+        {/* Missing-UPI alert: a customer reached checkout with no UPI ID configured */}
+        {setupAlert && (
+          <div className="bg-brand-warning/20 border-b border-brand-warning/50 px-4 py-2 flex items-center gap-2 text-sm text-amber-900 shrink-0">
+            <AlertTriangle size={16} className="shrink-0" />
+            <span className="flex-1">{t("payments.pd_missing_alert")}</span>
+            {client?.current_user.is_owner && (
+              <Link to="/settings/payment" className="font-semibold underline whitespace-nowrap">
+                {t("payments.pd_setup_link")}
+              </Link>
+            )}
+          </div>
+        )}
 
         {/* Page content */}
         <main className="flex-1 overflow-y-auto">

@@ -36,6 +36,7 @@ from app.services import language_service as _lang_svc, usage_service, voice_ser
 from app.services import ocr_service, storage_service
 from app.services.delivery_service import get_delivery_time_str
 from app.services.language_templates import format_price, get_template
+from app.services import payment_verification_service, stock_reservation_service
 from app.services.order_state_machine import RenderError
 
 # NOTE: deliberately uses the webhook router's logger name (not __name__) so
@@ -1127,8 +1128,7 @@ async def run_cancel_in_payment_guard(
         )
         _pc_order = _pc_result.scalar_one_or_none()
         if _pc_order:
-            _pc_order.status = "cancelled"
-            await db.commit()
+            await payment_verification_service.cancel_by_customer(db, _pc_order)
             logger.info(
                 "Order %s → cancelled (conv=%s) [PAYMENT-STAGE CANCEL]",
                 _pc_order.order_number, conv.id,
@@ -3632,8 +3632,7 @@ async def run_slot_state_machine(
                 )
                 _order_to_cancel = _cancel_order_result.scalar_one_or_none()
                 if _order_to_cancel:
-                    _order_to_cancel.status = "cancelled"
-                    await db.commit()
+                    await payment_verification_service.cancel_by_customer(db, _order_to_cancel)
                     logger.info(
                         "Order %s → cancelled (conv=%s) [AFC CANCEL]",
                         _order_to_cancel.order_number, conv.id,
@@ -4498,8 +4497,7 @@ async def run_slot_state_machine(
                     )
                     _order_to_cancel2 = _co2_result.scalar_one_or_none()
                     if _order_to_cancel2:
-                        _order_to_cancel2.status = "cancelled"
-                        await db.commit()
+                        await payment_verification_service.cancel_by_customer(db, _order_to_cancel2)
                         logger.info(
                             "Order %s → cancelled (conv=%s) [CANCEL intent]",
                             _order_to_cancel2.order_number, conv.id,
@@ -5419,19 +5417,32 @@ async def _render_order_reply(
         return _gt(lang, "already_confirmed")
 
     if action in ("show_payment", "reask_payment"):
+        from app.services import payment_verification_service as _pvs
+
         _upi = getattr(client, "upi_id", None) if client else None
         if not _upi:
-            raise RenderError(
-                f"UPI ID missing for client {getattr(client, 'id', '?')} "
-                f"(action={action!r}, conv={conv.id})"
+            # No UPI ID configured: block the payment step (run_order_payment
+            # refuses to create the order), tell the customer plainly, and
+            # raise the dashboard alert so the seller fixes it.
+            if client is not None:
+                try:
+                    await _pvs.raise_missing_upi_alert(db, client, conv)
+                except Exception as _alert_exc:
+                    logger.error("Missing-UPI alert failed for client %s: %s", client.id, _alert_exc)
+            return _gt(lang, "pay_unavailable")
+        # An order already awaiting payment (duplicate "yes", or a customer
+        # chatting while pending): re-send ITS instruction. Before the order
+        # exists this text is provisional — handle_inbound_message replaces it
+        # with the real instruction (order #, QR) right after creation.
+        _open_order = await _pvs.find_open_payment_order(db, conv.id)
+        if _open_order is not None:
+            return (
+                _pvs.instruction_text(_open_order, client, lang)
+                + "\n\n" + _gt(lang, "pay_send_screenshot")
             )
-        _instr = getattr(client, "payment_instructions", None) if client else None
-        _instr_part = f"\n{_instr}" if _instr else ""
         return (
-            f"Please pay {format_price(_total)} to complete your order:\n"
-            f"UPI ID: {_upi}\n"
-            f"(GPay / PhonePe / Paytm){_instr_part}\n"
-            f"Reply 'paid' once done. ✅"
+            f"{_gt(lang, 'pay_instruction', order_number='—', items='', amount=format_price(_total), upi_id=_upi, payee_line='', extra='')}"
+            f"\n\n{_gt(lang, 'pay_send_screenshot')}"
         )
 
     if action in ("confirm_paid_upi", "confirm_paid_cod"):
@@ -6556,70 +6567,19 @@ async def run_order_payment(
         except Exception as exc:
             logger.warning("Quantity default-to-1 failed: %s", exc)
 
-    # ── UPI payment confirmed: update pending_payment → confirmed ──────────────
-    # When customer says "paid" and stage advances from payment → completed,
-    # find the most-recent pending_payment order and mark it confirmed.
-    # Stock is deducted HERE (not at order creation) so unpaid orders never
-    # reserve inventory.
-    #
-    # BUG 2 FIX: query filters by status='pending_payment' and orders by
-    # created_at DESC so we always resolve the CURRENT cycle's order, never
-    # a previously-paid order from an earlier order in the same conversation.
-    # If no pending_payment order is found, we log a warning and skip — sending
-    # a phantom "Order confirmed!" on a stale order is worse than silence.
-    if (
-        stage == "completed"
-        and _stored_stage == "payment"
-        and client
-    ):
-        from app.models.order import Order as OrderModel
-        _pay_confirm_result = await db.execute(
-            select(OrderModel)
-            .where(
-                OrderModel.conversation_id == conv.id,
-                OrderModel.status == "pending_payment",
-            )
-            .order_by(OrderModel.created_at.desc())
-            .limit(1)
+    # ── UPI payment confirmation is NOT self-service any more ──────────────────
+    # A customer typing "paid" no longer marks an order paid (and never
+    # deducts stock): payment_inbound.pre_process turns a screenshot into a
+    # PaymentProof (order → payment_submitted) and the seller approves it from
+    # the dashboard (payment_verification_service.approve). If a "paid"
+    # transition still reaches here, the order stays pending_payment.
+    if stage == "completed" and _stored_stage == "payment" and client:
+        logger.info(
+            "UPI 'paid' text reached run_order_payment for conv=%s — ignoring; "
+            "payment is confirmed only via seller-approved screenshot.",
+            conv.id,
         )
-        _pay_order = _pay_confirm_result.scalar_one_or_none()
-        if _pay_order:
-            try:
-                await order_service.mark_order_paid(db, _pay_order, client)
-                out.payment_confirmed = True
-                out.order = _pay_order
-                logger.info(
-                    "UPI payment confirmed via mark_order_paid: order %s conv=%s",
-                    _pay_order.order_number, conv.id,
-                )
-                # Update customer profile stats
-                try:
-                    await customer_service.record_order(
-                        db,
-                        client_id=client.id,
-                        phone=sender_phone,
-                        order_total=_pay_order.total_amount,
-                        customer_name=conv.customer_name,
-                        delivery_address=conv.delivery_address,
-                        payment_method=_pay_order.payment_method,
-                    )
-                    await db.commit()
-                except Exception as exc:
-                    logger.warning("Customer stats update on paid failed: %s", exc)
-                # BUG 1 FIX: reset conversation to a clean state for the next order cycle.
-                # Clears product-specific slots; keeps customer name + address for convenience.
-                await _reset_order_slots_after_completion(db, conv.id, conv)
-            except Exception as exc:
-                logger.error("UPI order confirmation failed for conv=%s: %s", conv.id, exc)
-        else:
-            # No pending_payment order found — this is a phantom "paid" signal
-            # (e.g. after an order was already paid, or no order was ever created).
-            # Log a warning and do NOT send a confirmation reply.
-            logger.warning(
-                "UPI 'paid' received but no pending_payment order found for conv=%s "
-                "— phantom confirm blocked.",
-                conv.id,
-            )
+        stage = "payment"
 
     # Auto-create order when the conversation reaches 'completed' (COD) or
     # 'payment' (UPI pending) stage and all required fields are collected.
@@ -6745,8 +6705,17 @@ async def run_order_payment(
                         _oc_vr = await db.execute(_oc_vstmt)
                         _oc_variant = _oc_vr.scalars().first()
                         _oc_stock = _oc_variant.stock if _oc_variant else 0
+                        if _oc_variant is not None:
+                            # Units held by other customers' unpaid orders aren't available.
+                            _oc_stock -= await stock_reservation_service.reserved_quantity(
+                                db, product.id, _oc_variant.id
+                            )
                     else:
                         _oc_stock = getattr(product, "stock", None)
+                        if _oc_stock is not None:
+                            _oc_stock -= await stock_reservation_service.reserved_quantity(db, product.id)
+                    if _oc_stock is not None:
+                        _oc_stock = max(0, _oc_stock)
                     if _oc_stock is not None and conv.pending_order_quantity > _oc_stock:
                         # Capture the requested qty BEFORE clearing it — the
                         # reset below used to run first, so this log and the
@@ -6869,6 +6838,23 @@ async def run_order_payment(
                     # override silently — agent already explained UPI-only.
                     conv_payment = "UPI"
                 resolved_payment = conv_payment or ("COD" if accepts_cod else "UPI")
+
+                # Manual-UPI flow needs a UPI ID to pay to. Without one the
+                # payment step is blocked: no order is created, the customer
+                # gets the "payment is being set up" message, and the seller
+                # gets a dashboard alert (raised in _render_order_reply).
+                if resolved_payment == "UPI" and not getattr(client, "upi_id", None):
+                    stage = "awaiting_final_confirmation"
+                    try:
+                        await conversation_service.update_stage(db, conv.id, stage)
+                        conv.current_stage = stage
+                    except Exception as _se:
+                        logger.error("Stage revert after upi_missing block: %s", _se)
+                    out.order_error = {
+                        "kind": "upi_missing", "requested_qty": None,
+                        "stock": None, "product_name": None,
+                    }
+                    raise ValueError("order_blocked:upi_missing")
 
                 # All orders start as pending_payment; mark_order_paid() transitions
                 # COD orders to paid immediately after creation.
@@ -7190,8 +7176,8 @@ async def decide_send_instruction(
         button_type = "text"
     # Payment stage: show "I've Paid" button alongside the UPI instructions.
     # "paid_done" maps to "paid" in the interactive parser (already wired).
-    elif stage == "payment" and is_whatsapp:
-        button_type = "paid_button"
+    # (No "I've Paid" button any more: payment is proven by a screenshot, so
+    # the payment stage is plain text — see payment_inbound.pre_process.)
 
     if button_type == "payment_buttons":
         # Build button list based on enabled payment methods for this client/order
@@ -7491,9 +7477,39 @@ class InboundContext:
     btn_nonce_parsed: "tuple[str, str, str] | None"
     download_media: object
     is_whatsapp: bool = True
+    # Set by payment_inbound.pre_process when an inbound image/audio has been
+    # re-hosted in our storage (Meta media URLs expire).
+    media_url: "str | None" = None
+    media_type: "str | None" = None
 
 
 async def handle_inbound_message(ctx: InboundContext) -> PipelineResult:
+    """
+    Channel-neutral entry point: payment/media pre-hooks → pipeline → persistence post-hook.
+
+    pre_process may short-circuit (customer screenshot while an order awaits
+    manual UPI verification, or a bare "paid" with no image); otherwise the
+    full pipeline below runs. post_process then guarantees the inbound message
+    is persisted (with channel + media_url) and announces new messages in real
+    time. See app/services/payment_inbound.py.
+    """
+    from app.services import payment_inbound
+
+    conv = ctx.conv
+    before_max = 0
+    if conv is not None and ctx.client is not None:
+        try:
+            before_max = await payment_inbound._max_message_id(ctx.db, conv.id)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("pre-turn message watermark failed: %s", exc)
+    result = await payment_inbound.pre_process(ctx)
+    if result is None:
+        result = await _handle_inbound_message_core(ctx)
+    await payment_inbound.post_process(ctx, before_max)
+    return result
+
+
+async def _handle_inbound_message_core(ctx: InboundContext) -> PipelineResult:
     """
     Single channel-neutral entry point for processing one inbound message.
 
@@ -9133,6 +9149,8 @@ RULES:
                 _oe_lang, "quantity_exceeds_stock",
                 stock=_oe["stock"], product=_oe_product,
             )
+        elif _oe["kind"] == "upi_missing":
+            ai_reply = get_template(_oe_lang, "pay_unavailable")
         elif _oe["kind"] == "product_not_found":
             # The pinned SKU never resolved to a real catalogue row — product/
             # order slots were already reset by the phantom-product hard block
@@ -9174,6 +9192,30 @@ RULES:
         except Exception as exc:
             logger.error("Order-error transcript correction failed: %s", exc)
 
+    # ── Manual-UPI payment instruction (order summary + amount + UPI ID + QR) ──
+    # Order # and the QR (upi://pay?…&am={total}&tn=Order{id}) only exist once
+    # the order row does, so the provisional text rendered earlier this turn is
+    # replaced here. The closing "send the screenshot" line rides with the QR
+    # image caption so it is the LAST thing the customer reads.
+    _instruction_images: list = []
+    if (
+        _order_outcome.order_created
+        and not _order_outcome.order_error
+        and client is not None
+        and getattr(_order_outcome.order, "payment_method", None) == "UPI"
+        and getattr(client, "upi_id", None)
+    ):
+        try:
+            from app.services import payment_verification_service as _pvs
+
+            _instr = await _pvs.build_payment_instruction(db, _order_outcome.order, client, conv)
+            ai_reply = _instr.text
+            if _instr.qr_url:
+                _instruction_images.append((_instr.qr_url, _instr.closing))
+            await conversation_service.replace_last_assistant_message(db, conv.id, ai_reply)
+        except Exception as exc:
+            logger.error("Payment instruction build failed conv=%s: %s", conv.id, exc)
+
     # Bank transfer: details were previously sent as a separate whatsapp_service
     # call from webhook.py immediately after order creation (run_order_payment()
     # itself never calls whatsapp_service — see OrderOutcome's docstring for the
@@ -9203,6 +9245,11 @@ RULES:
         _send_instruction.pre_texts = _pre_texts
     if _pending_product_images:
         _send_instruction.images = list(_pending_product_images)
+    if _instruction_images:
+        _send_instruction.images = list(_instruction_images)
+        # The payment message carries its own closing line; an "I've Paid"
+        # button would invite a bare "paid" with no screenshot.
+        _send_instruction.buttons = None
     if _pending_pre_images:
         _send_instruction.pre_images = list(_pending_pre_images)
 

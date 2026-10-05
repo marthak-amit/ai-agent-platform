@@ -6,7 +6,8 @@ export type PermissionKey =
   | "manual_reply"
   | "mark_packed"
   | "manual_utility_send"
-  | "analytics_view";
+  | "analytics_view"
+  | "payment_verify";
 
 export interface CurrentUser {
   id: number;

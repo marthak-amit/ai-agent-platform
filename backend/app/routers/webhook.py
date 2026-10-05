@@ -122,6 +122,15 @@ def _verify_signature(payload_bytes: bytes, signature_header: str) -> bool:
     return hmac.compare_digest(computed_sig, expected_sig)
 
 
+def _media_downloader(download, access_token):
+    """Bind the business's own access token (if any) into a one-argument media downloader."""
+    async def _download(media_id):
+        """Download one media item with the bound per-client token."""
+        return await download(media_id, access_token=access_token) if access_token else await download(media_id)
+
+    return _download
+
+
 async def _get_client_by_phone_number_id(db: AsyncSession, phone_number_id: str | None):
     """
     Look up the active client whose whatsapp_phone_number_id matches the
@@ -463,7 +472,7 @@ async def receive_message(
         user_text=user_text,
         wamid=wamid,
         btn_nonce_parsed=_btn_nonce_parsed,
-        download_media=vision_service.download_whatsapp_media,
+        download_media=_media_downloader(vision_service.download_whatsapp_media, getattr(client, "whatsapp_access_token", None)),
         is_whatsapp=getattr(conv, "channel", "whatsapp") == "whatsapp",
     )
     result = await handle_inbound_message(ctx)

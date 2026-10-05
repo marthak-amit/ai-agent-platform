@@ -23,6 +23,7 @@ PERMISSION_KEYS = {
     "mark_packed",
     "manual_utility_send",
     "analytics_view",
+    "payment_verify",
 }
 
 # Pre-filled checklist state for each invite role template — still fully
@@ -36,6 +37,7 @@ MANAGER_PRESET_PERMISSIONS = [
     "mark_packed",
     "manual_utility_send",
     "analytics_view",
+    "payment_verify",
 ]
 
 STAFF_PRESET_PERMISSIONS = [

@@ -23,7 +23,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.replay.conftest import _PG_AVAILABLE
-from tests.replay.helpers import send_message
+from tests.replay.helpers import (
+    customer_pays_and_seller_approves,
+    send_message,
+    stub_media_and_capture_sends,
+)
 
 
 pytestmark = pytest.mark.skipif(
@@ -142,10 +146,11 @@ async def test_scenario1_cod_happy_path(replay_http, replay_session):
 # Scenario 2 — UPI happy path (pending_payment → paid → stock -qty)
 # ---------------------------------------------------------------------------
 
-async def test_scenario2_upi_payment_confirmed(replay_http, replay_session):
+async def test_scenario2_upi_payment_confirmed(replay_http, replay_session, monkeypatch):
     """
-    UPI: customer confirms summary → order created as pending_payment.
-    Customer then says 'paid' → order transitions to paid, stock decremented.
+    UPI: customer confirms summary → order created as pending_payment (stock reserved).
+    Customer sends a payment screenshot and the SELLER approves it → order paid,
+    stock decremented. (Typing 'paid' alone no longer confirms anything.)
     """
     phone = _phone("0002")
     pnid = _pnid("0002")
@@ -180,9 +185,11 @@ async def test_scenario2_upi_payment_confirmed(replay_http, replay_session):
 
     print(f"\n[S2-yes] order={o.order_number} status={o.status} stock_deducted={o.stock_deducted} stock={stock_after_yes}")
 
-    # Step 2: "paid" → order transitions to paid, stock decremented
-    resp2 = await _msg(replay_http, phone, "paid", pnid=pnid, wamid=f"wamid.s2.b.{int(time.time())}")
-    assert resp2.status_code == 200
+    # Step 2: screenshot → seller approves → order transitions to paid, stock decremented
+    await customer_pays_and_seller_approves(
+        replay_http, replay_session, monkeypatch,
+        phone=phone, pnid=pnid, client_id=client.id, order_id=o.id,
+    )
 
     orders_after_paid = await _get_orders(replay_session, conv_id)
     assert len(orders_after_paid) == 1
@@ -200,7 +207,7 @@ async def test_scenario2_upi_payment_confirmed(replay_http, replay_session):
 # Scenario 3 — Duplicate "paid" is idempotent
 # ---------------------------------------------------------------------------
 
-async def test_scenario3_duplicate_paid_idempotent(replay_http, replay_session):
+async def test_scenario3_duplicate_paid_idempotent(replay_http, replay_session, monkeypatch):
     """
     Sending "paid" twice must not double-decrement stock.
     stock_deducted flag is the idempotency guard.
@@ -225,10 +232,12 @@ async def test_scenario3_duplicate_paid_idempotent(replay_http, replay_session):
     )
 
     await _msg(replay_http, phone, "yes", pnid=pnid, wamid=f"wamid.s3.a.{int(time.time())}")
-    await _msg(replay_http, phone, "paid", pnid=pnid, wamid=f"wamid.s3.b.{int(time.time())}")
-
     orders = await _get_orders(replay_session, conv_id)
     assert len(orders) == 1
+    await customer_pays_and_seller_approves(
+        replay_http, replay_session, monkeypatch,
+        phone=phone, pnid=pnid, client_id=client.id, order_id=orders[0].id,
+    )
     stock_after_first = await _get_stock(replay_session, product_id)
     assert stock_after_first == initial_stock - 2
 
@@ -604,10 +613,12 @@ async def test_scenario9_address_yes_single_confirm_ui(replay_http, replay_sessi
 # Scenario 10 — English convo + "paid" → success message in English (BUG 3)
 # ---------------------------------------------------------------------------
 
-async def test_scenario10_paid_success_message_uses_convo_language(replay_http, replay_session):
+async def test_scenario10_paid_success_message_uses_convo_language(replay_http, replay_session, monkeypatch):
     """
     BUG 3 regression: 'paid' from a customer whose established language is
-    English must produce an English success message, not Hinglish.
+    English must produce an English reply, not Hinglish. With manual UPI
+    verification a typed 'paid' only asks for the screenshot (order stays
+    pending_payment); the seller-approval confirmation is English too.
 
     Verified by checking that conv.last_customer_language stays 'english' at
     render time (previous_language is used, not fresh detection from 'paid').
@@ -660,12 +671,21 @@ async def test_scenario10_paid_success_message_uses_convo_language(replay_http, 
     replay_session.add(pend_order)
     await replay_session.commit()
 
+    sent = stub_media_and_capture_sends(monkeypatch)
     resp = await _msg(replay_http, phone, "paid", pnid=pnid, wamid=f"wamid.s10.{int(time.time())}")
     assert resp.status_code == 200
 
-    # Order must now be marked paid.
+    # A typed 'paid' never confirms payment: English prompt for the screenshot, order untouched.
     orders = await _get_orders(replay_session, conv_id)
     assert len(orders) == 1
+    assert orders[0].status == "pending_payment", f"Expected pending_payment, got {orders[0].status!r}"
+    assert sent["texts"][-1] == "Please send the payment screenshot here so we can verify it. 📸"
+
+    await customer_pays_and_seller_approves(
+        replay_http, replay_session, monkeypatch,
+        phone=phone, pnid=pnid, client_id=client.id, order_id=orders[0].id,
+    )
+    orders = await _get_orders(replay_session, conv_id)
     assert orders[0].status == "paid", f"Expected paid, got {orders[0].status!r}"
 
     # Language in conversation row must still reflect English — the 'paid' word

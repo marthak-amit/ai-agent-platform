@@ -88,6 +88,18 @@ async def mark_order_paid(
             order.order_number, exc,
         )
 
+    await run_post_paid_side_effects(db, order, client)
+
+    logger.info("mark_order_paid: order %s → paid, stock deducted.", order.order_number)
+    return True
+
+
+async def run_post_paid_side_effects(db: AsyncSession, order: Order, client) -> None:
+    """
+    Best-effort follow-ups after an order has been committed as paid: owner
+    notification and GST invoice generation/send. Never raises — the paid
+    transition has already committed and must not be affected.
+    """
     # Owner notification — best-effort
     try:
         await _notify_owner_new_order(order, client)
@@ -109,9 +121,6 @@ async def mark_order_paid(
     except Exception as exc:
         logger.warning("mark_order_paid: invoice generation failed for %s: %s", order.order_number, exc)
         await _notify_owner_invoice_failed(order, client)
-
-    logger.info("mark_order_paid: order %s → paid, stock deducted.", order.order_number)
-    return True
 
 
 async def _generate_and_send_invoice(db: AsyncSession, order: Order, client) -> None:
@@ -257,6 +266,21 @@ async def create_cart_order(
                 subtotal=li["quantity"] * li["unit_price"],
                 line_number=idx,
             )
+        )
+
+    # Manual-UPI flow: reserve stock in the same transaction as the order so two
+    # customers can't both hold the last piece. COD orders skip this — they are
+    # marked paid (and stock deducted) immediately after creation.
+    if initial_status == "pending_payment" and payment_method != "COD":
+        from app.services import stock_reservation_service
+
+        await stock_reservation_service.reserve_lines(
+            db, order.id,
+            [
+                (li.get("product_id"), li.get("variant_color"), li.get("variant_size"),
+                 li.get("variant_material"), li["quantity"])
+                for li in line_items
+            ],
         )
 
     await db.commit()
@@ -592,7 +616,23 @@ async def get_orders_stats(client_id: int, db: AsyncSession) -> dict:
 
 
 async def _deduct_product_stock(db: AsyncSession, order: Order) -> None:
+    """Deduct stock for `order` and commit (legacy single-call entry point)."""
+    await apply_stock_deduction(db, order)
+    await db.commit()
+
+
+async def apply_stock_deduction(db: AsyncSession, order: Order) -> None:
     """
+    Deduct stock for a paid order WITHOUT committing — caller owns the transaction.
+
+    Product/variant rows are locked FOR UPDATE so two concurrent approvals of
+    different orders on the same product can't lose an update, and the order's
+    stock reservations are marked consumed in the same unit of work. Safe to
+    call at most once per order — callers guard on order.stock_deducted
+    (mark_order_paid sets it before calling; payment_verification_service checks it
+    under the order-row lock).
+
+    Original docstring:
     Backup stock deduction called from mark_order_paid when product_id is set.
 
     Only runs if order.stock_deducted is False, so it is safe to call even when
@@ -612,7 +652,7 @@ async def _deduct_product_stock(db: AsyncSession, order: Order) -> None:
         if not order.product_id:
             return
 
-        result = await db.execute(select(Product).where(Product.id == order.product_id))
+        result = await db.execute(select(Product).where(Product.id == order.product_id).with_for_update())
         product = result.scalar_one_or_none()
         if not product:
             return
@@ -621,7 +661,7 @@ async def _deduct_product_stock(db: AsyncSession, order: Order) -> None:
 
         _variant_material = getattr(order, "variant_material", None)
         if product.has_variants and (order.variant_color or order.variant_size or _variant_material):
-            stmt = select(ProductVariant).where(ProductVariant.product_id == product.id)
+            stmt = select(ProductVariant).where(ProductVariant.product_id == product.id).with_for_update()
             if order.variant_color:
                 stmt = stmt.where(ProductVariant.color == order.variant_color)
             if order.variant_size:
@@ -640,7 +680,7 @@ async def _deduct_product_stock(db: AsyncSession, order: Order) -> None:
             product.stock = max(0, (product.stock or 0) - qty)
 
         order.stock_deducted = True
-        await db.commit()
+        await _consume_reservations(db, order)
         return
 
     touched_product_ids: set[int] = set()
@@ -648,13 +688,13 @@ async def _deduct_product_stock(db: AsyncSession, order: Order) -> None:
         if not li.product_id:
             continue
         touched_product_ids.add(li.product_id)
-        result = await db.execute(select(Product).where(Product.id == li.product_id))
+        result = await db.execute(select(Product).where(Product.id == li.product_id).with_for_update())
         product = result.scalar_one_or_none()
         if not product:
             continue
 
         if product.has_variants and (li.variant_color or li.variant_size or li.variant_material):
-            stmt = select(ProductVariant).where(ProductVariant.product_id == product.id)
+            stmt = select(ProductVariant).where(ProductVariant.product_id == product.id).with_for_update()
             if li.variant_color:
                 stmt = stmt.where(ProductVariant.color == li.variant_color)
             if li.variant_size:
@@ -676,8 +716,14 @@ async def _deduct_product_stock(db: AsyncSession, order: Order) -> None:
             product.stock = sum(v.stock for v in all_result.scalars().all())
 
     order.stock_deducted = True
-    await db.commit()
+    await _consume_reservations(db, order)
 
+
+async def _consume_reservations(db: AsyncSession, order: Order) -> None:
+    """Mark the order's active stock reservations consumed (same transaction as the deduction)."""
+    from app.services import stock_reservation_service
+
+    await stock_reservation_service.consume_for_order(db, order)
 
 def orders_to_csv(orders: list[Order]) -> str:
     """

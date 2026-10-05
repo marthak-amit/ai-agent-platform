@@ -137,6 +137,11 @@ async def save_message(
     model: str | None = None,
     in_tok: int = 0,
     out_tok: int = 0,
+    channel: str | None = None,
+    sender_type: str | None = None,
+    sender_user_id: int | None = None,
+    media_url: str | None = None,
+    media_type: str | None = None,
 ) -> Message:
     """
     Append a message to a conversation.
@@ -153,16 +158,31 @@ async def save_message(
         model:           Groq model name, only meaningful when path is 'LLM'.
         in_tok:          Real prompt tokens from the provider response, when path is 'LLM'.
         out_tok:         Real completion tokens from the provider response, when path is 'LLM'.
+        channel:         'whatsapp' | 'instagram'; when None the dashboard falls back to
+                         the conversation's channel.
+        sender_type:     'customer' | 'bot' | 'human' | 'system'. Derived from role when
+                         omitted ('user' → customer, anything else → bot).
+        sender_user_id:  Staff user id for sender_type='human'.
+        media_url:       URL in OUR storage for an image/audio message.
+        media_type:      'image' | 'audio' when media_url is set.
 
     Returns:
         Persisted Message instance.
     """
+    normalized = normalize_role(role)
+    inbound = normalized == "user"
     msg = Message(
         conversation_id=conversation_id,
-        role=normalize_role(role),
+        role=normalized,
         content=content,
         original_type=original_type,
         wamid=wamid,
+        direction="inbound" if inbound else "outbound",
+        channel=channel,
+        sender_type=sender_type or ("customer" if inbound else "bot"),
+        sender_user_id=sender_user_id,
+        media_url=media_url,
+        media_type=media_type,
     )
     db.add(msg)
     await db.commit()

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { api, getTeam, inviteTeamMember, updateProfile, updateTeamMember } from "../api/client";
 import Layout from "../components/Layout";
 import { useAuth } from "../context/AuthContext";
@@ -25,6 +25,7 @@ const PERMISSION_OPTIONS: { key: PermissionKey; label: string }[] = [
   { key: "mark_packed", label: "Mark orders packed" },
   { key: "manual_utility_send", label: "Send dispatch/shipping message" },
   { key: "analytics_view", label: "View analytics" },
+  { key: "payment_verify", label: "Verify customer payments" },
 ];
 const MANAGER_PRESET: PermissionKey[] = PERMISSION_OPTIONS.map((p) => p.key);
 const STAFF_PRESET: PermissionKey[] = ["order_view", "manual_reply", "mark_packed", "manual_utility_send"];
@@ -780,35 +781,17 @@ export default function Settings() {
                 </div>
 
                 {acceptsUpi && (
-                  <div className="flex flex-col gap-3">
-                    <div>
-                      <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">UPI ID</label>
-                      <input
-                        type="text"
-                        value={upiId}
-                        onChange={(e) => setUpiId(e.target.value)}
-                        placeholder="riyasarees@paytm"
-                        className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-primary focus:border-transparent"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">Display Name</label>
-                      <input
-                        type="text"
-                        value={upiDisplayName}
-                        onChange={(e) => setUpiDisplayName(e.target.value)}
-                        placeholder="Riya Sarees"
-                        className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-primary focus:border-transparent"
-                      />
-                      <p className="text-xs text-gray-400 mt-1">Name shown on UPI apps next to your UPI ID.</p>
-                    </div>
+                  <div className="flex flex-col gap-2 bg-brand-bg border border-gray-100 rounded-lg px-4 py-3 text-sm">
+                    <span className="text-gray-600">{t("payments.manage_in_payment_details")}</span>
                     {upiId && (
-                      <div className="bg-brand-primary/5 border border-brand-primary/20 rounded-lg px-4 py-2.5 text-sm text-brand-primaryDark">
-                        <span className="font-medium">Preview: </span>
-                        Pay via UPI: <span className="font-mono">{upiId}</span>
+                      <span className="text-brand-primaryDark">
+                        UPI: <span className="font-mono">{upiId}</span>
                         {upiDisplayName && <span> ({upiDisplayName})</span>}
-                      </div>
+                      </span>
                     )}
+                    <Link to="/settings/payment" className="font-semibold text-brand-primaryDark hover:underline">
+                      {t("payments.manage_link")}
+                    </Link>
                   </div>
                 )}
               </div>

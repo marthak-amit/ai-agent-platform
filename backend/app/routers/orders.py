@@ -17,7 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.routers.auth import get_current_client, require_permission
-from app.services import order_service, outbound
+from app.services import order_service, outbound, payment_verification_service
+from app.services.order_state_machine import PAYMENT_OPEN_STATES, InvalidOrderTransition
 from app.services.send_gate import MessageKind
 
 logger = logging.getLogger(__name__)
@@ -243,12 +244,41 @@ async def update_status(
     Raises:
         HTTPException 404: If the order does not exist for this client.
     """
-    valid_statuses = {"new", "confirmed", "paid", "processing", "dispatched", "delivered", "cancelled"}
+    valid_statuses = {
+        "new", "confirmed", "paid", "processing", "dispatched", "delivered", "cancelled",
+    }
     if body.status not in valid_statuses:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Invalid status. Must be one of: {', '.join(sorted(valid_statuses))}",
         )
+
+    # Orders still in the manual-UPI payment flow change state only through the
+    # verification service (state machine + stock reservation + audit trail).
+    try:
+        current = await order_service.get_order(order_id, client.id, db)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.")
+    if current.status in PAYMENT_OPEN_STATES and current.payment_method != "COD":
+        if body.status == "paid":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "USE_PAYMENT_APPROVAL",
+                    "message": "Payment is verified from the Payments page: approve the customer's screenshot.",
+                },
+            )
+        if body.status == "cancelled":
+            if not _perm.has_permission("payment_verify"):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Missing required permission: payment_verify.")
+            try:
+                result = await payment_verification_service.cancel(db, client, order_id, _perm, body.notes)
+            except InvalidOrderTransition as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={"code": "INVALID_STATE", "message": str(exc)},
+                )
+            return OrderOut.from_orm_safe(result.order)
 
     try:
         order = await order_service.update_order_status(

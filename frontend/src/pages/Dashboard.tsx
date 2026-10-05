@@ -9,6 +9,7 @@ import {
 } from "../api/client";
 import Layout from "../components/Layout";
 import StatCard from "../components/StatCard";
+import PaymentsWidget from "../components/payments/PaymentsWidget";
 import type {
   Lead,
   UsageStat,
@@ -310,6 +311,9 @@ export default function Dashboard() {
   return (
     <Layout>
       <div className="max-w-[1200px] mx-auto space-y-4">
+
+        {/* Payments waiting for verification (hidden without payment_verify) */}
+        <PaymentsWidget />
 
         {/* 1 — Welcome banner */}
         <div

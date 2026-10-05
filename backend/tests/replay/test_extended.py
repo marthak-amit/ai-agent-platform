@@ -31,7 +31,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.replay.conftest import _PG_AVAILABLE, seed_variant_and_simple
-from tests.replay.helpers import send_message
+from tests.replay.helpers import pay_latest_order, send_message
 
 
 pytestmark = pytest.mark.skipif(
@@ -212,7 +212,7 @@ _LANG_PARAMS = [
 
 @pytest.mark.parametrize("lang,msgs", _LANG_PARAMS)
 async def test_lang_matrix_full_upi_flow(
-    lang, msgs, replay_http, replay_session
+    lang, msgs, replay_http, replay_session, monkeypatch
 ):
     """
     Full UPI happy-path for each language.
@@ -286,6 +286,10 @@ async def test_lang_matrix_full_upi_flow(
     r = await _msg(replay_http, phone, msgs["paid"], pnid=pnid,
                    wamid=f"wamid.{lang}.paid.{ts}")
     assert r.status_code == 200
+    # A typed "paid" (any language) only asks for the screenshot; the order is
+    # paid when the seller approves the screenshot.
+    assert (await _orders(replay_session, conv_id))[0].status == "pending_payment"
+    await pay_latest_order(replay_http, replay_session, monkeypatch, phone=phone, pnid=pnid)
 
     orders = await _orders(replay_session, conv_id)
     conv = await _conv_row(replay_session, conv_id)
@@ -778,7 +782,7 @@ async def test_G_off_topic_mid_order(replay_http, replay_session):
 # H — Language switch mid-flow (English → Gujarati at address step)
 # ---------------------------------------------------------------------------
 
-async def test_H_language_switch_mid_flow(replay_http, replay_session):
+async def test_H_language_switch_mid_flow(replay_http, replay_session, monkeypatch):
     """
     H. Start in English for color+size+qty+name; switch to Gujarati at address.
     Flow must continue without crash. Final: 1 paid order.
@@ -830,6 +834,7 @@ async def test_H_language_switch_mid_flow(replay_http, replay_session):
     # Paid
     r = await _msg(replay_http, phone, "paid", pnid=pnid, wamid=f"wamid.H.paid.{ts}")
     assert r.status_code == 200
+    await pay_latest_order(replay_http, replay_session, monkeypatch, phone=phone, pnid=pnid)
 
     orders = await _orders(replay_session, conv_id)
     conv = await _conv_row(replay_session, conv_id)
@@ -976,7 +981,7 @@ async def test_K_double_yes_cod_no_duplicate(replay_http, replay_session):
 # L — Double "paid" (UPI) — idempotent, stock deducted once
 # ---------------------------------------------------------------------------
 
-async def test_L_double_paid_idempotent(replay_http, replay_session):
+async def test_L_double_paid_idempotent(replay_http, replay_session, monkeypatch):
     """
     L. UPI: "yes" → pending_payment. Two "paid" → paid, stock -qty only once.
     Mirrors S3 with the extended seed data.
@@ -1003,6 +1008,7 @@ async def test_L_double_paid_idempotent(replay_http, replay_session):
     ts = int(time.time())
     await _msg(replay_http, phone, "yes", pnid=pnid, wamid=f"wamid.L.yes.{ts}")
     await _msg(replay_http, phone, "paid", pnid=pnid, wamid=f"wamid.L.paid1.{ts}")
+    await pay_latest_order(replay_http, replay_session, monkeypatch, phone=phone, pnid=pnid)
     await _msg(replay_http, phone, "paid", pnid=pnid, wamid=f"wamid.L.paid2.{ts}")
 
     orders = await _orders(replay_session, conv_id)
@@ -1020,7 +1026,7 @@ async def test_L_double_paid_idempotent(replay_http, replay_session):
 # M — Webhook retry after order created — no duplicate order, no double deduction
 # ---------------------------------------------------------------------------
 
-async def test_M_retry_after_order_created(replay_http, replay_session):
+async def test_M_retry_after_order_created(replay_http, replay_session, monkeypatch):
     """
     M. After order is created and paid, an arbitrary message (webhook retry) must
     not create a second order or double-decrement stock.
@@ -1048,6 +1054,7 @@ async def test_M_retry_after_order_created(replay_http, replay_session):
     # Normal flow: yes → paid
     await _msg(replay_http, phone, "yes", pnid=pnid, wamid=f"wamid.M.yes.{ts}")
     await _msg(replay_http, phone, "paid", pnid=pnid, wamid=f"wamid.M.paid.{ts}")
+    await pay_latest_order(replay_http, replay_session, monkeypatch, phone=phone, pnid=pnid)
 
     orders_before = await _orders(replay_session, conv_id)
     assert len(orders_before) == 1
@@ -1096,7 +1103,7 @@ async def test_M_retry_after_order_created(replay_http, replay_session):
         id="hinglish",
     ),
 ])
-async def test_N_simple_product_flow(lang, msgs, replay_http, replay_session):
+async def test_N_simple_product_flow(lang, msgs, replay_http, replay_session, monkeypatch):
     """
     N. Full UPI flow on the simple product (no color/size variants).
     Slots: qty → name → address → (auto-UPI) → yes → paid.
@@ -1140,6 +1147,7 @@ async def test_N_simple_product_flow(lang, msgs, replay_http, replay_session):
     r = await _msg(replay_http, phone, msgs["paid"], pnid=pnid,
                    wamid=f"wamid.N.{lang}.paid.{ts}")
     assert r.status_code == 200
+    await pay_latest_order(replay_http, replay_session, monkeypatch, phone=phone, pnid=pnid)
 
     orders = await _orders(replay_session, conv_id)
     conv = await _conv_row(replay_session, conv_id)

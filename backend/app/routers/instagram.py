@@ -218,6 +218,17 @@ async def receive_instagram_event(
     return {"status": "ok"}
 
 
+def _ig_media_downloader(access_token):
+    """One-argument Instagram media downloader bound to the business's own token (if any)."""
+    async def _download(image_url):
+        """Fetch an Instagram CDN image with the bound per-client token."""
+        if access_token:
+            return await vision_service.download_instagram_media(image_url, access_token=access_token)
+        return await vision_service.download_instagram_media(image_url)
+
+    return _download
+
+
 async def _handle_dm(
     db: AsyncSession,
     ig_user_id: str,
@@ -333,7 +344,7 @@ async def _handle_dm(
         user_text=user_text,
         wamid=mid,
         btn_nonce_parsed=None,
-        download_media=vision_service.download_instagram_media,
+        download_media=_ig_media_downloader(getattr(client, "instagram_access_token", None)),
         is_whatsapp=False,
     )
     result = await handle_inbound_message(ctx)

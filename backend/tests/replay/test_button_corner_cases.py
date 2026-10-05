@@ -27,7 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.replay.conftest import _PG_AVAILABLE, seed_client_and_product
-from tests.replay.helpers import send_button, send_message
+from tests.replay.helpers import pay_latest_order, send_button, send_message
 
 
 pytestmark = pytest.mark.skipif(
@@ -294,8 +294,12 @@ async def test_double_tap_confirm_creates_one_order(replay_http, replay_session)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_double_tap_paid_idempotent(replay_http, replay_session):
-    """Two 'paid' taps must leave the order paid exactly once, stock deducted once."""
+async def test_double_tap_paid_idempotent(replay_http, replay_session, monkeypatch):
+    """
+    A 'paid' tap alone confirms nothing (the screenshot is the proof); after the
+    seller approves, a second 'paid' tap must leave the order paid exactly once,
+    stock deducted once.
+    """
     suffix = "B004"
     phone = _phone(suffix)
     pnid = _pnid(suffix)
@@ -325,9 +329,15 @@ async def test_double_tap_paid_idempotent(replay_http, replay_session):
     await _btn(replay_http, phone, "confirm_pay", "Confirm & Pay",
                pnid=pnid, wamid=f"wamid.bc004.confirm.{time.time_ns()}")
 
-    # First paid tap → order transitions to 'paid', stock deducted
+    # First paid tap → only asks for the screenshot; the order stays pending_payment
     await _btn(replay_http, phone, "paid_done", "I've Paid",
                pnid=pnid, wamid=f"wamid.bc004.paid_a.{time.time_ns()}")
+    pending = await _get_orders(replay_session, conv_id)
+    assert [o.status for o in pending] == ["pending_payment"]
+    assert await _get_stock(replay_session, product_id) == 10
+
+    # Screenshot + seller approval → order transitions to 'paid', stock deducted
+    await pay_latest_order(replay_http, replay_session, monkeypatch, phone=phone, pnid=pnid)
 
     # Second paid tap → must be a no-op (idempotent)
     await _btn(replay_http, phone, "paid_done", "I've Paid",

@@ -1,5 +1,7 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "./context/AuthContext";
+import { RealtimeProvider } from "./context/RealtimeContext";
+import { ToastProvider } from "./context/ToastContext";
 import ProtectedRoute from "./components/ProtectedRoute";
 import RequirePermission from "./components/RequirePermission";
 import Login from "./pages/Login";
@@ -13,6 +15,8 @@ import Analytics from "./pages/Analytics";
 import Campaigns from "./pages/Campaigns";
 import Channels from "./pages/Channels";
 import Orders from "./pages/Orders";
+import Payments from "./pages/Payments";
+import PaymentDetails from "./pages/PaymentDetails";
 import Customers from "./pages/Customers";
 import KnowledgeBase from "./pages/KnowledgeBase";
 import Sandbox from "./pages/Sandbox";
@@ -24,6 +28,8 @@ export default function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
+       <ToastProvider>
+        <RealtimeProvider>
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route
@@ -123,6 +129,26 @@ export default function App() {
             }
           />
           <Route
+            path="/payments"
+            element={
+              <ProtectedRoute>
+                <RequirePermission permission="payment_verify">
+                  <Payments />
+                </RequirePermission>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/settings/payment"
+            element={
+              <ProtectedRoute>
+                <RequirePermission ownerOnly>
+                  <PaymentDetails />
+                </RequirePermission>
+              </ProtectedRoute>
+            }
+          />
+          <Route
             path="/customers"
             element={
               <ProtectedRoute>
@@ -158,6 +184,8 @@ export default function App() {
           <Route path="/accept-invite" element={<AcceptInvite />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
+        </RealtimeProvider>
+       </ToastProvider>
       </BrowserRouter>
     </AuthProvider>
   );

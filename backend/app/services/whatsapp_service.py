@@ -360,3 +360,59 @@ async def _raw_send_document_message(
         response = await client.post(url, headers=headers, json=payload)
         response.raise_for_status()
         return response.json()
+
+
+async def _raw_send_template_message(
+    to_phone_number: str,
+    template_name: str,
+    language_code: str = "en",
+    body_variables: list[str] | None = None,
+    phone_number_id: str | None = None,
+    access_token: str | None = None,
+) -> dict:
+    """
+    Send a pre-approved WhatsApp template message (the only message type Meta
+    accepts outside the 24h customer-service window).
+
+    Args:
+        to_phone_number: Recipient in E.164 without '+'.
+        template_name:   Name of the approved template.
+        language_code:   Template language code, e.g. "en", "hi", "gu".
+        body_variables:  Ordered values for the template's {{1}}, {{2}}… body params.
+        phone_number_id: Per-client WhatsApp phone number ID override.
+        access_token:    Per-client access token override.
+
+    Returns:
+        Parsed Meta response JSON.
+
+    Raises:
+        httpx.HTTPStatusError: If Meta returns a 4xx/5xx response.
+    """
+    settings = get_settings()
+    pid = phone_number_id or settings.whatsapp_phone_number_id
+    url = f"{META_API_BASE_URL}/{META_API_VERSION}/{pid}/messages"
+    headers = {
+        "Authorization": f"Bearer {access_token or settings.whatsapp_access_token}",
+        "Content-Type": "application/json",
+    }
+    template: dict = {"name": template_name, "language": {"code": language_code}}
+    if body_variables:
+        template["components"] = [
+            {"type": "body", "parameters": [{"type": "text", "text": v} for v in body_variables]}
+        ]
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to_phone_number,
+        "type": "template",
+        "template": template,
+    }
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.post(url, headers=headers, json=payload)
+        if not response.is_success:
+            logger.error(
+                "WhatsApp send_template failed: status=%s body=%s",
+                response.status_code, response.text[:300],
+            )
+        response.raise_for_status()
+        return response.json()

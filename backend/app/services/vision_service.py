@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 _VISION_MODEL = "qwen/qwen3.6-27b"
 
 
-async def download_whatsapp_media(media_id: str) -> bytes:
+async def download_whatsapp_media(media_id: str, access_token: str | None = None) -> bytes:
     """
     Download image bytes for a WhatsApp media_id.
 
@@ -33,7 +33,9 @@ async def download_whatsapp_media(media_id: str) -> bytes:
     Step 2: Fetch the actual image bytes from that URL.
 
     Args:
-        media_id: The media_id string from the webhook payload.
+        media_id:     The media_id string from the webhook payload.
+        access_token: The business's own WhatsApp token (Embedded Signup clients);
+                      falls back to the global WHATSAPP_ACCESS_TOKEN.
 
     Returns:
         Raw image bytes.
@@ -42,7 +44,7 @@ async def download_whatsapp_media(media_id: str) -> bytes:
         httpx.HTTPStatusError: If either Meta API call fails.
     """
     settings = get_settings()
-    headers = {"Authorization": f"Bearer {settings.whatsapp_access_token}"}
+    headers = {"Authorization": f"Bearer {access_token or settings.whatsapp_access_token}"}
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         # Resolve CDN URL
@@ -59,7 +61,7 @@ async def download_whatsapp_media(media_id: str) -> bytes:
         return img_resp.content
 
 
-async def download_instagram_media(image_url: str) -> bytes:
+async def download_instagram_media(image_url: str, access_token: str | None = None) -> bytes:
     """
     Download image bytes from an Instagram CDN URL.
 
@@ -68,7 +70,8 @@ async def download_instagram_media(image_url: str) -> bytes:
     Instagram access token as a Bearer header to succeed.
 
     Args:
-        image_url: The CDN URL from message.attachments[0].payload.url.
+        image_url:    The CDN URL from message.attachments[0].payload.url.
+        access_token: The business's own Instagram token; falls back to the global one.
 
     Returns:
         Raw image bytes.
@@ -77,7 +80,7 @@ async def download_instagram_media(image_url: str) -> bytes:
         httpx.HTTPStatusError: If the download fails.
     """
     settings = get_settings()
-    headers = {"Authorization": f"Bearer {settings.instagram_access_token}"}
+    headers = {"Authorization": f"Bearer {access_token or settings.instagram_access_token}"}
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.get(image_url, headers=headers)

@@ -547,7 +547,17 @@ async def update_me(
     if body.accepts_cod is not None:
         current_client.accepts_cod = body.accepts_cod
     if body.upi_id is not None:
-        current_client.upi_id = body.upi_id
+        from app.services.payment_verification_service import is_valid_upi_id
+
+        upi = body.upi_id.strip()
+        if upi and not is_valid_upi_id(upi):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={"code": "INVALID_UPI_ID", "message": "UPI ID must look like name@handle."},
+            )
+        current_client.upi_id = upi or None
+        if upi:
+            current_client.payment_setup_alert_at = None
     if body.upi_display_name is not None:
         current_client.upi_display_name = body.upi_display_name
     if body.cod_limit is not None:

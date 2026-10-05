@@ -138,6 +138,16 @@ class Client(Base):
     razorpay_key_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     razorpay_key_secret: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     payment_instructions: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    # Manual UPI verification (migration 0059). upi_id / upi_display_name above are
+    # the UPI handle and payee name; upi_qr_url is an optional static QR image.
+    upi_qr_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Idle minutes after a dashboard send before the bot auto-resumes.
+    bot_auto_resume_minutes: Mapped[int] = mapped_column(Integer, default=30, nullable=False, server_default="30")
+    # Unpaid pending_payment orders are auto-cancelled (stock released) after this long.
+    payment_expiry_hours: Mapped[int] = mapped_column(Integer, default=24, nullable=False, server_default="24")
+    # Stamped when a customer reached the payment step but no UPI ID is configured
+    # (dashboard alert); cleared when a UPI ID is saved.
+    payment_setup_alert_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Onboarding wizard progress (migration 0029)
     # 0=registered, 1=profile, 2=products, 3=agent, 4=whatsapp, 5=instagram, 6=tested, 7=complete

@@ -1,600 +1,674 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import {
-  getConversation,
-  getConversations,
-  resumeConversation,
-  sendHumanMessage,
-  takeoverConversation,
-} from "../api/client";
+import { AlertTriangle, ChevronLeft, Info, MessageSquare, Pause, Play, RefreshCw, X } from "lucide-react";
 import Layout from "../components/Layout";
-import type { ConversationDetail, ConversationSummary, Message } from "../types";
-import { Search, Send, AlertTriangle, MessageSquare, ChevronLeft } from "lucide-react";
+import ChannelIcon from "../components/chat/ChannelIcon";
+import ConversationList from "../components/chat/ConversationList";
+import CustomerPanel from "../components/chat/CustomerPanel";
+import Lightbox from "../components/chat/Lightbox";
+import MessageBubble, { OrderChip } from "../components/chat/MessageBubble";
+import ReplyBox from "../components/chat/ReplyBox";
+import RejectModal from "../components/payments/RejectModal";
+import { useRealtime, useRealtimeEvents } from "../context/RealtimeContext";
+import { useToast } from "../context/ToastContext";
+import {
+  apiError,
+  approvePayment,
+  fetchApprovedTemplates,
+  fetchChat,
+  fetchInbox,
+  markChatRead,
+  pauseBot,
+  rejectPayment,
+  resumeBot,
+  sendChatMessage,
+  uploadChatMedia,
+  type SendPayload,
+} from "../api/chat";
+import type {
+  ApprovedTemplate,
+  ChatDetail,
+  ChatMessage,
+  InboxFilter,
+  InboxItem,
+  OrderEvent,
+  ProofCard,
+  RealtimeEvent,
+} from "../types/chat";
+import { clockTime, dayLabel } from "../utils/time";
 
-// ── Constants ─────────────────────────────────────────────────────────────────
+// ── helpers ───────────────────────────────────────────────────────────────────
 
-const LEAD_COLORS: Record<string, string> = {
-  hot: "bg-red-100 text-red-700",
-  warm: "bg-amber-100 text-amber-700",
-  cold: "bg-blue-100 text-blue-700",
-};
+type TimelineEntry =
+  | { kind: "day"; key: string; label: string }
+  | { kind: "event"; key: string; event: OrderEvent }
+  | { kind: "message"; key: string; message: ChatMessage };
 
-const AVATAR_COLORS: Record<string, string> = {
-  hot: "bg-red-500",
-  warm: "bg-amber-500",
-  cold: "bg-blue-500",
-};
-
-const CHANNEL_ICON: Record<string, string> = {
-  whatsapp: "💬",
-  instagram: "📸",
-  website: "🌐",
-};
-
-const FILTER_TABS = [
-  { key: "all", label: "All" },
-  { key: "whatsapp", label: "WhatsApp" },
-  { key: "instagram", label: "Instagram" },
-  { key: "hot", label: "Hot" },
-  { key: "warm", label: "Warm" },
-  { key: "cold", label: "Cold" },
-  { key: "takeover", label: "Takeover" },
-];
-
-// Sales funnel stages — ordered for progress bar
-const FUNNEL_STAGES = [
-  { key: "greeting",         label: "Greeting",    color: "bg-gray-400"   },
-  { key: "product_inquiry",  label: "Inquiring",   color: "bg-blue-500"   },
-  { key: "qualification",    label: "Qualifying",  color: "bg-amber-500"  },
-  { key: "objection_handling", label: "Objection", color: "bg-orange-500" },
-  { key: "offer_making",     label: "Offer Made",  color: "bg-orange-600" },
-  { key: "order_collection", label: "Ordering",    color: "bg-red-500"    },
-  { key: "payment",          label: "Payment",     color: "bg-green-500"  },
-  { key: "completed",        label: "Done",        color: "bg-green-700"  },
-];
-
-const STAGE_BADGE_COLORS: Record<string, string> = {
-  greeting:          "bg-gray-100 text-gray-600",
-  product_inquiry:   "bg-blue-100 text-blue-700",
-  qualification:     "bg-amber-100 text-amber-700",
-  objection_handling:"bg-orange-100 text-orange-700",
-  offer_making:      "bg-orange-100 text-orange-700",
-  order_collection:  "bg-red-100 text-red-700",
-  payment:           "bg-green-100 text-green-700",
-  completed:         "bg-emerald-100 text-emerald-700",
-  off_topic:         "bg-gray-100 text-gray-500",
-};
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function timeAgo(iso: string | null | undefined): string {
-  if (!iso) return "";
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  if (days === 1) return "yesterday";
-  return `${days}d ago`;
+function newClientId(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function fmtTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString("en-IN", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: true,
+/** Insert or replace a message by id, keeping unsent local messages at the end. */
+function upsertMessage(list: ChatMessage[], msg: ChatMessage): ChatMessage[] {
+  const idx = list.findIndex((m) => m.id === msg.id && !m.localId);
+  if (idx >= 0) {
+    const copy = [...list];
+    copy[idx] = { ...copy[idx], ...msg };
+    return copy;
+  }
+  const server = list.filter((m) => !m.localId);
+  const local = list.filter((m) => m.localId);
+  return [...server, msg, ...local];
+}
+
+function buildTimeline(messages: ChatMessage[], events: OrderEvent[]): TimelineEntry[] {
+  const items: { at: string; entry: TimelineEntry }[] = [
+    ...messages.map((m) => ({ at: m.created_at, entry: { kind: "message", key: `m-${m.localId ?? m.id}`, message: m } as TimelineEntry })),
+    ...events.map((e, i) => ({ at: e.at, entry: { kind: "event", key: `e-${e.order_id}-${e.status}-${i}`, event: e } as TimelineEntry })),
+  ];
+  // messages keep server order; events slot in by timestamp relative to neighbours
+  items.sort((a, b) => {
+    const ta = new Date(a.at).getTime();
+    const tb = new Date(b.at).getTime();
+    return ta === tb ? 0 : ta - tb;
   });
+  const out: TimelineEntry[] = [];
+  let lastDay = "";
+  for (const it of items) {
+    const label = dayLabel(it.at);
+    if (label !== lastDay) {
+      out.push({ kind: "day", key: `d-${label}-${out.length}`, label });
+      lastDay = label;
+    }
+    out.push(it.entry);
+  }
+  return out;
 }
 
-function initials(phone: string): string {
-  return phone.replace(/\D/g, "").slice(-2) || "??";
+function toChatMessage(raw: Record<string, unknown>): ChatMessage {
+  return {
+    id: raw.id as number,
+    direction: raw.direction as ChatMessage["direction"],
+    sender_type: raw.sender_type as ChatMessage["sender_type"],
+    sender_name: null,
+    text: (raw.text as string) ?? "",
+    media_url: (raw.media_url as string | null) ?? null,
+    media_type: (raw.media_type as string | null) ?? null,
+    created_at: (raw.created_at as string) ?? new Date().toISOString(),
+    payment_proof: null,
+  };
 }
 
-// ── Takeover modal ────────────────────────────────────────────────────────────
-
-function TakeoverModal({ onConfirm, onCancel }: { onConfirm: (note: string) => void; onCancel: () => void }) {
-  const [note, setNote] = useState("");
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onCancel} />
-      <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 z-10 animate-in fade-in zoom-in-95 duration-200">
-        <h2 className="text-base font-semibold text-gray-900 mb-1">Pause AI for this chat?</h2>
-        <p className="text-sm text-gray-500 mb-4">
-          The AI will stop replying. Incoming messages are saved silently — reply directly on WhatsApp.
-        </p>
-        <textarea
-          rows={2}
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          placeholder="Reason (optional) — e.g. VIP customer, handling manually"
-          className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-amber-400 mb-4"
-        />
-        <div className="flex gap-2">
-          <button
-            onClick={() => onConfirm(note)}
-            className="flex-1 bg-amber-500 text-white py-2.5 rounded-xl text-sm font-semibold hover:bg-amber-600 transition-colors"
-          >
-            Pause AI & Take Over
-          </button>
-          <button
-            onClick={onCancel}
-            className="px-4 py-2 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50 transition-colors"
-          >
-            Cancel
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Conversation list item ────────────────────────────────────────────────────
-
-function ConvItem({ conv, selected, onClick }: { conv: ConversationSummary; selected: boolean; onClick: () => void }) {
-  const aiOn = conv.ai_enabled !== false;
-  const avatarColor = AVATAR_COLORS[conv.lead_status] ?? "bg-gray-400";
-
-  return (
-    <button
-      onClick={onClick}
-      className={`w-full text-left px-4 py-3.5 border-b border-gray-50 transition-all duration-150 ${
-        selected ? "bg-brand-primary/5" : "hover:bg-gray-50"
-      }`}
-    >
-      <div className="flex items-start gap-3">
-        {/* Avatar */}
-        <div className="relative shrink-0">
-          <div className={`w-10 h-10 rounded-full ${avatarColor} flex items-center justify-center text-white text-xs font-bold`}>
-            {initials(conv.phone_number)}
-          </div>
-          <span className="absolute -bottom-0.5 -right-0.5 text-xs leading-none">
-            {CHANNEL_ICON[conv.channel] ?? "💬"}
-          </span>
-        </div>
-
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center justify-between gap-1 mb-0.5">
-            <span className="font-semibold text-sm text-gray-900 truncate">{conv.phone_number}</span>
-            <span className="text-[10px] text-gray-400 shrink-0">{timeAgo(conv.updated_at)}</span>
-          </div>
-          <p className="text-xs text-gray-500 truncate leading-relaxed">
-            {conv.last_message || "No messages yet"}
-          </p>
-          <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-            <span
-              className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full capitalize ${
-                LEAD_COLORS[conv.lead_status] ?? LEAD_COLORS.cold
-              }`}
-            >
-              {conv.lead_status}
-            </span>
-            {conv.current_stage && conv.current_stage !== "greeting" && (
-              <span
-                className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full capitalize ${
-                  STAGE_BADGE_COLORS[conv.current_stage] ?? "bg-gray-100 text-gray-500"
-                }`}
-              >
-                {FUNNEL_STAGES.find((s) => s.key === conv.current_stage)?.label ?? conv.current_stage}
-              </span>
-            )}
-            {!aiOn && (
-              <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700">
-                Takeover
-              </span>
-            )}
-          </div>
-        </div>
-      </div>
-    </button>
-  );
-}
-
-// ── Chat bubble ───────────────────────────────────────────────────────────────
-
-function ChatBubble({ msg }: { msg: Message }) {
-  const { t } = useTranslation();
-  const isCustomer = msg.role === "user";
-  const isHuman = msg.role === "human";
-
-  return (
-    <div className={`flex flex-col ${isCustomer ? "items-start" : "items-end"} gap-1`}>
-      <span className="text-[10px] text-gray-400 px-1">
-        {isCustomer ? t("conversations.customer") : isHuman ? t("conversations.you") : t("conversations.ai_agent")}
-      </span>
-      <div
-        className={`max-w-[75%] px-4 py-2.5 rounded-2xl text-sm leading-relaxed shadow-sm ${
-          isCustomer
-            ? "bg-white border border-gray-200 text-gray-800 rounded-tl-sm"
-            : isHuman
-            ? "bg-green-500 text-white rounded-tr-sm"
-            : "bg-brand-primaryDark text-white rounded-tr-sm"
-        }`}
-      >
-        {msg.original_type === "audio" ? (
-          <span className="flex items-start gap-1.5">
-            <span className="mt-0.5">🎤</span>
-            <em className="not-italic">
-              <span className="font-medium text-xs opacity-70 mr-1">Voice note:</span>
-              {msg.content}
-            </em>
-          </span>
-        ) : msg.original_type === "image" ? (
-          <span className="flex items-start gap-1.5">
-            <span className="mt-0.5">🖼️</span>
-            <span>{msg.content}</span>
-          </span>
-        ) : (
-          msg.content
-        )}
-      </div>
-      <span className="text-[10px] text-gray-400 px-1">{fmtTime(msg.created_at)}</span>
-    </div>
-  );
-}
-
-// ── Main page ─────────────────────────────────────────────────────────────────
+// ── page ──────────────────────────────────────────────────────────────────────
 
 export default function Conversations() {
   const { t } = useTranslation();
-  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
-  const [listLoading, setListLoading] = useState(true);
+  const toast = useToast();
+  const { connection, refreshPendingCount } = useRealtime();
+  const [params, setParams] = useSearchParams();
+  const selectedId = params.get("id") ? Number(params.get("id")) : null;
+
+  const [filter, setFilter] = useState<InboxFilter>("all");
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState("all");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [items, setItems] = useState<InboxItem[]>([]);
+  const [listLoading, setListLoading] = useState(true);
+  const [listError, setListError] = useState(false);
 
-  const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [detail, setDetail] = useState<ConversationDetail | null>(null);
+  const [detail, setDetail] = useState<ChatDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
 
-  const [showTakeover, setShowTakeover] = useState(false);
-  const [actioning, setActioning] = useState(false);
+  const [templates, setTemplates] = useState<ApprovedTemplate[]>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
+  const templatesLoaded = useRef(false);
 
-  const [draft, setDraft] = useState("");
-  const [sending, setSending] = useState(false);
+  const [lightbox, setLightbox] = useState<string | null>(null);
+  const [rejecting, setRejecting] = useState<ProofCard | null>(null);
+  const [busyOrderId, setBusyOrderId] = useState<number | null>(null);
+  const [botBusy, setBotBusy] = useState(false);
+  const [showPanel, setShowPanel] = useState(false);
 
-  const [mobileView, setMobileView] = useState<"list" | "chat">("list");
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const stickToBottom = useRef(true);
+  const selectedRef = useRef<number | null>(selectedId);
+  selectedRef.current = selectedId;
+  const detailRef = useRef<ChatDetail | null>(null);
+  detailRef.current = detail;
+
+  // ── inbox list ──────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    getConversations(200).then((data) => {
-      setConversations(data);
-      setListLoading(false);
-    });
-  }, []);
+    const id = window.setTimeout(() => setDebouncedSearch(search.trim()), 250);
+    return () => window.clearTimeout(id);
+  }, [search]);
 
-  async function selectConversation(id: number) {
-    setSelectedId(id);
-    setMobileView("chat");
-    setDetailLoading(true);
-    setDetail(null);
+  const loadInbox = useCallback(
+    async (silent = false) => {
+      if (!silent) setListLoading(true);
+      try {
+        setItems(await fetchInbox({ filter, search: debouncedSearch || undefined, limit: 100 }));
+        setListError(false);
+      } catch {
+        if (!silent) setListError(true);
+      } finally {
+        setListLoading(false);
+      }
+    },
+    [filter, debouncedSearch],
+  );
+
+  useEffect(() => {
+    void loadInbox();
+  }, [loadInbox]);
+
+  // ── thread ──────────────────────────────────────────────────────────────────
+
+  const loadDetail = useCallback(
+    async (id: number, silent = false) => {
+      if (!silent) {
+        setDetailLoading(true);
+        setDetail(null);
+        setDetailError(false);
+      }
+      try {
+        const d = await fetchChat(id);
+        if (selectedRef.current !== id) return;
+        setDetail((prev) => {
+          // keep unsent/failed optimistic messages across a silent refresh
+          const locals = silent && prev?.id === id ? prev.messages.filter((m) => m.localId) : [];
+          return { ...d, messages: [...d.messages, ...locals] };
+        });
+        void markChatRead(id).catch(() => undefined);
+        setItems((prev) => prev.map((c) => (c.id === id ? { ...c, unread_count: 0 } : c)));
+      } catch {
+        if (!silent) setDetailError(true);
+      } finally {
+        if (!silent) setDetailLoading(false);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    stickToBottom.current = true;
+    setShowPanel(false);
+    if (selectedId) void loadDetail(selectedId);
+    else setDetail(null);
+  }, [selectedId, loadDetail]);
+
+  // lazily load approved templates the first time a window is closed
+  useEffect(() => {
+    if (!detail || detail.window.open || templatesLoaded.current || detail.channel !== "whatsapp") return;
+    templatesLoaded.current = true;
+    setTemplatesLoading(true);
+    fetchApprovedTemplates()
+      .then(setTemplates)
+      .catch(() => undefined)
+      .finally(() => setTemplatesLoading(false));
+  }, [detail]);
+
+  // keep the newest message in view unless the user scrolled up — also when
+  // content grows after the fact (images finishing loading, proof cards updating)
+  const contentRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (stickToBottom.current) scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+  }, [detail?.messages.length, detail?.id]);
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!content || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      if (stickToBottom.current) scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+    });
+    ro.observe(content);
+    return () => ro.disconnect();
+  }, [detail?.id]);
+
+  function onScroll() {
+    const el = scrollRef.current;
+    if (el) stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  }
+
+  async function loadOlder() {
+    if (!detail || !detail.has_more || loadingOlder) return;
+    const firstId = detail.messages.find((m) => !m.localId)?.id;
+    if (!firstId) return;
+    setLoadingOlder(true);
     try {
-      const d = await getConversation(id);
-      setDetail(d);
+      const older = await fetchChat(detail.id, firstId);
+      stickToBottom.current = false;
+      setDetail((d) => (d ? { ...d, messages: [...older.messages, ...d.messages], has_more: older.has_more } : d));
+    } catch {
+      toast.show(t("chat.load_older_failed"), { kind: "error" });
     } finally {
-      setDetailLoading(false);
+      setLoadingOlder(false);
     }
   }
 
-  useEffect(() => {
-    if (detail) {
-      setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
-    }
-  }, [detail?.messages?.length]);
+  // ── realtime ────────────────────────────────────────────────────────────────
 
-  const filtered = conversations.filter((c) => {
-    if (search && !c.phone_number.toLowerCase().includes(search.toLowerCase())) return false;
-    if (filter === "whatsapp") return c.channel === "whatsapp";
-    if (filter === "instagram") return c.channel === "instagram";
-    if (filter === "hot") return c.lead_status === "hot";
-    if (filter === "warm") return c.lead_status === "warm";
-    if (filter === "cold") return c.lead_status === "cold";
-    if (filter === "takeover") return c.ai_enabled === false;
-    return true;
+  useRealtimeEvents((event: RealtimeEvent) => {
+    switch (event.type) {
+      case "new_message": {
+        const { conversation_id: cid, message } = event.data;
+        const msg = toChatMessage(message as unknown as Record<string, unknown>);
+        const open = selectedRef.current === cid;
+        if (open) {
+          setDetail((d) => (d && d.id === cid ? { ...d, messages: upsertMessage(d.messages, msg), message_count: d.message_count + 1 } : d));
+          if (msg.direction === "inbound") void markChatRead(cid).catch(() => undefined);
+        }
+        setItems((prev) => {
+          const idx = prev.findIndex((c) => c.id === cid);
+          if (idx < 0) {
+            void loadInbox(true); // a conversation we haven't listed yet
+            return prev;
+          }
+          const item = prev[idx];
+          const updated: InboxItem = {
+            ...item,
+            last_message: { text: msg.text, direction: msg.direction, sender_type: msg.sender_type, media_type: msg.media_type, created_at: msg.created_at },
+            unread_count: msg.direction === "inbound" && !open ? item.unread_count + 1 : item.unread_count,
+            updated_at: msg.created_at,
+          };
+          return [updated, ...prev.filter((_, i) => i !== idx)];
+        });
+        break;
+      }
+      case "payment_submitted":
+      case "payment_reviewed": {
+        void loadInbox(true);
+        const cid = event.data.conversation_id;
+        if (cid && selectedRef.current === cid) void loadDetail(cid, true);
+        break;
+      }
+      case "conversation_updated": {
+        const { conversation_id: cid, bot_paused } = event.data;
+        setItems((prev) => prev.map((c) => (c.id === cid ? { ...c, bot_paused, ai_enabled: !bot_paused } : c)));
+        if (selectedRef.current === cid) void loadDetail(cid, true);
+        break;
+      }
+      default:
+        break;
+    }
   });
 
-  async function handleTakeover(note: string) {
-    if (!selectedId) return;
-    setActioning(true);
-    setShowTakeover(false);
+  // ── sending (optimistic, idempotent retry) ─────────────────────────────────
+
+  function patchLocal(localId: string, patch: Partial<ChatMessage>) {
+    setDetail((d) => (d ? { ...d, messages: d.messages.map((m) => (m.localId === localId ? { ...m, ...patch } : m)) } : d));
+  }
+
+  async function deliver(convId: number, localId: string, payload: SendPayload) {
     try {
-      const updated = await takeoverConversation(selectedId, note);
-      setDetail(updated);
-      setConversations((prev) => prev.map((c) => (c.id === selectedId ? { ...c, ai_enabled: false } : c)));
-    } finally {
-      setActioning(false);
+      const res = await sendChatMessage(convId, payload);
+      setDetail((d) => {
+        if (!d || d.id !== convId) return d;
+        const without = d.messages.filter((m) => m.localId !== localId);
+        const withServer = upsertMessage(without, { ...res.message, payment_proof: null });
+        return { ...d, messages: withServer, bot_paused: res.bot_paused, ai_enabled: !res.bot_paused, auto_resume_at: res.auto_resume_at, bot_pause_source: res.bot_paused ? "human_send" : d.bot_pause_source };
+      });
+      setItems((prev) =>
+        prev.map((c) => (c.id === convId ? { ...c, bot_paused: res.bot_paused, ai_enabled: !res.bot_paused } : c)),
+      );
+    } catch (err) {
+      const e = apiError(err);
+      patchLocal(localId, { pending: false, failed: true, failureCode: e.code });
+      if (e.code === "WINDOW_CLOSED") {
+        setTemplates(e.templates ?? []);
+        templatesLoaded.current = true;
+        setDetail((d) => (d ? { ...d, window: { open: false, closes_at: d.window.closes_at, seconds_left: 0 } } : d));
+        toast.show(t("chat.err_window_closed"), { kind: "error" });
+      } else if (e.code === "OPTED_OUT" || e.code === "BLOCKED") {
+        setDetail((d) => (d ? { ...d, opted_out: true } : d));
+        toast.show(t("chat.err_opted_out"), { kind: "error" });
+      } else {
+        toast.show(t("chat.err_send_failed"), { kind: "error" });
+      }
     }
   }
 
-  async function handleResume() {
-    if (!selectedId) return;
-    setActioning(true);
-    try {
-      const updated = await resumeConversation(selectedId);
-      setDetail(updated);
-      setConversations((prev) => prev.map((c) => (c.id === selectedId ? { ...c, ai_enabled: true } : c)));
-    } finally {
-      setActioning(false);
-    }
+  function optimistic(partial: Partial<ChatMessage>, localId: string): ChatMessage {
+    return {
+      id: -Date.now(),
+      localId,
+      direction: "outbound",
+      sender_type: "human",
+      sender_name: null,
+      text: "",
+      media_url: null,
+      media_type: null,
+      created_at: new Date().toISOString(),
+      payment_proof: null,
+      pending: true,
+      ...partial,
+    };
   }
 
-  async function handleLeadChange(newStatus: string) {
+  function addLocal(msg: ChatMessage) {
+    stickToBottom.current = true;
+    setDetail((d) => (d ? { ...d, messages: [...d.messages, msg] } : d));
+  }
+
+  function sendText(text: string) {
     if (!detail) return;
-    setDetail((d) => (d ? { ...d, lead_status: newStatus } : d));
-    setConversations((prev) =>
-      prev.map((c) => (c.id === detail.id ? { ...c, lead_status: newStatus as "hot" | "warm" | "cold" } : c))
+    const localId = newClientId();
+    addLocal(optimistic({ text }, localId));
+    void deliver(detail.id, localId, { text, client_msg_id: localId });
+  }
+
+  async function sendImage(file: File, caption: string) {
+    if (!detail) return;
+    const convId = detail.id;
+    const localId = newClientId();
+    addLocal(optimistic({ text: caption, media_type: "image", media_url: URL.createObjectURL(file) }, localId));
+    try {
+      const up = await uploadChatMedia(convId, file);
+      patchLocal(localId, { media_url: up.media_url });
+      await deliver(convId, localId, { media_url: up.media_url, caption: caption || undefined, client_msg_id: localId });
+    } catch (err) {
+      patchLocal(localId, { pending: false, failed: true, failureCode: apiError(err).code });
+      toast.show(t("chat.err_upload_failed"), { kind: "error" });
+    }
+  }
+
+  function sendTemplate(tpl: ApprovedTemplate, variables: string[]) {
+    if (!detail) return;
+    const localId = newClientId();
+    let preview = tpl.body;
+    variables.forEach((v, i) => { preview = preview.replace(`{{${i + 1}}}`, v); });
+    addLocal(optimistic({ text: preview }, localId));
+    void deliver(detail.id, localId, { template: { name: tpl.name, language: tpl.language, variables }, client_msg_id: localId });
+  }
+
+  function retry(msg: ChatMessage) {
+    if (!detail || !msg.localId) return;
+    patchLocal(msg.localId, { pending: true, failed: false, failureCode: undefined });
+    const base: SendPayload = { client_msg_id: msg.localId };
+    if (msg.media_type === "image" && msg.media_url && !msg.media_url.startsWith("blob:")) {
+      void deliver(detail.id, msg.localId, { ...base, media_url: msg.media_url, caption: msg.text || undefined });
+    } else if (msg.media_type === "image") {
+      // upload never completed (blob: preview only) — user must re-attach
+      patchLocal(msg.localId, { pending: false, failed: true });
+      toast.show(t("chat.err_reattach"), { kind: "error" });
+    } else {
+      void deliver(detail.id, msg.localId, { ...base, text: msg.text });
+    }
+  }
+
+  // ── payment review from the thread ──────────────────────────────────────────
+
+  function setProofStatus(orderId: number, patch: Partial<ProofCard>) {
+    setDetail((d) =>
+      d
+        ? { ...d, messages: d.messages.map((m) => (m.payment_proof?.order_id === orderId && m.payment_proof.status === "pending" ? { ...m, payment_proof: { ...m.payment_proof, ...patch } } : m)) }
+        : d,
     );
   }
 
-  async function handleSend(e: React.FormEvent) {
-    e.preventDefault();
-    if (!draft.trim() || !selectedId || !detail) return;
-    setSending(true);
-    const text = draft.trim();
-    setDraft("");
+  async function approve(proof: ProofCard) {
+    setBusyOrderId(proof.order_id);
+    const snapshot = detailRef.current;
+    setProofStatus(proof.order_id, { status: "approved", reviewed_by: t("chat.you"), reviewed_at: new Date().toISOString() });
     try {
-      const msg = await sendHumanMessage(selectedId, text);
-      setDetail((d) =>
-        d ? { ...d, messages: [...d.messages, msg], message_count: d.message_count + 1 } : d
+      const res = await approvePayment(proof.order_id);
+      toast.show(
+        res.customer_notified === false ? t("chat.approved_not_notified") : t("chat.approved_toast", { order: proof.order_number }),
+        { kind: res.customer_notified === false ? "info" : "success" },
       );
+      refreshPendingCount();
+      if (selectedRef.current) void loadDetail(selectedRef.current, true);
+      void loadInbox(true);
+    } catch (err) {
+      if (snapshot) setDetail(snapshot);
+      const e = apiError(err);
+      toast.show(e.code === "INVALID_STATE" ? t("chat.err_state_changed") : t("chat.err_review_failed"), { kind: "error" });
+      if (selectedRef.current) void loadDetail(selectedRef.current, true);
     } finally {
-      setSending(false);
+      setBusyOrderId(null);
     }
   }
 
-  const aiEnabled = detail?.ai_enabled !== false;
+  async function confirmReject(reason: string) {
+    if (!rejecting) return;
+    const proof = rejecting;
+    setBusyOrderId(proof.order_id);
+    try {
+      await rejectPayment(proof.order_id, reason);
+      setRejecting(null);
+      setProofStatus(proof.order_id, { status: "rejected", reject_reason: reason || null, reviewed_by: t("chat.you"), reviewed_at: new Date().toISOString() });
+      toast.show(t("chat.rejected_toast", { order: proof.order_number }), { kind: "success" });
+      refreshPendingCount();
+      if (selectedRef.current) void loadDetail(selectedRef.current, true);
+      void loadInbox(true);
+    } catch (err) {
+      const e = apiError(err);
+      toast.show(e.code === "INVALID_STATE" ? t("chat.err_state_changed") : t("chat.err_review_failed"), { kind: "error" });
+    } finally {
+      setBusyOrderId(null);
+    }
+  }
+
+  // ── bot toggle ──────────────────────────────────────────────────────────────
+
+  async function toggleBot() {
+    if (!detail) return;
+    setBotBusy(true);
+    try {
+      const updated = detail.bot_paused ? await resumeBot(detail.id) : await pauseBot(detail.id);
+      setDetail((d) => (d ? { ...d, ...updated, messages: d.messages } : d));
+      setItems((prev) => prev.map((c) => (c.id === detail.id ? { ...c, bot_paused: updated.bot_paused, ai_enabled: updated.ai_enabled } : c)));
+    } catch {
+      toast.show(t("chat.err_bot_toggle"), { kind: "error" });
+    } finally {
+      setBotBusy(false);
+    }
+  }
+
+  // ── render ──────────────────────────────────────────────────────────────────
+
+  const timeline = useMemo(() => (detail ? buildTimeline(detail.messages, detail.events) : []), [detail]);
+  const selectConversation = (id: number) => setParams({ id: String(id) });
+  const closeConversation = () => setParams({});
+  const title = detail?.customer_name?.trim() || detail?.phone_number || "";
 
   return (
     <Layout>
-      {/* Mobile back button */}
-      {mobileView === "chat" && (
-        <div className="flex items-center gap-2 mb-3 lg:hidden">
-          <button
-            onClick={() => setMobileView("list")}
-            className="flex items-center gap-1 text-sm text-brand-primaryDark font-medium"
-          >
-            <ChevronLeft size={16} /> Back
-          </button>
+      <div className="flex gap-3 h-[calc(100dvh-9rem)] lg:h-[calc(100vh-4.5rem)]">
+        {/* LEFT — conversation list */}
+        <aside
+          className={`${selectedId ? "hidden lg:block" : "block"} w-full lg:w-80 xl:w-[340px] shrink-0 rounded-xl border border-gray-100 shadow-sm overflow-hidden`}
+        >
+          <ConversationList
+            items={items}
+            loading={listLoading}
+            error={listError}
+            selectedId={selectedId}
+            filter={filter}
+            search={search}
+            onFilter={setFilter}
+            onSearch={setSearch}
+            onSelect={selectConversation}
+            onRetry={() => void loadInbox()}
+          />
+        </aside>
+
+        {/* MIDDLE — thread */}
+        <section
+          className={`${selectedId ? "flex" : "hidden lg:flex"} flex-1 min-w-0 flex-col rounded-xl border border-gray-100 shadow-sm overflow-hidden bg-brand-bg`}
+        >
+          {!selectedId ? (
+            <div className="flex-1 flex flex-col items-center justify-center text-center p-8 bg-white">
+              <div className="w-16 h-16 bg-brand-bg rounded-2xl flex items-center justify-center mb-4">
+                <MessageSquare size={28} className="text-gray-300" />
+              </div>
+              <p className="text-brand-secondary font-medium">{t("chat.select_conversation")}</p>
+              <p className="text-sm text-gray-400 mt-1">{t("chat.select_conversation_hint")}</p>
+            </div>
+          ) : detailLoading ? (
+            <div className="flex-1 flex items-center justify-center bg-white" aria-busy="true">
+              <div className="w-8 h-8 border-[3px] border-brand-primary/20 border-t-brand-primary rounded-full animate-spin" />
+            </div>
+          ) : detailError || !detail ? (
+            <div className="flex-1 flex flex-col items-center justify-center gap-2 bg-white text-center p-8">
+              <AlertTriangle size={28} className="text-red-400" />
+              <p className="text-sm text-gray-600">{t("chat.thread_error")}</p>
+              <div className="flex gap-3">
+                <button onClick={() => selectedId && void loadDetail(selectedId)} className="flex items-center gap-1.5 text-sm font-medium text-brand-primaryDark hover:underline">
+                  <RefreshCw size={14} /> {t("chat.retry")}
+                </button>
+                <button onClick={closeConversation} className="text-sm text-gray-500 hover:underline lg:hidden">{t("chat.back")}</button>
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* header */}
+              <header className="bg-white border-b border-gray-100 px-3 sm:px-4 py-3 flex items-center gap-3">
+                <button onClick={closeConversation} className="lg:hidden p-1.5 -ml-1 text-brand-secondary" aria-label={t("chat.back")}>
+                  <ChevronLeft size={20} />
+                </button>
+                <div className="w-9 h-9 rounded-full bg-brand-secondary text-white flex items-center justify-center text-xs font-bold shrink-0">
+                  {title.slice(0, 2).toUpperCase()}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold text-sm text-brand-secondary truncate">{title}</div>
+                  <div className="flex items-center gap-1.5 text-xs text-gray-500">
+                    <ChannelIcon channel={detail.channel} size={12} />
+                    <span className="truncate">{detail.phone_number}</span>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <div
+                    className={`hidden sm:flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-full ${
+                      detail.bot_paused ? "bg-brand-warning/20 text-amber-900" : "bg-brand-primary/15 text-brand-primaryDark"
+                    }`}
+                  >
+                    <span className={`w-2 h-2 rounded-full ${detail.bot_paused ? "bg-brand-warning" : "bg-brand-primary animate-pulse"}`} />
+                    {detail.bot_paused ? t("chat.ai_paused") : t("chat.ai_replying")}
+                  </div>
+                  <button
+                    onClick={toggleBot}
+                    disabled={botBusy}
+                    className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg disabled:opacity-50 transition-colors ${
+                      detail.bot_paused
+                        ? "bg-brand-primary text-white hover:bg-brand-primaryDark"
+                        : "border border-gray-200 text-gray-700 hover:bg-brand-bg"
+                    }`}
+                  >
+                    {detail.bot_paused ? <Play size={13} /> : <Pause size={13} />}
+                    {detail.bot_paused ? t("chat.resume_ai") : t("chat.pause_ai")}
+                  </button>
+                  <button
+                    onClick={() => setShowPanel(true)}
+                    className="xl:hidden p-2 rounded-lg border border-gray-200 text-gray-600 hover:bg-brand-bg"
+                    aria-label={t("chat.customer_info")}
+                  >
+                    <Info size={16} />
+                  </button>
+                </div>
+              </header>
+
+              {detail.bot_paused && (
+                <div className="bg-brand-warning/15 border-b border-brand-warning/40 px-4 py-2 text-xs text-amber-900 flex flex-wrap items-center gap-x-2">
+                  <Pause size={12} />
+                  <span className="font-semibold">{t("chat.ai_paused")}</span>
+                  {detail.bot_pause_source === "human_send" && detail.auto_resume_at && (
+                    <span className="text-amber-800/80">{t("chat.auto_resume_at", { time: clockTime(detail.auto_resume_at) })}</span>
+                  )}
+                  {detail.taken_over_note && <span className="italic text-amber-800/70 truncate">“{detail.taken_over_note}”</span>}
+                </div>
+              )}
+              {connection === "polling" && (
+                <div className="bg-gray-100 px-4 py-1 text-[11px] text-gray-500 text-center">{t("chat.polling_mode")}</div>
+              )}
+
+              {/* messages */}
+              <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto px-3 sm:px-5 py-4">
+               <div ref={contentRef} className="space-y-3">
+                {detail.has_more && (
+                  <div className="text-center">
+                    <button
+                      onClick={loadOlder}
+                      disabled={loadingOlder}
+                      className="text-xs text-brand-primaryDark font-medium hover:underline disabled:opacity-50"
+                    >
+                      {loadingOlder ? t("chat.loading") : t("chat.load_earlier")}
+                    </button>
+                  </div>
+                )}
+                {timeline.length === 0 ? (
+                  <p className="text-sm text-gray-400 text-center py-10">{t("chat.no_messages_yet")}</p>
+                ) : (
+                  timeline.map((entry) =>
+                    entry.kind === "day" ? (
+                      <div key={entry.key} className="flex justify-center">
+                        <span className="text-[11px] text-gray-500 bg-white border border-gray-200 rounded-full px-3 py-0.5">{entry.label}</span>
+                      </div>
+                    ) : entry.kind === "event" ? (
+                      <OrderChip key={entry.key} event={entry.event} />
+                    ) : (
+                      <MessageBubble
+                        key={entry.key}
+                        msg={entry.message}
+                        onOpenImage={setLightbox}
+                        onRetry={retry}
+                        onApprove={approve}
+                        onReject={setRejecting}
+                        busyOrderId={busyOrderId}
+                      />
+                    ),
+                  )
+                )}
+               </div>
+              </div>
+
+              <ReplyBox
+                detail={detail}
+                templates={templates}
+                templatesLoading={templatesLoading}
+                onSendText={sendText}
+                onSendImage={(f, c) => void sendImage(f, c)}
+                onSendTemplate={sendTemplate}
+              />
+            </>
+          )}
+        </section>
+
+        {/* RIGHT — customer panel (xl+) */}
+        <aside className="hidden xl:block w-[300px] shrink-0 rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+          {detail && selectedId ? (
+            <CustomerPanel detail={detail} />
+          ) : (
+            <div className="h-full bg-white flex items-center justify-center text-sm text-gray-300 p-6 text-center">
+              {t("chat.customer_panel_empty")}
+            </div>
+          )}
+        </aside>
+      </div>
+
+      {/* customer panel drawer for narrower screens */}
+      {showPanel && detail && (
+        <div className="fixed inset-0 z-50 xl:hidden">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setShowPanel(false)} />
+          <div className="absolute right-0 top-0 h-full w-[min(20rem,90vw)] bg-white shadow-xl">
+            <button onClick={() => setShowPanel(false)} className="absolute top-3 right-3 z-10 p-1.5 rounded-full bg-brand-bg" aria-label={t("chat.close")}>
+              <X size={16} />
+            </button>
+            <CustomerPanel detail={detail} />
+          </div>
         </div>
       )}
 
-      <div className="flex gap-4" style={{ height: "calc(100vh - 5rem)" }}>
-        {/* LEFT PANEL */}
-        <div
-          className={`flex flex-col bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden
-            ${mobileView === "chat" ? "hidden lg:flex" : "flex"}
-            w-full lg:w-[380px] xl:w-96 shrink-0`}
-        >
-          {/* Search */}
-          <div className="p-3 border-b border-gray-50">
-            <div className="relative">
-              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-              <input
-                type="text"
-                placeholder={t("conversations.search")}
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="w-full pl-8 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-primary bg-gray-50"
-              />
-            </div>
-          </div>
-
-          {/* Filter chips */}
-          <div className="flex gap-1.5 px-3 py-2.5 border-b border-gray-50 overflow-x-auto scrollbar-hide shrink-0">
-            {FILTER_TABS.map((tab) => (
-              <button
-                key={tab.key}
-                onClick={() => setFilter(tab.key)}
-                className={`shrink-0 text-xs px-3 py-1 rounded-full font-medium transition-all duration-150 ${
-                  filter === tab.key
-                    ? "bg-brand-primaryDark text-white shadow-sm"
-                    : "border border-gray-200 text-gray-500 hover:border-brand-primary/40 hover:text-brand-primaryDark"
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-
-          {/* List */}
-          <div className="flex-1 overflow-y-auto">
-            {listLoading ? (
-              <div className="space-y-1 p-3">
-                {[...Array(5)].map((_, i) => (
-                  <div key={i} className="h-16 bg-gray-100 rounded-lg animate-pulse" />
-                ))}
-              </div>
-            ) : filtered.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-12 text-center">
-                <MessageSquare size={32} className="text-gray-200 mb-2" />
-                <p className="text-sm text-gray-400">No conversations found.</p>
-              </div>
-            ) : (
-              filtered.map((conv) => (
-                <ConvItem
-                  key={conv.id}
-                  conv={conv}
-                  selected={conv.id === selectedId}
-                  onClick={() => selectConversation(conv.id)}
-                />
-              ))
-            )}
-          </div>
-        </div>
-
-        {/* RIGHT PANEL */}
-        <div
-          className={`flex-1 flex flex-col bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden min-w-0
-            ${mobileView === "list" ? "hidden lg:flex" : "flex"}`}
-        >
-          {!selectedId ? (
-            <div className="flex-1 flex flex-col items-center justify-center text-center p-8">
-              <div className="w-16 h-16 bg-gray-100 rounded-2xl flex items-center justify-center mb-4">
-                <MessageSquare size={28} className="text-gray-300" />
-              </div>
-              <p className="text-gray-500 font-medium">{t("conversations.no_conversation")}</p>
-              <p className="text-sm text-gray-300 mt-1">Select a conversation from the left to view the thread</p>
-            </div>
-          ) : detailLoading ? (
-            <div className="flex-1 flex items-center justify-center">
-              <div className="w-8 h-8 border-3 border-brand-primary/20 border-t-brand-primary rounded-full animate-spin" />
-            </div>
-          ) : detail ? (
-            <>
-              {/* Top bar */}
-              <div className="px-5 py-3.5 border-b border-gray-100 flex items-center gap-3 flex-wrap bg-white">
-                <div className="flex items-center gap-3 flex-1 min-w-0">
-                  <div
-                    className={`w-9 h-9 rounded-full ${AVATAR_COLORS[detail.lead_status] ?? "bg-gray-400"} flex items-center justify-center text-white text-xs font-bold shrink-0`}
-                  >
-                    {initials(detail.phone_number)}
-                  </div>
-                  <div className="min-w-0">
-                    <div className="font-semibold text-gray-900 text-sm truncate">{detail.phone_number}</div>
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span
-                        className={`text-xs font-medium px-2 py-0.5 rounded-full capitalize ${
-                          detail.channel === "whatsapp"
-                            ? "bg-green-100 text-green-700"
-                            : detail.channel === "instagram"
-                            ? "bg-purple-100 text-purple-700"
-                            : "bg-blue-100 text-blue-700"
-                        }`}
-                      >
-                        {detail.channel}
-                      </span>
-                      <span className="text-xs text-gray-400">{detail.message_count} msgs</span>
-                      {detail.current_stage && (
-                        <span
-                          className={`text-xs font-semibold px-2 py-0.5 rounded-full capitalize ${
-                            STAGE_BADGE_COLORS[detail.current_stage] ?? "bg-gray-100 text-gray-500"
-                          }`}
-                        >
-                          {FUNNEL_STAGES.find((s) => s.key === detail.current_stage)?.label ?? detail.current_stage}
-                        </span>
-                      )}
-                    </div>
-                    {/* Funnel progress bar */}
-                    {detail.current_stage && detail.current_stage !== "off_topic" && (
-                      <div className="flex items-center gap-0.5 mt-1.5">
-                        {FUNNEL_STAGES.map((s) => {
-                          const stageIdx = FUNNEL_STAGES.findIndex((f) => f.key === detail.current_stage);
-                          const thisIdx = FUNNEL_STAGES.findIndex((f) => f.key === s.key);
-                          const active = thisIdx === stageIdx;
-                          const done = thisIdx < stageIdx;
-                          return (
-                            <div
-                              key={s.key}
-                              title={s.label}
-                              className={`h-1.5 flex-1 rounded-full transition-all ${
-                                active ? s.color : done ? "bg-green-300" : "bg-gray-200"
-                              }`}
-                            />
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <select
-                  value={detail.lead_status}
-                  onChange={(e) => handleLeadChange(e.target.value)}
-                  className={`text-xs font-medium px-2.5 py-1.5 rounded-full border-0 capitalize cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand-primary ${
-                    LEAD_COLORS[detail.lead_status] ?? LEAD_COLORS.cold
-                  }`}
-                >
-                  <option value="hot">🔥 Hot</option>
-                  <option value="warm">🌤 Warm</option>
-                  <option value="cold">❄️ Cold</option>
-                </select>
-
-                {aiEnabled ? (
-                  <button
-                    onClick={() => setShowTakeover(true)}
-                    disabled={actioning}
-                    className="flex items-center gap-1.5 text-xs font-semibold px-3.5 py-2 rounded-lg bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-50 transition-colors"
-                  >
-                    👤 {t("conversations.takeover")}
-                  </button>
-                ) : (
-                  <button
-                    onClick={handleResume}
-                    disabled={actioning}
-                    className="flex items-center gap-1.5 text-xs font-semibold px-3.5 py-2 rounded-lg bg-green-500 text-white hover:bg-green-600 disabled:opacity-50 transition-colors"
-                  >
-                    🤖 {t("conversations.resume_ai")}
-                  </button>
-                )}
-              </div>
-
-              {/* AI paused banner */}
-              {!aiEnabled && (
-                <div className="bg-amber-50 border-b border-amber-200 px-5 py-2.5 flex items-center gap-2">
-                  <AlertTriangle size={16} className="text-amber-600 shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <span className="text-sm font-semibold text-amber-800">{t("conversations.ai_paused")}</span>
-                    <span className="text-xs text-amber-600 ml-1.5">Reply directly on WhatsApp. Messages are saved here.</span>
-                  </div>
-                  {detail.taken_over_note && (
-                    <span className="text-xs text-amber-500 italic truncate max-w-[160px]">
-                      "{detail.taken_over_note}"
-                    </span>
-                  )}
-                </div>
-              )}
-
-              {/* Messages */}
-              <div className="flex-1 overflow-y-auto p-5 space-y-3 bg-gray-50">
-                {detail.messages.length === 0 ? (
-                  <p className="text-sm text-gray-400 text-center py-8">No messages yet.</p>
-                ) : (
-                  detail.messages.map((msg) => <ChatBubble key={msg.id} msg={msg} />)
-                )}
-                <div ref={bottomRef} />
-              </div>
-
-              {/* Human message input */}
-              {!aiEnabled && (
-                <form onSubmit={handleSend} className="border-t border-gray-100 bg-white px-4 py-3 flex items-end gap-2">
-                  <textarea
-                    rows={1}
-                    value={draft}
-                    onChange={(e) => {
-                      setDraft(e.target.value);
-                      e.target.style.height = "auto";
-                      e.target.style.height = Math.min(e.target.scrollHeight, 96) + "px";
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && !e.shiftKey) {
-                        e.preventDefault();
-                        handleSend(e);
-                      }
-                    }}
-                    placeholder={t("conversations.type_message")}
-                    className="flex-1 border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-brand-primary bg-gray-50"
-                    style={{ minHeight: "42px" }}
-                  />
-                  <button
-                    type="submit"
-                    disabled={!draft.trim() || sending}
-                    className="w-11 h-11 rounded-xl bg-brand-primaryDark text-white flex items-center justify-center hover:bg-brand-primary/90 disabled:opacity-40 transition-colors shrink-0"
-                  >
-                    {sending ? (
-                      <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-                    ) : (
-                      <Send size={16} />
-                    )}
-                  </button>
-                </form>
-              )}
-            </>
-          ) : null}
-        </div>
-      </div>
-
-      {showTakeover && (
-        <TakeoverModal onConfirm={handleTakeover} onCancel={() => setShowTakeover(false)} />
+      {lightbox && <Lightbox images={[lightbox]} onClose={() => setLightbox(null)} />}
+      {rejecting && (
+        <RejectModal
+          orderNumber={rejecting.order_number}
+          busy={busyOrderId === rejecting.order_id}
+          onConfirm={(r) => void confirmReject(r)}
+          onCancel={() => setRejecting(null)}
+        />
       )}
     </Layout>
   );

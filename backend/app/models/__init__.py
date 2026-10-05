@@ -16,8 +16,12 @@ from app.models.follow_up import FollowUp
 from app.models.ig_comment_reply import IgCommentReply
 from app.models.lead import Lead
 from app.models.message import Message
+from app.models.message_template import MessageTemplate
 from app.models.order import Order
+from app.models.order_audit_log import OrderAuditLog
 from app.models.order_line_item import OrderLineItem
+from app.models.payment_proof import PaymentProof
+from app.models.stock_reservation import StockReservation
 from app.models.payment import Payment
 from app.models.product import Product
 from app.models.style_reference import StyleReference
@@ -31,7 +35,7 @@ from app.models.user import User
 
 __all__ = [
     "Campaign", "CampaignRecipient", "Client", "ClientMonthlyUsage", "Conversation", "CostLogEntry",
-    "Customer", "FollowUp", "IgCommentReply", "KnowledgeBase", "Lead", "Message", "Order", "OrderLineItem",
+    "Customer", "FollowUp", "IgCommentReply", "KnowledgeBase", "Lead", "Message", "MessageTemplate", "Order", "OrderAuditLog", "OrderLineItem", "PaymentProof", "StockReservation",
     "Payment", "PhotoGenerationLog", "Plan", "Product", "ProductVariant", "RestockNotification", "StockLog",
     "StyleReference", "UsageLog", "User",
 ]

@@ -530,6 +530,18 @@ async def _drain_pending_comment_replies(db) -> None:
         logger.info("Comment-reply drain job complete — sent %d queued replies.", drained)
 
 
+async def _expire_unpaid_orders_job() -> None:
+    """Scheduled job: cancel pending_payment orders unpaid past the client's expiry window."""
+    from app.db import _get_session_factory
+    from app.services import payment_verification_service
+
+    factory = _get_session_factory()
+    async with factory() as db:
+        cancelled = await payment_verification_service.expire_stale_orders(db)
+    if cancelled:
+        logger.info("Payment-expiry job cancelled %d unpaid order(s).", cancelled)
+
+
 def start_scheduler() -> None:
     """Register all jobs and start the scheduler. Called once on app startup."""
     scheduler.add_job(
@@ -560,6 +572,12 @@ def start_scheduler() -> None:
         _drain_pending_comment_replies_job,
         CronTrigger(minute="*/5"),
         id="drain_pending_comment_replies",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _expire_unpaid_orders_job,
+        CronTrigger(minute="*/30"),
+        id="expire_unpaid_orders",
         replace_existing=True,
     )
     scheduler.start()

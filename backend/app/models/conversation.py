@@ -49,6 +49,18 @@ class Conversation(Base):
     )
     taken_over_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Bot-pause bookkeeping (migration 0059). `ai_enabled` stays THE flag the
+    # pipeline reads (bot_paused == not ai_enabled); these record why/when so a
+    # dashboard-triggered pause can auto-resume after an idle period without
+    # ever auto-resuming an escalation or a deliberate manual pause.
+    bot_paused_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    bot_pause_source: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # human_send|manual|escalation
+    human_last_activity_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Inbox read marker (unread = inbound messages newer than this) and the
+    # throttle stamp for the "verification in progress" proof acknowledgement.
+    last_read_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_proof_ack_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -200,6 +212,11 @@ class Conversation(Base):
     # (used when an LLM-inferred quantity split must be confirmed before
     # being committed to cart_items — never committed silently).
     cart_pending_confirmation: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+
+    @property
+    def bot_paused(self) -> bool:
+        """True when the AI must not reply (inverse of ai_enabled)."""
+        return self.ai_enabled is False
 
     messages: Mapped[list[Message]] = relationship(
         "Message", back_populates="conversation", order_by="Message.created_at"

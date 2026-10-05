@@ -22,7 +22,7 @@ class Order(Base):
     one per checkout regardless of how many line items it contains.
     payment_method: 'COD' or 'UPI'.
     payment_status: 'pending' / 'paid' / 'failed'.
-    status: 'new' / 'confirmed' / 'paid' / 'processing' / 'dispatched' / 'delivered' / 'cancelled'.
+    status: 'new' / 'pending_payment' / 'payment_submitted' / 'confirmed' / 'paid' / 'processing' / 'dispatched' / 'delivered' / 'cancelled'.
 
     line_items holds the full cart (see app.models.order_line_item.OrderLineItem).
     The flat product_name/product_sku/variant_color/variant_size/variant_material/
@@ -78,6 +78,9 @@ class Order(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    payment_submitted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancel_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     dispatched_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     delivered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 

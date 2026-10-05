@@ -299,6 +299,55 @@ async def send_document(
     )
 
 
+async def send_template(
+    to_phone_number: str,
+    template_name: str,
+    language_code: str = "en",
+    body_variables: list[str] | None = None,
+    *,
+    kind: MessageKind = MessageKind.UTILITY_TEMPLATE,
+    db=None,
+    client_id: int | None = None,
+    conversation_id: int | None = None,
+    customer=None,
+    phone_number_id: str | None = None,
+    access_token: str | None = None,
+) -> dict | None:
+    """
+    Gated WhatsApp approved-template send — usable at ANY time, including after
+    the 24h window closed (the one wrapper that accepts ALLOW_TEMPLATE_ONLY).
+
+    Opt-out and block verdicts still apply. Returns Meta's response, or None
+    if suppressed.
+    """
+    if customer is None and db is not None and client_id is not None:
+        try:
+            from app.models.customer import Customer
+            from app.services import customer_service
+
+            customer = await customer_service.get_customer(db, client_id, to_phone_number)
+            if not isinstance(customer, Customer):
+                customer = None
+        except Exception as exc:
+            logger.warning("outbound: customer lookup failed for %s: %s", to_phone_number, exc)
+            customer = None
+    decision = await check_send(
+        db, client_id=client_id, customer=customer, message_kind=kind,
+        channel="whatsapp", conversation_id=conversation_id,
+    )
+    if decision.denied:
+        return None
+    kwargs: dict = {}
+    if phone_number_id:
+        kwargs["phone_number_id"] = phone_number_id
+    if access_token:
+        kwargs["access_token"] = access_token
+    return await whatsapp_service._raw_send_template_message(
+        to_phone_number=to_phone_number, template_name=template_name,
+        language_code=language_code, body_variables=body_variables, **kwargs,
+    )
+
+
 async def send_owner_text(
     to_phone_number: str,
     message_text: str,

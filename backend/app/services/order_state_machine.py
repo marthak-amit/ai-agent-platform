@@ -82,3 +82,57 @@ class RenderError(Exception):
     The caller MUST NOT send the reply when this is raised; log and return an error
     response instead. Bad state must be unrepresentable in customer-visible output.
     """
+
+
+# ─── Order-status (payment verification) state machine ────────────────────────
+# Separate from the conversation-stage table above: this one governs
+# Order.status for the manual-UPI flow. We never collect money — the customer
+# pays the seller's UPI directly and the seller verifies the screenshot.
+#
+#   pending_payment  → payment_submitted   customer sent a screenshot
+#   payment_submitted→ paid                seller approved
+#   payment_submitted→ pending_payment     seller rejected (customer re-sends)
+#   pending_payment | payment_submitted → cancelled   seller cancel / expiry
+#
+# Stock: reserved at pending_payment, deducted at paid, released at cancelled.
+ORDER_PENDING_PAYMENT = "pending_payment"
+ORDER_PAYMENT_SUBMITTED = "payment_submitted"
+ORDER_PAID = "paid"
+ORDER_CANCELLED = "cancelled"
+
+#: States in which an order is still "in the payment flow" (stock is reserved).
+PAYMENT_OPEN_STATES = frozenset({ORDER_PENDING_PAYMENT, ORDER_PAYMENT_SUBMITTED})
+
+ORDER_STATUS_TRANSITIONS: frozenset[tuple[str, str]] = frozenset({
+    (ORDER_PENDING_PAYMENT, ORDER_PAYMENT_SUBMITTED),
+    (ORDER_PAYMENT_SUBMITTED, ORDER_PAID),
+    (ORDER_PAYMENT_SUBMITTED, ORDER_PENDING_PAYMENT),
+    (ORDER_PENDING_PAYMENT, ORDER_CANCELLED),
+    (ORDER_PAYMENT_SUBMITTED, ORDER_CANCELLED),
+})
+
+
+class InvalidOrderTransition(Exception):
+    """Raised when an order is asked to move along an edge not in ORDER_STATUS_TRANSITIONS."""
+
+    def __init__(self, current: str, target: str) -> None:
+        """Remember the offending edge for the API error body."""
+        super().__init__(f"Order cannot move from '{current}' to '{target}'.")
+        self.current = current
+        self.target = target
+
+
+def can_transition_order(current: str, target: str) -> bool:
+    """Return True when current → target is an allowed order-status edge."""
+    return (current, target) in ORDER_STATUS_TRANSITIONS
+
+
+def assert_order_transition(current: str, target: str) -> None:
+    """
+    Validate an order-status edge.
+
+    Raises:
+        InvalidOrderTransition: when (current, target) is not in the table.
+    """
+    if not can_transition_order(current, target):
+        raise InvalidOrderTransition(current, target)

@@ -16,6 +16,16 @@ def format_price(p: float | int) -> str:
 
 
 ENGLISH_TEMPLATES: dict[str, str] = {
+    "pay_unavailable": "Thanks! Payment details for this order are being set up — the seller will message you here shortly.",
+    # ── Manual UPI payment verification (deterministic; engine acts, LLM never writes these) ──
+    "pay_instruction": "🧾 Order #{order_number}\n{items}\nTotal: {amount}\n\nPay to UPI ID: {upi_id}{payee_line}\n(GPay / PhonePe / Paytm / any UPI app){extra}",
+    "pay_send_screenshot": "After payment, please send the payment screenshot here.",
+    "pay_proof_received": "Thanks! Our team will verify your payment shortly and update you here.",
+    "pay_proof_more": "Received, verification in progress.",
+    "pay_ask_screenshot": "Please send the payment screenshot here so we can verify it. 📸",
+    "pay_confirmed": "Payment confirmed ✅ Your order #{order_number} is confirmed.",
+    "pay_rejected": "We couldn't confirm your payment{reason_part}. Please check and send the screenshot again.",
+    "pay_cancelled": "Your order #{order_number} has been cancelled.{reason_part}",
     "greeting": "Welcome to {business}! What are you looking for today?",
     "greeting_new": "Welcome to {business}! 👋 Here's our catalogue: {catalogue_url}\nWhat are you looking for today?",
     "greeting_returning": "Welcome back {name}! 👋 Here's our latest collection: {catalogue_url}\nWhat are you looking for today?",
@@ -214,6 +224,15 @@ ENGLISH_TEMPLATES: dict[str, str] = {
 }
 
 HINDI_TEMPLATES: dict[str, str] = {
+    "pay_unavailable": "Shukriya! Is order ke payment details set ho rahe hain — seller jaldi hi yahan message karenge.",
+    "pay_instruction": "🧾 Order #{order_number}\n{items}\nTotal: {amount}\n\nUPI ID par payment karein: {upi_id}{payee_line}\n(GPay / PhonePe / Paytm / koi bhi UPI app){extra}",
+    "pay_send_screenshot": "Payment karne ke baad, kripya payment ka screenshot yahan bhejein.",
+    "pay_proof_received": "Shukriya! Hamari team aapka payment jaldi verify karke yahin update degi.",
+    "pay_proof_more": "Mil gaya, verification chal raha hai.",
+    "pay_ask_screenshot": "Kripya payment ka screenshot yahan bhejein taaki hum verify kar sakein. 📸",
+    "pay_confirmed": "Payment confirm ho gaya ✅ Aapka order #{order_number} confirm hai.",
+    "pay_rejected": "Hum aapka payment confirm nahi kar paaye{reason_part}. Kripya check karke screenshot dobara bhejein.",
+    "pay_cancelled": "Aapka order #{order_number} cancel kar diya gaya hai.{reason_part}",
     "greeting": "{business} mein aapka swagat hai! Aaj kya dekhna chahenge?",
     "greeting_new": "{business} mein aapka swagat hai! 👋 Hamara catalogue yahan dekhein: {catalogue_url}\nAaj kya dekhna chahenge?",
     "greeting_returning": "Wapas aaye {name}! 👋 Hamara latest collection yahan hai: {catalogue_url}\nAaj kya dekhna chahenge?",
@@ -413,6 +432,15 @@ HINDI_TEMPLATES: dict[str, str] = {
 }
 
 GUJARATI_TEMPLATES: dict[str, str] = {
+    "pay_unavailable": "Aabhar! Aa order na payment details set thai rahya chhe — seller jaldi ahi message karshe.",
+    "pay_instruction": "🧾 Order #{order_number}\n{items}\nKul: {amount}\n\nUPI ID par payment karo: {upi_id}{payee_line}\n(GPay / PhonePe / Paytm / koi pan UPI app){extra}",
+    "pay_send_screenshot": "Payment karya pachhi, krupa kari ne payment no screenshot ahi moklo.",
+    "pay_proof_received": "Aabhar! Amari team tamaru payment jaldi verify kari ne ahi j update api dese.",
+    "pay_proof_more": "Mali gayu, verification chaalu chhe.",
+    "pay_ask_screenshot": "Krupa kari ne payment no screenshot ahi moklo jethi ame verify kari shakiye. 📸",
+    "pay_confirmed": "Payment confirm thai gayu ✅ Tamaro order #{order_number} confirm chhe.",
+    "pay_rejected": "Ame tamaru payment confirm kari shakya nahi{reason_part}. Krupa kari ne check karine screenshot pharithi moklo.",
+    "pay_cancelled": "Tamaro order #{order_number} cancel karvama aavyo chhe.{reason_part}",
     "greeting": "{business} maa aapanu swagat chhe! Aaj shu joivanu chhe?",
     "greeting_new": "{business} maa aapanu swagat chhe! 👋 Amaru catalogue joi lo: {catalogue_url}\nAaj shu joivanu chhe?",
     "greeting_returning": "Pachi avya {name}! 👋 Amaru latest collection joi lo: {catalogue_url}\nAaj shu joivanu chhe?",
@@ -612,6 +640,15 @@ GUJARATI_TEMPLATES: dict[str, str] = {
 }
 
 HINDI_DEVANAGARI_TEMPLATES: dict[str, str] = {
+    "pay_unavailable": "धन्यवाद! इस ऑर्डर की पेमेंट डिटेल्स सेट हो रही हैं — विक्रेता जल्द ही यहाँ संदेश करेंगे।",
+    "pay_instruction": "🧾 ऑर्डर #{order_number}\n{items}\nकुल: {amount}\n\nUPI ID पर भुगतान करें: {upi_id}{payee_line}\n(GPay / PhonePe / Paytm / कोई भी UPI ऐप){extra}",
+    "pay_send_screenshot": "भुगतान के बाद, कृपया पेमेंट का स्क्रीनशॉट यहाँ भेजें।",
+    "pay_proof_received": "धन्यवाद! हमारी टीम जल्द ही आपका भुगतान वेरिफ़ाई करके यहीं अपडेट देगी।",
+    "pay_proof_more": "मिल गया, वेरिफ़िकेशन जारी है।",
+    "pay_ask_screenshot": "कृपया पेमेंट का स्क्रीनशॉट यहाँ भेजें ताकि हम वेरिफ़ाई कर सकें। 📸",
+    "pay_confirmed": "पेमेंट कन्फर्म हो गया ✅ आपका ऑर्डर #{order_number} कन्फर्म है।",
+    "pay_rejected": "हम आपका पेमेंट कन्फर्म नहीं कर पाए{reason_part}। कृपया जाँचकर स्क्रीनशॉट दोबारा भेजें।",
+    "pay_cancelled": "आपका ऑर्डर #{order_number} रद्द कर दिया गया है।{reason_part}",
     "greeting": "{business} में आपका स्वागत है! आज क्या देखना चाहेंगे?",
     "greeting_new": "{business} में आपका स्वागत है! 👋 हमारा कैटलॉग यहाँ देखें: {catalogue_url}\nआज क्या देखना चाहेंगे?",
     "greeting_returning": "वापस आए {name}! 👋 हमारा नया कलेक्शन यहाँ है: {catalogue_url}\nआज क्या देखना चाहेंगे?",
@@ -811,6 +848,15 @@ HINDI_DEVANAGARI_TEMPLATES: dict[str, str] = {
 }
 
 GUJARATI_SCRIPT_TEMPLATES: dict[str, str] = {
+    "pay_unavailable": "આભાર! આ ઓર્ડરની પેમેન્ટ વિગતો સેટ થઈ રહી છે — વિક્રેતા જલ્દી અહીં મેસેજ કરશે.",
+    "pay_instruction": "🧾 ઓર્ડર #{order_number}\n{items}\nકુલ: {amount}\n\nUPI ID પર ચુકવણી કરો: {upi_id}{payee_line}\n(GPay / PhonePe / Paytm / કોઈપણ UPI એપ){extra}",
+    "pay_send_screenshot": "ચુકવણી કર્યા પછી, કૃપા કરીને પેમેન્ટનો સ્ક્રીનશૉટ અહીં મોકલો.",
+    "pay_proof_received": "આભાર! અમારી ટીમ તમારું પેમેન્ટ જલ્દી વેરિફાય કરીને અહીં જ અપડેટ આપશે.",
+    "pay_proof_more": "મળી ગયું, વેરિફિકેશન ચાલુ છે.",
+    "pay_ask_screenshot": "કૃપા કરીને પેમેન્ટનો સ્ક્રીનશૉટ અહીં મોકલો જેથી અમે વેરિફાય કરી શકીએ. 📸",
+    "pay_confirmed": "પેમેન્ટ કન્ફર્મ થઈ ગયું ✅ તમારો ઓર્ડર #{order_number} કન્ફર્મ છે.",
+    "pay_rejected": "અમે તમારું પેમેન્ટ કન્ફર્મ કરી શક્યા નથી{reason_part}. કૃપા કરીને ચકાસીને સ્ક્રીનશૉટ ફરીથી મોકલો.",
+    "pay_cancelled": "તમારો ઓર્ડર #{order_number} રદ કરવામાં આવ્યો છે.{reason_part}",
     "greeting": "{business} માં આપનું સ્વાગત છે! આજ શું જોઈવાનું છે?",
     "greeting_new": "{business} માં આપનું સ્વાગત છે! 👋 અમારું કેટલોગ જુઓ: {catalogue_url}\nઆજ શું જોઈવાનું છે?",
     "greeting_returning": "પાછા આવ્યા {name}! 👋 અમારું નવું કલેક્શન જુઓ: {catalogue_url}\nઆજ શું જોઈવાનું છે?",

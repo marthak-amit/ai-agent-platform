@@ -20,7 +20,7 @@ import pytest
 from sqlalchemy import select
 
 from tests.replay.conftest import _PG_AVAILABLE, seed_client_and_product
-from tests.replay.helpers import capture_all, send_message
+from tests.replay.helpers import capture_all, pay_latest_order, send_message
 
 pytestmark = pytest.mark.skipif(not _PG_AVAILABLE, reason="local Postgres not reachable")
 
@@ -162,7 +162,7 @@ async def test_cart_single_item_regression(replay_http, replay_session, monkeypa
     await _msg(replay_http, phone, "Amit Shah", pnid=pnid, wamid=f"wamid.s1.name.{ts}")
     await _msg(replay_http, phone, "12 MG Road, Surat 395002", pnid=pnid, wamid=f"wamid.s1.addr.{ts}")
     await _msg(replay_http, phone, "yes", pnid=pnid, wamid=f"wamid.s1.yes.{ts}")
-    await _msg(replay_http, phone, "paid", pnid=pnid, wamid=f"wamid.s1.paid.{ts}")
+    await pay_latest_order(replay_http, replay_session, monkeypatch, phone=phone, pnid=pnid)
 
     conv = await _conv_row(replay_session, conv_id)
     orders = await _orders(replay_session, conv_id)
@@ -201,7 +201,7 @@ async def test_cart_same_variant_bulk(replay_http, replay_session, monkeypatch):
     await _msg(replay_http, phone, "Priya Mehta", pnid=pnid, wamid=f"wamid.s2.name.{ts}")
     await _msg(replay_http, phone, "9 Ring Road, Rajkot 360001", pnid=pnid, wamid=f"wamid.s2.addr.{ts}")
     await _msg(replay_http, phone, "yes", pnid=pnid, wamid=f"wamid.s2.yes.{ts}")
-    await _msg(replay_http, phone, "paid", pnid=pnid, wamid=f"wamid.s2.paid.{ts}")
+    await pay_latest_order(replay_http, replay_session, monkeypatch, phone=phone, pnid=pnid)
 
     conv = await _conv_row(replay_session, conv_id)
     orders = await _orders(replay_session, conv_id)
@@ -271,7 +271,7 @@ async def test_cart_different_variant_loop_with_correction(replay_http, replay_s
     await _msg(replay_http, phone, "Riya Patel", pnid=pnid, wamid=f"wamid.s3.name.{ts}")
     await _msg(replay_http, phone, "22 Station Road, Vadodara 390001", pnid=pnid, wamid=f"wamid.s3.addr.{ts}")
     await _msg(replay_http, phone, "yes", pnid=pnid, wamid=f"wamid.s3.yes.{ts}")
-    await _msg(replay_http, phone, "paid", pnid=pnid, wamid=f"wamid.s3.paid.{ts}")
+    await pay_latest_order(replay_http, replay_session, monkeypatch, phone=phone, pnid=pnid)
 
     orders = await _orders(replay_session, conv_id)
     assert len(orders) == 1
@@ -334,7 +334,7 @@ async def test_cart_different_variant_batch(replay_http, replay_session, monkeyp
     await _msg(replay_http, phone, "Karan Desai", pnid=pnid, wamid=f"wamid.s4.name.{ts}")
     await _msg(replay_http, phone, "5 Palace Road, Baroda 390002", pnid=pnid, wamid=f"wamid.s4.addr.{ts}")
     await _msg(replay_http, phone, "yes", pnid=pnid, wamid=f"wamid.s4.yes.{ts}")
-    await _msg(replay_http, phone, "paid", pnid=pnid, wamid=f"wamid.s4.paid.{ts}")
+    await pay_latest_order(replay_http, replay_session, monkeypatch, phone=phone, pnid=pnid)
 
     orders = await _orders(replay_session, conv_id)
     assert len(orders) == 1
@@ -427,7 +427,7 @@ async def test_cart_multi_value_single_message(replay_http, replay_session, monk
     await _msg(replay_http, phone, "Sneha Rao", pnid=pnid, wamid=f"wamid.s6.name.{ts}")
     await _msg(replay_http, phone, "18 Lake View, Ahmedabad 380001", pnid=pnid, wamid=f"wamid.s6.addr.{ts}")
     await _msg(replay_http, phone, "yes", pnid=pnid, wamid=f"wamid.s6.yes.{ts}")
-    await _msg(replay_http, phone, "paid", pnid=pnid, wamid=f"wamid.s6.paid.{ts}")
+    await pay_latest_order(replay_http, replay_session, monkeypatch, phone=phone, pnid=pnid)
 
     orders = await _orders(replay_session, conv_id)
     assert len(orders) == 1
@@ -535,26 +535,18 @@ async def test_cart_post_payment_message_matches_pre_payment_summary(
 
     # "yes" confirms the summary and advances to the payment prompt.
     await _msg(replay_http, phone, "yes", pnid=pnid, wamid=f"wamid.s8.yes.{ts}")
+    # The payment instruction (sent once the order exists) must list BOTH line
+    # items and the full grand total — the same regression this scenario guards.
+    payment_instruction = next(c for c in reversed(captured) if "Pay to UPI ID" in c)
+    assert "Red" in payment_instruction and "Blue" in payment_instruction, payment_instruction
+    assert "× 5" in payment_instruction and "× 10" not in payment_instruction, payment_instruction
     assert "× 5" in pre_payment_summary or "x 5" in pre_payment_summary.lower(), (
         f"pre-payment summary must show per-line qty 5, not merged: {pre_payment_summary!r}"
     )
 
-    # "paid" renders the post-payment success message — the one this bug hit.
-    await _msg(replay_http, phone, "paid", pnid=pnid, wamid=f"wamid.s8.paid.{ts}")
-    post_payment_message = captured[-1]
-
-    assert "Red" in post_payment_message, (
-        f"post-payment message dropped the Red line item: {post_payment_message!r}"
-    )
-    assert "Blue" in post_payment_message, (
-        f"post-payment message dropped the Blue line item — this is the exact bug "
-        f"(conv=60, ORD-2026-0024) where the second variant silently disappeared: "
-        f"{post_payment_message!r}"
-    )
-    # Neither line item's own qty (5) may have been merged into a single ×10 line.
-    assert "× 10" not in post_payment_message and "x 10" not in post_payment_message.lower(), (
-        f"post-payment message merged both line items' quantities into one: {post_payment_message!r}"
-    )
+    # Customer sends the screenshot, the seller approves: order paid (the
+    # confirmation text itself is the fixed "Payment confirmed" template).
+    await pay_latest_order(replay_http, replay_session, monkeypatch, phone=phone, pnid=pnid)
 
     orders = await _orders(replay_session, conv_id)
     assert len(orders) == 1

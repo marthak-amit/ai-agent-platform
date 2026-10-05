@@ -119,6 +119,18 @@ RAZORPAY_KEY_SECRET=
 - `META_APP_ID`/`META_OAUTH_REDIRECT_URI` back the self-serve Instagram OAuth connect flow (`app/routers/integrations.py`).
 - `META_WHATSAPP_CONFIG_ID` is the WhatsApp **Embedded Signup** Configuration ID (Meta App Dashboard → WhatsApp → Embedded Signup → Configurations) that powers the self-serve "Connect WhatsApp" button (`app/routers/whatsapp_signup.py`). Unset = that button is disabled and clients fall back to manually pasting Phone Number ID / Access Token. Getting a client fully live also requires them to appear as a Meta test user or the app to have passed Review for `whatsapp_business_management`/`whatsapp_business_messaging` — see Meta Business Settings → Roles → Test Users during development.
 
+## Manual UPI Payment Verification
+
+We never collect money: the customer pays the seller's UPI directly and sends a screenshot in chat; the seller approves/rejects it in the dashboard. **LLM = understand only, engine = act only** — every payment reply is a deterministic EN/HI/GU template (`pay_*` keys in `app/services/language_templates.py`).
+
+- **Order states** (`order_state_machine.py`, `ORDER_STATUS_TRANSITIONS`): `pending_payment → payment_submitted` (customer image) · `payment_submitted → paid` (approve) · `payment_submitted → pending_payment` (reject) · `pending_payment|payment_submitted → cancelled`. Typing "paid" **never** confirms anything — it asks for the screenshot.
+- **Stock**: reserved at `pending_payment` (`stock_reservations`, `stock_reservation_service.py`), deducted at `paid` in the same transaction as the status change, released at `cancelled`. New-order stock checks subtract active reservations.
+- **Core**: `payment_verification_service.py` (approve/reject/cancel/expire; row-locked + idempotent, audit rows in `order_audit_log`). Inbound screenshots: `payment_inbound.py`, wrapped around `handle_inbound_message` (no vision model runs on proofs). Media is re-hosted in our storage (`media_service.py`) because Meta URLs expire.
+- **Dashboard sends** go through `channel_sender.py` → `outbound.py` (24h window / opt-out / block enforced by `send_gate`). A dashboard send pauses the bot (`conversation_control.py`; `ai_enabled` stays the flag the pipeline reads, `bot_pause_source='human_send'` auto-resumes after `Client.bot_auto_resume_minutes` idle). Approve/reject templates are sent even while the bot is paused.
+- **Realtime**: SSE (`GET /events/stream?token=`) from an in-process hub (`realtime_service.py`, single-instance like the rate limiter — swap `publish()` for Redis pub/sub when scaling out) with a DB-derived polling fallback (`GET /events/poll?since=`).
+- **Permission**: `payment_verify` (Owner always; in the Manager preset). Payment settings (`/settings/payment`) are Owner-only.
+- Dependency: `segno` (pure-python QR PNG for the `upi://pay?...&tn=Order{id}` code).
+
 ## Image Recognition (Vision Service)
 
 Both WhatsApp and Instagram support product image matching via `app/services/vision_service.py`.
