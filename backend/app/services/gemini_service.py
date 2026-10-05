@@ -625,9 +625,9 @@ COD Accepted: {client_accepts_cod}
     from app.config import get_settings as _gs
     _settings = _gs()
     catalogue_link = (
-        f"{_settings.catalogue_base_url}/{catalogue_slug}"
+        f"{_settings.public_shop_base_url}/{catalogue_slug}"
         if catalogue_slug
-        else f"{_settings.catalogue_base_url}"
+        else f"{_settings.public_shop_base_url}"
     )
 
     lang_rule = language_service.build_language_rule(language)

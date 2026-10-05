@@ -113,6 +113,7 @@ WHATSAPP_PHONE_NUMBER_ID=
 INSTAGRAM_ACCESS_TOKEN=
 RAZORPAY_KEY_ID=
 RAZORPAY_KEY_SECRET=
+PUBLIC_SHOP_BASE_URL=
 ```
 
 - `WHATSAPP_ACCESS_TOKEN`/`WHATSAPP_PHONE_NUMBER_ID` are the **global fallback** used only when a client has no credentials of its own on `Client.whatsapp_access_token`/`Client.whatsapp_phone_number_id`. Every WhatsApp send in `app/services/outbound.py` prefers the per-client values when the caller has the `Client` row loaded — see the module docstring there for why that resolution happens via already-loaded objects rather than a DB lookup inside the send path.
@@ -127,6 +128,7 @@ We never collect money: the customer pays the seller's UPI directly and sends a 
 - **Stock**: reserved at `pending_payment` (`stock_reservations`, `stock_reservation_service.py`), deducted at `paid` in the same transaction as the status change, released at `cancelled`. New-order stock checks subtract active reservations.
 - **Core**: `payment_verification_service.py` (approve/reject/cancel/expire; row-locked + idempotent, audit rows in `order_audit_log`). Inbound screenshots: `payment_inbound.py`, wrapped around `handle_inbound_message` (no vision model runs on proofs). Media is re-hosted in our storage (`media_service.py`) because Meta URLs expire.
 - **Dashboard sends** go through `channel_sender.py` → `outbound.py` (24h window / opt-out / block enforced by `send_gate`). A dashboard send pauses the bot (`conversation_control.py`; `ai_enabled` stays the flag the pipeline reads, `bot_pause_source='human_send'` auto-resumes after `Client.bot_auto_resume_minutes` idle). Approve/reject templates are sent even while the bot is paused.
+- **Log hygiene** (`app/log_redaction.py`): `httpx`/`httpcore` loggers are WARNING (they log full URLs incl. `access_token=`), and uvicorn's access log is filtered to redact `*token=` query values — this is how the SSE JWT in `/events/stream?token=` stays out of logs. Never log tokens/URLs carrying them. A startup IG `debug_token` failure sets a runtime flag (`channel_status.py`) that makes `outbound.ig_*` skip sends and `/health` report `"Instagram disconnected"`.
 - **Realtime**: SSE (`GET /events/stream?token=`) from an in-process hub (`realtime_service.py`, single-instance like the rate limiter — swap `publish()` for Redis pub/sub when scaling out) with a DB-derived polling fallback (`GET /events/poll?since=`).
 - **Permission**: `payment_verify` (Owner always; in the Manager preset). Payment settings (`/settings/payment`) are Owner-only.
 - Dependency: `segno` (pure-python QR PNG for the `upi://pay?...&tn=Order{id}` code).

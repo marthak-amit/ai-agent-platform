@@ -38,7 +38,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from app.services import instagram_service, whatsapp_service
+from app.services import channel_status, instagram_service, whatsapp_service
 from app.services.send_gate import (
     DenyReason,
     MessageKind,
@@ -379,6 +379,14 @@ async def send_owner_text(
 
 # ─── Instagram ───────────────────────────────────────────────────────────────
 
+def _ig_channel_disabled() -> bool:
+    """True (after a rate-limited warning) when the startup check marked the IG token invalid."""
+    if channel_status.is_instagram_disabled():
+        channel_status.warn_instagram_send_skipped()
+        return True
+    return False
+
+
 async def ig_send_dm(
     ig_user_id: str,
     recipient_igsid: str,
@@ -392,6 +400,8 @@ async def ig_send_dm(
     is_optout_confirmation: bool = False,
 ) -> dict | None:
     """Gated Instagram DM send. Returns Meta's response, or None if suppressed."""
+    if _ig_channel_disabled():
+        return None
     decision, customer = await _gate(
         db, client_id, recipient_igsid, kind, "instagram",
         conversation_id, customer, is_optout_confirmation,
@@ -419,6 +429,8 @@ async def ig_send_quick_replies(
     customer=None,
 ) -> bool:
     """Gated Instagram quick-replies send. Returns False if suppressed or rejected."""
+    if _ig_channel_disabled():
+        return False
     decision, customer = await _gate(
         db, client_id, recipient_igsid, kind, "instagram", conversation_id, customer,
     )
@@ -442,6 +454,8 @@ async def ig_send_image(
     customer=None,
 ) -> dict | None:
     """Gated Instagram image send. Returns Meta's response, or None if suppressed."""
+    if _ig_channel_disabled():
+        return None
     decision, customer = await _gate(
         db, client_id, recipient_igsid, kind, "instagram", conversation_id, customer,
     )
@@ -464,6 +478,8 @@ async def ig_send_generic_template(
     customer=None,
 ) -> bool:
     """Gated IG Generic Template (carousel) send. Returns False if suppressed, rejected, or failed."""
+    if _ig_channel_disabled():
+        return False
     decision, customer = await _gate(
         db, client_id, recipient_igsid, kind, "instagram", conversation_id, customer,
     )
@@ -492,6 +508,8 @@ async def ig_send_private_reply(
     within 7 days of the comment — enforced by the gate via
     channel="instagram_comment".
     """
+    if _ig_channel_disabled():
+        return None
     decision, _customer = await _gate(
         db, client_id, recipient_igsid or comment_id,
         MessageKind.PIPELINE_REPLY, "instagram_comment",
@@ -514,6 +532,8 @@ async def ig_reply_to_comment(
     here so ALL Graph API writes flow through the one module the CI guard
     audits.
     """
+    if _ig_channel_disabled():
+        return {}
     return await instagram_service._raw_reply_to_comment(
         ig_user_id=ig_user_id, comment_id=comment_id, message_text=message_text
     )

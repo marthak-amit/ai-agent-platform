@@ -18,8 +18,10 @@ from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
+from app.log_redaction import configure_log_hygiene
 from app.routers import admin, analytics, auth, briefing, campaigns, catalogue, catalogue_public, channels, conversations, customers, followup, instagram, integrations, knowledge, leads, onboarding, orders, payment, payment_settings, payment_verification, photo_enhancement, plans, realtime, sandbox, team, usage, webhook, whatsapp_signup, widget
 from app.scheduler import start_scheduler, stop_scheduler
+from app.services import channel_status
 
 _UPLOADS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
 os.makedirs(_UPLOADS_DIR, exist_ok=True)
@@ -27,6 +29,7 @@ _INVOICES_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "invoic
 os.makedirs(_INVOICES_DIR, exist_ok=True)
 
 logging.basicConfig(level=logging.INFO)
+configure_log_hygiene()
 logger = logging.getLogger(__name__)
 
 
@@ -93,6 +96,79 @@ async def _schema_drift_check() -> None:
         sys.exit(1)
 
 
+_DEBUG_TOKEN_URL = "https://graph.facebook.com/debug_token"
+_INVALID_TOKEN_ERROR_CODE = 190  # Graph OAuthException: token invalid/expired/revoked
+
+
+async def _debug_token(token: str, label: str) -> tuple[str, dict]:
+    """
+    Ask Meta's debug_token endpoint about `token`.
+
+    Returns (verdict, data) where verdict is "valid", "invalid" or "unknown"
+    (network/Meta error — inconclusive, never treated as invalid). Never logs
+    the request URL (it carries the token as a query param) or any token
+    value; failures log only the exception class.
+    """
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                _DEBUG_TOKEN_URL, params={"input_token": token, "access_token": token}
+            )
+        body = resp.json()
+    except Exception as exc:
+        logger.warning("%s token check: request failed (%s)", label, type(exc).__name__)
+        return "unknown", {}
+
+    data = body.get("data") or {}
+    if data.get("is_valid") is True:
+        return "valid", data
+    if data.get("is_valid") is False or (body.get("error") or {}).get("code") == _INVALID_TOKEN_ERROR_CODE:
+        return "invalid", data
+    return "unknown", data
+
+
+def _log_token_status(label: str, verdict: str, data: dict) -> None:
+    """Log valid/invalid, type, expiry and scopes for a checked token — nothing else."""
+    import time
+
+    if verdict == "unknown":
+        logger.warning("%s token check: inconclusive (Meta returned no validity data)", label)
+        return
+    if verdict == "invalid":
+        logger.critical(
+            "%s token INVALID at startup — sends will fail immediately. "
+            "Regenerate via Meta Business Settings → System Users.",
+            label,
+        )
+        return
+
+    token_type = data.get("type", "unknown")
+    scopes = data.get("scopes", [])
+    expires_at = data.get("expires_at", 0)  # 0 = never expires (System User token)
+    if expires_at == 0:
+        logger.info(
+            "%s token: VALID | type=%s | expiry=NEVER | scopes=%s", label, token_type, scopes
+        )
+        return
+
+    days_left = (expires_at - int(time.time())) // 86400
+    expires_iso = datetime.utcfromtimestamp(expires_at).strftime("%Y-%m-%d %H:%M UTC")
+    if days_left <= 7:
+        logger.critical(
+            "%s token: VALID | type=%s | expiry=%s (%d day(s) left) | scopes=%s — rotate NOW "
+            "via Meta Business Settings → System Users.",
+            label, token_type, expires_iso, days_left, scopes,
+        )
+    else:
+        logger.warning(
+            "%s token: VALID | type=%s | expiry=%s (%d days left) | scopes=%s — switch to a "
+            "System User token (never expires).",
+            label, token_type, expires_iso, days_left, scopes,
+        )
+
+
 async def _check_whatsapp_token() -> None:
     """
     Call the Meta token-debug endpoint at startup and log token validity + expiry.
@@ -101,63 +177,15 @@ async def _check_whatsapp_token() -> None:
     problem is visible in Railway boot logs — not as silent send failures later.
     Skips the check when the token is the placeholder test value.
     """
-    import httpx
     from app.config import get_settings as _gs
 
-    s = _gs()
-    token = s.whatsapp_access_token
+    token = _gs().whatsapp_access_token
     if not token or token in ("test_token", "test-wa", "test-wa-token"):
         logger.info("WhatsApp token check: skipped (test/placeholder token)")
         return
 
-    url = "https://graph.facebook.com/debug_token"
-    params = {"input_token": token, "access_token": token}
-    sep = "=" * 50
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(url, params=params)
-        data = resp.json().get("data", {})
-    except Exception as exc:
-        logger.warning("WhatsApp token check: HTTP error — %s", exc)
-        return
-
-    is_valid = data.get("is_valid", False)
-    expires_at = data.get("expires_at", 0)  # 0 = never expires (System User token)
-    token_type = data.get("type", "unknown")
-    app_name = data.get("application", "unknown")
-    scopes = data.get("scopes", [])
-
-    logger.info(sep)
-    if not is_valid:
-        error = data.get("error", {})
-        logger.critical(
-            "WhatsApp token INVALID at startup — sends will fail immediately. "
-            "Error: %s (code %s). Regenerate via Meta Business Settings → System Users.",
-            error.get("message", "unknown"),
-            error.get("code", "?"),
-        )
-    elif expires_at == 0:
-        logger.info(
-            "WhatsApp token: VALID ✓ | type=%s | app=%s | expiry=NEVER (System User) | scopes=%s",
-            token_type, app_name, scopes,
-        )
-    else:
-        import time
-        secs_left = expires_at - int(time.time())
-        days_left = secs_left // 86400
-        expires_iso = datetime.utcfromtimestamp(expires_at).strftime("%Y-%m-%d %H:%M UTC")
-        if days_left <= 7:
-            logger.critical(
-                "WhatsApp token expires in %d day(s) on %s — rotate NOW via Meta Business Settings → System Users.",
-                days_left, expires_iso,
-            )
-        else:
-            logger.warning(
-                "WhatsApp token: VALID but EXPIRES in %d days on %s. "
-                "Switch to a System User token (never expires).",
-                days_left, expires_iso,
-            )
-    logger.info(sep)
+    verdict, data = await _debug_token(token, "WhatsApp")
+    _log_token_status("WhatsApp", verdict, data)
 
 
 async def _check_instagram_token() -> None:
@@ -166,72 +194,32 @@ async def _check_instagram_token() -> None:
 
     Logs CRITICAL if the token is invalid or expires within 7 days so the
     problem is visible in Railway boot logs — not as silent send failures later.
+    An INVALID verdict also disables the Instagram channel for this process
+    (channel_status) so IG sends are skipped instead of failing per attempt;
+    an inconclusive check (network/Meta error) leaves it enabled. Never raises.
     Skips the check when the token is unset or a placeholder test value.
     """
-    import httpx
     from app.config import get_settings as _gs
 
-    s = _gs()
-    token = s.instagram_access_token
+    token = _gs().instagram_access_token
     if not token or token in ("test_token", "test-ig", "test-ig-token"):
         logger.info("Instagram token check: skipped (test/placeholder token)")
         return
 
-    url = "https://graph.facebook.com/debug_token"
-    params = {"input_token": token, "access_token": token}
-    sep = "=" * 50
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(url, params=params)
-        data = resp.json().get("data", {})
-    except Exception as exc:
-        logger.warning("Instagram token check: HTTP error — %s", exc)
-        return
-
-    is_valid = data.get("is_valid", False)
-    expires_at = data.get("expires_at", 0)  # 0 = never expires (System User token)
-    token_type = data.get("type", "unknown")
-    app_name = data.get("application", "unknown")
-    scopes = data.get("scopes", [])
-
-    logger.info(sep)
-    if not is_valid:
-        error = data.get("error", {})
-        logger.critical(
-            "Instagram token INVALID at startup — sends will fail immediately. "
-            "Error: %s (code %s). Regenerate via Meta Business Settings → System Users.",
-            error.get("message", "unknown"),
-            error.get("code", "?"),
-        )
-    elif expires_at == 0:
-        logger.info(
-            "Instagram token: VALID ✓ | type=%s | app=%s | expiry=NEVER (System User) | scopes=%s",
-            token_type, app_name, scopes,
-        )
-    else:
-        import time
-        secs_left = expires_at - int(time.time())
-        days_left = secs_left // 86400
-        expires_iso = datetime.utcfromtimestamp(expires_at).strftime("%Y-%m-%d %H:%M UTC")
-        if days_left <= 7:
-            logger.critical(
-                "Instagram token expires in %d day(s) on %s — rotate NOW via Meta Business Settings → System Users.",
-                days_left, expires_iso,
-            )
-        else:
-            logger.warning(
-                "Instagram token: VALID but EXPIRES in %d days on %s. "
-                "Switch to a System User token (never expires).",
-                days_left, expires_iso,
-            )
-    logger.info(sep)
+    verdict, data = await _debug_token(token, "Instagram")
+    _log_token_status("Instagram", verdict, data)
+    if verdict == "invalid":
+        channel_status.disable_instagram("token invalid at startup")
+        logger.warning("Instagram channel DISABLED — IG sends will be skipped until the token is fixed and the app restarted.")
 
 
 def _startup_checks() -> None:
     """Log a structured startup banner so Railway logs show config state immediately."""
     from app.config import get_settings as _gs
+    from app.config import ensure_secret_key_is_safe
     from app.services import ocr_service
     s = _gs()
+    ensure_secret_key_is_safe(s)
     sep = "=" * 50
     logger.info(sep)
     logger.info("AI Agent Platform Starting")
@@ -347,6 +335,9 @@ async def health_check(db: AsyncSession = Depends(get_db)) -> dict:
                 checks["whatsapp_token"] = f"valid (expires in {_days}d)"
         except Exception as exc:
             checks["whatsapp_token"] = f"check_failed: {exc}"
+
+    if channel_status.is_instagram_disabled():
+        checks["instagram"] = "Instagram disconnected"
 
     all_ok = all(v in ("ok", "valid (never expires)") or v.startswith("valid") or v.startswith("skipped") for v in checks.values())
     return {

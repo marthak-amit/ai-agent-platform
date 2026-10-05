@@ -8,7 +8,7 @@ Access the singleton via `get_settings()`.
 import warnings
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -51,7 +51,13 @@ class Settings(BaseSettings):
     frontend_url: str = "http://localhost:5173"
     secret_key: str = "change-me-in-production"
     admin_secret_key: str = "change-me-admin-secret"
-    catalogue_base_url: str = "https://agentlyai.in/shop"
+    # Public base URL of the hosted catalogue/shop pages, used in every
+    # customer-facing "browse more" / catalogue link. CATALOGUE_BASE_URL is the
+    # legacy env var name and is still honoured if PUBLIC_SHOP_BASE_URL is unset.
+    public_shop_base_url: str = Field(
+        default="https://agentlyai.in/shop",
+        validation_alias=AliasChoices("PUBLIC_SHOP_BASE_URL", "CATALOGUE_BASE_URL"),
+    )
     # This backend's own publicly reachable base URL (e.g. the Railway domain),
     # used to build fully-qualified links (invoice PDFs) that Meta's WhatsApp
     # API can fetch. Empty in local dev — invoice links simply won't be
@@ -92,13 +98,28 @@ class Settings(BaseSettings):
     @classmethod
     def warn_insecure_secret_key(cls, v: str) -> str:
         """Warn loudly if the default insecure key is used."""
-        if v == "change-me-in-production":
+        if v == DEFAULT_SECRET_KEY:
             warnings.warn(
                 "SECRET_KEY is set to the default insecure value. "
                 "Set the SECRET_KEY environment variable in production.",
                 stacklevel=2,
             )
         return v
+
+
+DEFAULT_SECRET_KEY = "change-me-in-production"
+
+
+def ensure_secret_key_is_safe(settings: Settings) -> None:
+    """Raise RuntimeError if a non-development environment still uses the default SECRET_KEY."""
+    if settings.environment.strip().lower() != "development" and settings.secret_key == DEFAULT_SECRET_KEY:
+        raise RuntimeError(
+            f"Refusing to start: SECRET_KEY is still the default value ('{DEFAULT_SECRET_KEY}') "
+            f"while ENVIRONMENT='{settings.environment}'. JWTs signed with it can be forged by anyone. "
+            "Set a long random SECRET_KEY, e.g. "
+            "`python -c \"import secrets; print(secrets.token_hex(32))\"`, "
+            "or set ENVIRONMENT=development for local use."
+        )
 
 
 @lru_cache

@@ -1834,7 +1834,7 @@ async def _send_fresh_greeting(
     """
     settings = get_settings()
     slug = getattr(client, "catalogue_slug", None) if client else None
-    catalogue_url = f"{settings.catalogue_base_url}/{slug}" if slug else settings.catalogue_base_url
+    catalogue_url = f"{settings.public_shop_base_url}/{slug}" if slug else settings.public_shop_base_url
     business = (getattr(client, "business_name", None) or "our store") if client else "our store"
     lang = (getattr(conv, "last_customer_language", None) or "english").lower()
     reply = get_template(lang, "greeting_new", business=business, catalogue_url=catalogue_url)
@@ -5453,7 +5453,7 @@ async def _render_order_reply(
         from app.config import get_settings as _gs_r
         _settings_r = _gs_r()
         _cat_url_r = (
-            f"{_settings_r.catalogue_base_url}/{_cat_slug_r}"
+            f"{_settings_r.public_shop_base_url}/{_cat_slug_r}"
             if _cat_slug_r else None
         )
         _cs_name_r, _cs_price_r = await _find_cross_sell_candidate(db, client, conv, _pinned_sku)
@@ -6290,7 +6290,7 @@ async def run_llm_routing(
             _soft_slug = getattr(client, "catalogue_slug", None) if client else None
             from app.config import get_settings as _gs6
             _settings = _gs6()
-            _soft_url = f"{_settings.catalogue_base_url}/{_soft_slug}" if _soft_slug else _settings.catalogue_base_url
+            _soft_url = f"{_settings.public_shop_base_url}/{_soft_slug}" if _soft_slug else _settings.public_shop_base_url
             ai_reply = f"I can help you with orders from {_soft_biz}! Browse our collection: {_soft_url}"
             _log_route(conv.id, "TEMPLATE", "soft_llm_cap", extra=f"calls={_llm_calls_today}")
             logger.info("Soft LLM cap: conv=%s calls_today=%d — template reply, skipping 70B.", conv.id, _llm_calls_today)
@@ -8160,9 +8160,9 @@ RULES:
     ):
         _cat_slug = getattr(client, "catalogue_slug", None)
         _cat_url = (
-            f"{settings.catalogue_base_url}/{_cat_slug}"
+            f"{settings.public_shop_base_url}/{_cat_slug}"
             if _cat_slug
-            else settings.catalogue_base_url
+            else settings.public_shop_base_url
         )
         _business = getattr(client, "business_name", "our store") or "our store"
         _lang_cat = getattr(conv, "last_customer_language", "english") or "english"
@@ -8229,9 +8229,9 @@ RULES:
     if _is_pure_greeting:
         _g_slug = getattr(client, "catalogue_slug", None)
         _g_cat_url = (
-            f"{settings.catalogue_base_url}/{_g_slug}"
+            f"{settings.public_shop_base_url}/{_g_slug}"
             if _g_slug
-            else settings.catalogue_base_url
+            else settings.public_shop_base_url
         )
         _g_business = getattr(client, "business_name", "our store") or "our store"
         _g_lang = (getattr(conv, "last_customer_language", None) or language or "english").lower()
@@ -8327,8 +8327,8 @@ RULES:
             # Build contact line: website (catalogue URL) + phone, omitting blank lines
             _ot_cat_slug = getattr(client, "catalogue_slug", None)
             _ot_cat_url = (
-                f"{settings.catalogue_base_url}/{_ot_cat_slug}"
-                if _ot_cat_slug else settings.catalogue_base_url
+                f"{settings.public_shop_base_url}/{_ot_cat_slug}"
+                if _ot_cat_slug else settings.public_shop_base_url
             ) if _ot_cat_slug else None
             _ot_phone = getattr(client, "phone", None)
             _contact_parts = []
@@ -8430,8 +8430,8 @@ RULES:
         else:
             _cat_slug_os = getattr(client, "catalogue_slug", None)
             _cat_url_os = (
-                f"{settings.catalogue_base_url}/{_cat_slug_os}"
-                if _cat_slug_os else settings.catalogue_base_url
+                f"{settings.public_shop_base_url}/{_cat_slug_os}"
+                if _cat_slug_os else settings.public_shop_base_url
             )
             _os_reply = _get_ostpl(_os_lang, "no_orders", catalogue_url=_cat_url_os)
         try:
