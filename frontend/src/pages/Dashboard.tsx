@@ -25,7 +25,7 @@ import {
   ChevronRight,
   ShoppingCart,
   IndianRupee,
-  Send,
+  // Send, // used only by the hidden Campaigns quick action — see HIDDEN_FEATURES.md
   Package,
   FlaskConical,
   Clock,
@@ -274,14 +274,7 @@ export default function Dashboard() {
   const pendingOrders = orderStats?.pending_dispatch ?? 0;
 
   const quickActions = [
-    {
-      label: "New Broadcast",
-      icon: Send,
-      iconColor: "text-brand-primaryDark",
-      to: "/campaigns",
-      badge: null,
-      ownerOnly: true,
-    },
+    // "New Broadcast" (Campaigns) hidden — see HIDDEN_FEATURES.md
     {
       label: "Process Orders",
       icon: Package,

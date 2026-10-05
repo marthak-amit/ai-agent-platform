@@ -11,7 +11,7 @@ import {
   Users,
   UserCheck,
   BarChart2,
-  Megaphone,
+  // Megaphone, // Campaigns hidden — see HIDDEN_FEATURES.md
   Package,
   ClipboardList,
   Link2,
@@ -39,7 +39,8 @@ const NAV_ITEMS: { path: string; key: string; icon: typeof LayoutDashboard; perm
   { path: "/leads",         key: "nav.leads",         icon: Users, ownerOnly: true },
   { path: "/customers",     key: "nav.customers",     icon: UserCheck, ownerOnly: true },
   { path: "/analytics",     key: "nav.analytics",     icon: BarChart2, permission: "analytics_view" },
-  { path: "/campaigns",     key: "nav.campaigns",     icon: Megaphone, ownerOnly: true },
+  // Campaigns hidden — see HIDDEN_FEATURES.md
+  // { path: "/campaigns",     key: "nav.campaigns",     icon: Megaphone, ownerOnly: true },
   { path: "/knowledge",     key: "nav.knowledge",     icon: Brain, ownerOnly: true },
   { path: "/catalogue",     key: "nav.catalogue",     icon: Package, permission: "catalog_edit" },
   { path: "/channels",      key: "nav.channels",      icon: Link2, ownerOnly: true },

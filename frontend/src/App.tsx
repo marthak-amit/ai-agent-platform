@@ -12,7 +12,7 @@ import Leads from "./pages/Leads";
 import Settings from "./pages/Settings";
 import Catalogue from "./pages/Catalogue";
 import Analytics from "./pages/Analytics";
-import Campaigns from "./pages/Campaigns";
+// import Campaigns from "./pages/Campaigns"; // hidden — see HIDDEN_FEATURES.md
 import Channels from "./pages/Channels";
 import Orders from "./pages/Orders";
 import Payments from "./pages/Payments";
@@ -108,16 +108,7 @@ export default function App() {
               </ProtectedRoute>
             }
           />
-          <Route
-            path="/campaigns"
-            element={
-              <ProtectedRoute>
-                <RequirePermission ownerOnly>
-                  <Campaigns />
-                </RequirePermission>
-              </ProtectedRoute>
-            }
-          />
+          {/* Campaigns hidden — see HIDDEN_FEATURES.md. /campaigns falls through to the "*" redirect. */}
           <Route
             path="/orders"
             element={
