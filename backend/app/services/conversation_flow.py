@@ -14,7 +14,7 @@ import unicodedata as _ud
 
 from collections import OrderedDict
 
-from app.services import cost_log
+from app.services import cost_log, llm_client, llm_health
 
 logger = logging.getLogger(__name__)
 
@@ -726,7 +726,6 @@ async def classify_user_intent(
         if _sku_hits:
             return {"intent": "NEW_PRODUCT", "entities": {"sku": _sku_hits[0]}}
 
-    from openai import AsyncOpenAI
     from app.config import get_settings
 
     settings = get_settings()
@@ -754,18 +753,13 @@ async def classify_user_intent(
     )
 
     try:
-        client = AsyncOpenAI(
-            api_key=settings.groq_api_key,
-            base_url="https://api.groq.com/openai/v1",
-            max_retries=0,
-        )
         import asyncio as _aio
         _backoff = 1.0
         for _attempt in range(3):
             try:
-                resp = await client.chat.completions.create(
-                    model=settings.classify_model,
-                    messages=[{"role": "user", "content": prompt}],
+                resp = await llm_client.chat(
+                    settings.llm_model_classifier,
+                    [{"role": "user", "content": prompt}],
                     max_tokens=10,
                     temperature=0,
                 )
@@ -778,9 +772,9 @@ async def classify_user_intent(
                     _backoff *= 2
                     continue
                 raise
-        _log_groq_usage(conversation_id, "classify", settings.classify_model, resp, user_text)
-        logger.info("ROUTE tier=2 cache_hit=false classify model=%s", settings.classify_model)
-        raw = (resp.choices[0].message.content or "").strip().upper()
+        _log_groq_usage(conversation_id, "classify", settings.llm_model_classifier, resp, user_text)
+        logger.info("ROUTE tier=2 cache_hit=false classify model=%s", settings.llm_model_classifier)
+        raw = llm_client.final_text(resp).upper()
         if raw in ("ANSWER", "NEW_PRODUCT", "CANCEL", "DISCOUNT_QUERY", "OFF_TOPIC", "OTHER"):
             _result = {"intent": raw, "entities": {}}
             _classify_cache_put(_cache_key, _result, settings.classify_cache_size)
@@ -791,8 +785,10 @@ async def classify_user_intent(
                 _result = {"intent": label, "entities": {}}
                 _classify_cache_put(_cache_key, _result, settings.classify_cache_size)
                 return _result
+        llm_health.record_failure("classify_user_intent_invalid_output", f"unparseable output {raw[:60]!r}")
     except Exception as exc:
-        logger.warning("classify_user_intent failed (defaulting to ANSWER): %s", exc)
+        llm_health.record_failure("classify_user_intent", exc)
+        logger.warning("classify_user_intent defaulting to ANSWER (LLM failure)")
 
     return {"intent": "ANSWER", "entities": {}}
 
@@ -821,9 +817,6 @@ async def extract_cart_breakdown(
     variant — callers MUST echo the result back for confirmation before
     committing it to cart_items, never commit an inferred split silently.
     """
-    import json as _json
-
-    from openai import AsyncOpenAI
     from app.config import get_settings
 
     settings = get_settings()
@@ -848,31 +841,28 @@ async def extract_cart_breakdown(
         "other text."
     )
 
-    try:
-        client = AsyncOpenAI(
-            api_key=settings.groq_api_key,
-            base_url="https://api.groq.com/openai/v1",
-            max_retries=0,
-        )
-        resp = await client.chat.completions.create(
-            model=settings.classify_model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=500,
-            temperature=0,
-            response_format={"type": "json_object"},
-        )
-        _log_groq_usage(conversation_id, "cart_breakdown", settings.classify_model, resp, user_text)
-        raw = (resp.choices[0].message.content or "").strip()
-        parsed = _json.loads(raw)
+    def _valid(parsed: dict) -> bool:
+        """Schema check: non-empty items list, each with an int qty >= 1."""
         items = parsed.get("items")
-        if not isinstance(items, list) or not items:
+        return (
+            isinstance(items, list) and bool(items)
+            and all(isinstance(i, dict) and isinstance(i.get("qty"), int) and i["qty"] >= 1 for i in items)
+        )
+
+    try:
+        parsed = await llm_client.chat_json(
+            settings.llm_model_classifier,
+            [{"role": "user", "content": prompt}],
+            max_tokens=500,
+            validate=_valid,
+            on_response=lambda r: _log_groq_usage(conversation_id, "cart_breakdown", settings.llm_model_classifier, r, user_text),
+        )
+        if parsed is None:
+            llm_health.record_failure("extract_cart_breakdown_invalid_json", "no valid JSON after retry")
             return None
-        for item in items:
-            if not isinstance(item, dict) or not isinstance(item.get("qty"), int) or item["qty"] < 1:
-                return None
-        return {"items": items, "inferred_split": bool(parsed.get("inferred_split", False))}
+        return {"items": parsed["items"], "inferred_split": bool(parsed.get("inferred_split", False))}
     except Exception as exc:
-        logger.warning("extract_cart_breakdown failed (caller will reprompt): %s", exc)
+        llm_health.record_failure("extract_cart_breakdown", exc)
         return None
 
 
@@ -915,22 +905,16 @@ async def classify_buy_intent(user_text: str, product_name: str, conversation_id
     )
 
     try:
-        from openai import AsyncOpenAI
         from app.config import get_settings
         import asyncio as _aio
 
         settings = get_settings()
-        client = AsyncOpenAI(
-            api_key=settings.groq_api_key,
-            base_url="https://api.groq.com/openai/v1",
-            max_retries=0,
-        )
         _backoff = 1.0
         for _attempt in range(3):
             try:
-                resp = await client.chat.completions.create(
-                    model="llama-3.1-8b-instant",
-                    messages=[{"role": "user", "content": prompt}],
+                resp = await llm_client.chat(
+                    settings.llm_model_classifier,
+                    [{"role": "user", "content": prompt}],
                     max_tokens=5,
                     temperature=0,
                 )
@@ -943,13 +927,16 @@ async def classify_buy_intent(user_text: str, product_name: str, conversation_id
                     _backoff *= 2
                     continue
                 raise
-        _log_groq_usage(conversation_id, "classify", "llama-3.1-8b-instant", resp, user_text)
-        raw = (resp.choices[0].message.content or "").strip().upper()
+        _log_groq_usage(conversation_id, "classify", settings.llm_model_classifier, resp, user_text)
+        raw = llm_client.final_text(resp).upper()
+        if not (raw.startswith("YES") or raw.startswith("NO")):
+            llm_health.record_failure("classify_buy_intent_invalid_output", f"expected YES/NO, got {raw[:40]!r}")
+            return False
         result = raw.startswith("YES")
         logger.debug("classify_buy_intent product=%r text=%r → %s", product_name, user_text[:60], result)
         return result
     except Exception as exc:
-        logger.warning("classify_buy_intent failed (defaulting False): %s", exc)
+        llm_health.record_failure("classify_buy_intent", exc)
         return False
 
 
@@ -963,7 +950,7 @@ async def is_off_topic_message(
     Return True when the customer's message is completely unrelated to the store.
 
     Called for idle and completed stages where classify_user_intent is not used.
-    Uses llama-3.1-8b-instant (fast, cheap). Falls back to False on any error
+    Uses the classifier model (LLM_MODEL_CLASSIFIER). Falls back to False on any error (counted + logged at ERROR)
     so genuine product messages are never blocked.
 
     NOT off-topic: product/shopping questions, greetings, affirmations, names,
@@ -993,26 +980,23 @@ async def is_off_topic_message(
     )
 
     try:
-        from openai import AsyncOpenAI
         from app.config import get_settings
 
         settings = get_settings()
-        _client = AsyncOpenAI(
-            api_key=settings.groq_api_key,
-            base_url="https://api.groq.com/openai/v1",
-            max_retries=0,
-        )
-        resp = await _client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[{"role": "user", "content": prompt}],
+        resp = await llm_client.chat(
+            settings.llm_model_classifier,
+            [{"role": "user", "content": prompt}],
             max_tokens=5,
             temperature=0,
         )
-        _log_groq_usage(conversation_id, "classify", "llama-3.1-8b-instant", resp, user_text)
-        raw = (resp.choices[0].message.content or "").strip().upper()
+        _log_groq_usage(conversation_id, "classify", settings.llm_model_classifier, resp, user_text)
+        raw = llm_client.final_text(resp).upper()
+        if not (raw.startswith("YES") or raw.startswith("NO")):
+            llm_health.record_failure("is_off_topic_message_invalid_output", f"expected YES/NO, got {raw[:40]!r}")
+            return False
         return raw.startswith("YES")
     except Exception as exc:
-        logger.warning("is_off_topic_message failed (defaulting False): %s", exc)
+        llm_health.record_failure("is_off_topic_message", exc)
         return False
 
 

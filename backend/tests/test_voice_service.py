@@ -12,7 +12,7 @@ from app.services.voice_service import transcribe_voice_note
 
 
 @pytest.mark.asyncio
-async def test_transcribe_voice_note_success():
+async def test_transcribe_voice_note_success(mock_settings):
     """Returns transcribed text from Groq Whisper."""
     mock_client = MagicMock()
     mock_client.audio.transcriptions.create.return_value = "Namaste, saree chahiye"
@@ -30,7 +30,7 @@ async def test_transcribe_voice_note_success():
 
 
 @pytest.mark.asyncio
-async def test_transcribe_voice_note_mp4_mime():
+async def test_transcribe_voice_note_mp4_mime(mock_settings):
     """Correctly maps .mp4 extension to audio/mp4 MIME type."""
     mock_client = MagicMock()
     mock_client.audio.transcriptions.create.return_value = "test"
@@ -43,7 +43,7 @@ async def test_transcribe_voice_note_mp4_mime():
 
 
 @pytest.mark.asyncio
-async def test_transcribe_voice_note_unknown_extension():
+async def test_transcribe_voice_note_unknown_extension(mock_settings):
     """Defaults to audio/ogg for unknown extensions."""
     mock_client = MagicMock()
     mock_client.audio.transcriptions.create.return_value = "test"
@@ -56,7 +56,7 @@ async def test_transcribe_voice_note_unknown_extension():
 
 
 @pytest.mark.asyncio
-async def test_transcribe_voice_note_strips_whitespace():
+async def test_transcribe_voice_note_strips_whitespace(mock_settings):
     """Strips leading/trailing whitespace from Groq response."""
     mock_client = MagicMock()
     mock_client.audio.transcriptions.create.return_value = "  hello world  "
@@ -68,7 +68,7 @@ async def test_transcribe_voice_note_strips_whitespace():
 
 
 @pytest.mark.asyncio
-async def test_transcribe_voice_note_graceful_degradation():
+async def test_transcribe_voice_note_graceful_degradation(mock_settings):
     """Returns empty string on Groq API error — never raises."""
     mock_client = MagicMock()
     mock_client.audio.transcriptions.create.side_effect = Exception("Groq down")

@@ -17,6 +17,7 @@ def format_price(p: float | int) -> str:
 
 ENGLISH_TEMPLATES: dict[str, str] = {
     "pay_unavailable": "Thanks! Payment details for this order are being set up — the seller will message you here shortly.",
+    "llm_unavailable_rephrase": "Sorry, could you rephrase? Or type a product code, or 'order status'.",
     # ── Manual UPI payment verification (deterministic; engine acts, LLM never writes these) ──
     "pay_instruction": "🧾 Order #{order_number}\n{items}\nTotal: {amount}\n\nPay to UPI ID: {upi_id}{payee_line}\n(GPay / PhonePe / Paytm / any UPI app){extra}",
     "pay_send_screenshot": "After payment, please send the payment screenshot here.",
@@ -225,6 +226,7 @@ ENGLISH_TEMPLATES: dict[str, str] = {
 
 HINDI_TEMPLATES: dict[str, str] = {
     "pay_unavailable": "Shukriya! Is order ke payment details set ho rahe hain — seller jaldi hi yahan message karenge.",
+    "llm_unavailable_rephrase": "Sorry, kya aap dobara likh sakte hain? Ya product code ya 'order status' type karein.",
     "pay_instruction": "🧾 Order #{order_number}\n{items}\nTotal: {amount}\n\nUPI ID par payment karein: {upi_id}{payee_line}\n(GPay / PhonePe / Paytm / koi bhi UPI app){extra}",
     "pay_send_screenshot": "Payment karne ke baad, kripya payment ka screenshot yahan bhejein.",
     "pay_proof_received": "Shukriya! Hamari team aapka payment jaldi verify karke yahin update degi.",
@@ -433,6 +435,7 @@ HINDI_TEMPLATES: dict[str, str] = {
 
 GUJARATI_TEMPLATES: dict[str, str] = {
     "pay_unavailable": "Aabhar! Aa order na payment details set thai rahya chhe — seller jaldi ahi message karshe.",
+    "llm_unavailable_rephrase": "Maaf karjo, shu tame fari thi lakhi shako? Athva product code athva 'order status' lakho.",
     "pay_instruction": "🧾 Order #{order_number}\n{items}\nKul: {amount}\n\nUPI ID par payment karo: {upi_id}{payee_line}\n(GPay / PhonePe / Paytm / koi pan UPI app){extra}",
     "pay_send_screenshot": "Payment karya pachhi, krupa kari ne payment no screenshot ahi moklo.",
     "pay_proof_received": "Aabhar! Amari team tamaru payment jaldi verify kari ne ahi j update api dese.",
@@ -641,6 +644,7 @@ GUJARATI_TEMPLATES: dict[str, str] = {
 
 HINDI_DEVANAGARI_TEMPLATES: dict[str, str] = {
     "pay_unavailable": "धन्यवाद! इस ऑर्डर की पेमेंट डिटेल्स सेट हो रही हैं — विक्रेता जल्द ही यहाँ संदेश करेंगे।",
+    "llm_unavailable_rephrase": "क्षमा करें, क्या आप दोबारा लिख सकते हैं? या प्रोडक्ट कोड या 'order status' टाइप करें।",
     "pay_instruction": "🧾 ऑर्डर #{order_number}\n{items}\nकुल: {amount}\n\nUPI ID पर भुगतान करें: {upi_id}{payee_line}\n(GPay / PhonePe / Paytm / कोई भी UPI ऐप){extra}",
     "pay_send_screenshot": "भुगतान के बाद, कृपया पेमेंट का स्क्रीनशॉट यहाँ भेजें।",
     "pay_proof_received": "धन्यवाद! हमारी टीम जल्द ही आपका भुगतान वेरिफ़ाई करके यहीं अपडेट देगी।",
@@ -849,6 +853,7 @@ HINDI_DEVANAGARI_TEMPLATES: dict[str, str] = {
 
 GUJARATI_SCRIPT_TEMPLATES: dict[str, str] = {
     "pay_unavailable": "આભાર! આ ઓર્ડરની પેમેન્ટ વિગતો સેટ થઈ રહી છે — વિક્રેતા જલ્દી અહીં મેસેજ કરશે.",
+    "llm_unavailable_rephrase": "માફ કરજો, શું તમે ફરીથી લખી શકો? અથવા પ્રોડક્ટ કોડ અથવા 'order status' લખો.",
     "pay_instruction": "🧾 ઓર્ડર #{order_number}\n{items}\nકુલ: {amount}\n\nUPI ID પર ચુકવણી કરો: {upi_id}{payee_line}\n(GPay / PhonePe / Paytm / કોઈપણ UPI એપ){extra}",
     "pay_send_screenshot": "ચુકવણી કર્યા પછી, કૃપા કરીને પેમેન્ટનો સ્ક્રીનશૉટ અહીં મોકલો.",
     "pay_proof_received": "આભાર! અમારી ટીમ તમારું પેમેન્ટ જલ્દી વેરિફાય કરીને અહીં જ અપડેટ આપશે.",

@@ -6307,7 +6307,8 @@ async def run_llm_routing(
             # irrelevant-to-pinned-product query, which still needs the LLM to
             # confirm whether that name exists in the catalogue at all.
             _ob_reason = "open_browsing_no_match" if _name_match_count == 0 else "open_browsing"
-            _log_route(conv.id, "LLM", _ob_reason, extra=f"stage={stage} model=llama-3.3-70b-versatile")
+            from app.config import get_settings as _gs6b
+            _log_route(conv.id, "LLM", _ob_reason, extra=f"stage={stage} model={_gs6b().llm_model_reply}")
             from app.services import llm_intent as _llm_intent, render_reply as _render_reply
 
             _intent_result = await _llm_intent.classify_turn(
@@ -8909,8 +8910,15 @@ RULES:
                 if _routing_outcome.pre_images:
                     _pending_pre_images = _routing_outcome.pre_images
     except Exception as exc:
-        logger.error("AI processing error: %s", exc)
-        _busy_msg = "Sorry, I'm a bit busy right now — please try again in a moment, or contact us directly."
+        from app.services import llm_health as _llm_health
+        if _llm_health.is_llm_error(exc):
+            # LLM down/misconfigured: never show a generic "AI error" — ask the
+            # customer to rephrase / use a deterministic entry point instead.
+            _llm_health.record_failure("reply_path", exc)
+            _busy_msg = get_template(language or "english", "llm_unavailable_rephrase")
+        else:
+            logger.error("AI processing error: %s", exc)
+            _busy_msg = "Sorry, I'm a bit busy right now — please try again in a moment, or contact us directly."
         try:
             await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
             await conversation_service.save_message(db, conv.id, "assistant", _busy_msg)

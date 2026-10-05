@@ -1,10 +1,10 @@
 """
 Groq vision service for analyzing product images sent by WhatsApp/Instagram customers.
 
-Uses qwen/qwen3.6-27b (Groq's current vision-capable model) to match
+Uses the vision-capable Groq model configured as LLM_MODEL_VISION to match
 customer-sent images against the client's catalogue and reply in Hindi/Hinglish.
-meta-llama/llama-4-scout-17b-16e-instruct, used here previously, was deprecated
-by Groq on 2026-07-17 and now 404s.
+Empty LLM_MODEL_VISION (or a model missing at startup) disables the path —
+analyze_product_image() then returns None and callers fall back to text.
 
 Channel differences:
 - WhatsApp: sends media_id → two-step download (resolve URL then fetch bytes)
@@ -19,10 +19,9 @@ import httpx
 from groq import AsyncGroq, APIStatusError
 
 from app.config import get_settings
+from app.services import llm_client, llm_health
 
 logger = logging.getLogger(__name__)
-
-_VISION_MODEL = "qwen/qwen3.6-27b"
 
 
 async def download_whatsapp_media(media_id: str, access_token: str | None = None) -> bytes:
@@ -106,6 +105,10 @@ async def analyze_product_image(image_source: bytes | str, catalogue_context: st
         case rather than crash or stall the order flow.
     """
     settings = get_settings()
+    if not llm_health.is_vision_enabled():
+        llm_health.warn_vision_disabled_once()
+        return None
+    vision_model = settings.llm_model_vision
     client = AsyncGroq(api_key=settings.groq_api_key)
 
     if isinstance(image_source, str):
@@ -122,7 +125,7 @@ async def analyze_product_image(image_source: bytes | str, catalogue_context: st
 
     try:
         response = await client.chat.completions.create(
-            model=_VISION_MODEL,
+            model=vision_model,
             messages=[
                 {
                     "role": "user",
@@ -163,11 +166,13 @@ async def analyze_product_image(image_source: bytes | str, catalogue_context: st
     except APIStatusError as exc:
         logger.error(
             "Vision call failed | model:%s | status:%s | body:%s",
-            _VISION_MODEL, exc.status_code, exc.body,
+            vision_model, exc.status_code, exc.body,
         )
+        llm_health.record_failure("vision", exc)
         return None
     except Exception as exc:
-        logger.error("Vision call failed | model:%s | error:%s", _VISION_MODEL, exc)
+        logger.error("Vision call failed | model:%s | error:%s", vision_model, exc)
+        llm_health.record_failure("vision", exc)
         return None
 
-    return response.choices[0].message.content
+    return llm_client.final_text(response) or None

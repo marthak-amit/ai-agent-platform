@@ -18,10 +18,10 @@ Tools the LLM may propose:
 """
 from __future__ import annotations
 
-import json
 import logging
-import re
 from typing import Any
+
+from app.services import llm_client, llm_health
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ _VALID_SLOT_FIELDS: frozenset[str] = frozenset({
     "customer_name", "delivery_address", "payment_method",
 })
 
-# Compact system prompt — must work on llama-3.1-8b-instant.
+# Compact system prompt — must work on the small classifier model (LLM_MODEL_CLASSIFIER).
 # Strict JSON output, no prose. Tiny schema to minimise token usage.
 _SYSTEM_PROMPT = """\
 You are an order-flow router for a WhatsApp shopping bot.
@@ -118,15 +118,9 @@ async def call_tool_router(
         Returns [] on any error — callers must treat [] as "no proposal" (safe default).
     """
     try:
-        from openai import AsyncOpenAI
         from app.config import get_settings
 
         settings = get_settings()
-        client = AsyncOpenAI(
-            api_key=settings.groq_api_key,
-            base_url="https://api.groq.com/openai/v1",
-            max_retries=0,
-        )
 
         # Build compact context — last 4 turns max to keep tokens low.
         recent = conversation_history[-4:] if len(conversation_history) > 4 else conversation_history
@@ -156,45 +150,32 @@ async def call_tool_router(
             f"Customer message: {user_text}"
         )
 
-        resp = await client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[
+        def _log_usage(resp) -> None:
+            """Attribute this router call's tokens to the conversation's cost log."""
+            if conversation_id is not None and getattr(resp, "usage", None) is not None:
+                from app.services import cost_log
+                cost_log.log(
+                    conversation_id, "IN", user_text,
+                    path="LLM", model=settings.llm_model_classifier,
+                    in_tok=resp.usage.prompt_tokens, out_tok=resp.usage.completion_tokens,
+                    call_kind="classify",
+                )
+
+        parsed = await llm_client.chat_json(
+            settings.llm_model_classifier,
+            [
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
             ],
             max_tokens=150,
-            temperature=0,
+            validate=lambda d: isinstance(d.get("calls", []), list),
+            on_response=_log_usage,
         )
-
-        if conversation_id is not None and getattr(resp, "usage", None) is not None:
-            from app.services import cost_log
-            cost_log.log(
-                conversation_id, "IN", user_text,
-                path="LLM", model="llama-3.1-8b-instant",
-                in_tok=resp.usage.prompt_tokens, out_tok=resp.usage.completion_tokens,
-                call_kind="classify",
-            )
-
-        raw = (resp.choices[0].message.content or "").strip()
-
-        # Strip markdown fences if present.
-        fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
-        if fence_match:
-            raw = fence_match.group(1)
-
-        # Find first JSON object in the output.
-        obj_match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if not obj_match:
-            logger.warning("tool_router: no JSON in response: %r", raw[:100])
+        if parsed is None:
+            llm_health.record_failure("tool_router_invalid_json", "no valid JSON after retry")
             return []
-
-        parsed = json.loads(obj_match.group(0))
-        raw_calls = parsed.get("calls", [])
-        if not isinstance(raw_calls, list):
-            return []
-
-        return _validate_proposals(raw_calls)
+        return _validate_proposals(parsed.get("calls", []))
 
     except Exception as exc:
-        logger.warning("tool_router call failed (returning []): %s", exc)
+        llm_health.record_failure("tool_router", exc)
         return []

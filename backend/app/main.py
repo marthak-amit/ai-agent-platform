@@ -21,7 +21,7 @@ from app.db import get_db
 from app.log_redaction import configure_log_hygiene
 from app.routers import admin, analytics, auth, briefing, campaigns, catalogue, catalogue_public, channels, conversations, customers, followup, instagram, integrations, knowledge, leads, onboarding, orders, payment, payment_settings, payment_verification, photo_enhancement, plans, realtime, sandbox, team, usage, webhook, whatsapp_signup, widget
 from app.scheduler import start_scheduler, stop_scheduler
-from app.services import channel_status
+from app.services import channel_status, llm_health
 
 _UPLOADS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
 os.makedirs(_UPLOADS_DIR, exist_ok=True)
@@ -40,6 +40,7 @@ async def lifespan(app: FastAPI):
     await _schema_drift_check()
     await _check_whatsapp_token()
     await _check_instagram_token()
+    await _check_llm_models()
     start_scheduler()
     yield
     stop_scheduler()
@@ -213,6 +214,13 @@ async def _check_instagram_token() -> None:
         logger.warning("Instagram channel DISABLED — IG sends will be skipped until the token is fixed and the app restarted.")
 
 
+async def _check_llm_models() -> None:
+    """Verify configured Groq models exist (CRITICAL log + 'LLM unavailable' in /health if not). Never raises."""
+    from app.config import get_settings as _gs
+
+    await llm_health.verify_models(_gs())
+
+
 def _startup_checks() -> None:
     """Log a structured startup banner so Railway logs show config state immediately."""
     from app.config import get_settings as _gs
@@ -339,10 +347,17 @@ async def health_check(db: AsyncSession = Depends(get_db)) -> dict:
     if channel_status.is_instagram_disabled():
         checks["instagram"] = "Instagram disconnected"
 
+    llm = llm_health.health_summary()
+    if not llm["available"]:
+        checks["llm"] = f"LLM unavailable: {llm['reason']}"
+    if not llm["vision_enabled"]:
+        checks["vision"] = f"skipped (disabled: {llm['vision_disabled_reason']})"
+
     all_ok = all(v in ("ok", "valid (never expires)") or v.startswith("valid") or v.startswith("skipped") for v in checks.values())
     return {
         "status": "healthy" if all_ok else "degraded",
         "checks": checks,
+        "llm_failures_last_hour": llm["failures_last_hour"],
         "version": "1.0.0",
         "timestamp": datetime.utcnow().isoformat(),
     }

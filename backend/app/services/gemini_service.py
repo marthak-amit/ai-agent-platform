@@ -24,7 +24,7 @@ import logging
 from openai import AsyncOpenAI
 
 from app.config import get_settings
-from app.services import language_service
+from app.services import language_service, llm_client, llm_health
 from app.services.conversation_flow import get_stage_instructions
 
 logger = logging.getLogger(__name__)
@@ -49,22 +49,15 @@ def get_last_usage() -> dict | None:
     _last_usage.set(None)
     return usage
 
-_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-
-
 def _groq_models() -> list[str]:
     """
-    Models tried in order for generate_reply() — if one is rate-limited (429),
-    fall back to the next. Primary model is Tier 3's REPLY_MODEL setting
-    (settings.reply_model), tunable without a redeploy.
+    Models tried in order for generate_reply() — if one is rate-limited (429)
+    or missing (404), fall back to the next. Primary is LLM_MODEL_REPLY;
+    fallbacks are LLM_MODEL_REPLY_FALLBACKS, defaulting to LLM_MODEL_CLASSIFIER.
     """
     settings = get_settings()
-    return [
-        settings.reply_model,                          # primary — Tier 3 open-ended reply
-        "llama-3.1-8b-instant",                        # fallback 1 — smaller, fewer tokens
-        "meta-llama/llama-4-scout-17b-16e-instruct",    # fallback 2 — Llama 4 Scout on Groq
-        "qwen/qwen3-32b",                              # fallback 3 — Qwen 3 32B on Groq
-    ]
+    fallbacks = llm_health.parse_csv(settings.llm_model_reply_fallbacks) or [settings.llm_model_classifier]
+    return list(dict.fromkeys([settings.llm_model_reply, *fallbacks]))
 
 _BUSY_FALLBACK_REPLY = "Abhi thodi busy hoon. 2 minute mein reply karungi. 🙏"
 
@@ -88,7 +81,7 @@ def _get_client() -> AsyncOpenAI:
     settings = get_settings()
     return AsyncOpenAI(
         api_key=settings.groq_api_key,
-        base_url=_GROQ_BASE_URL,
+        base_url=settings.groq_base_url,
         # The SDK's built-in retry/backoff on 429s would stack on top of our
         # own model-fallback loop and blow past the webhook's response budget.
         # We handle 429s ourselves by moving to the next model immediately.
@@ -144,6 +137,7 @@ async def generate_reply(
         Exception: Any non-429 error from the Groq API is re-raised.
     """
     client = _get_client()
+    settings = get_settings()
 
     # Use the pre-detected language when available to avoid re-detection errors
     # on ambiguous short replies ("yes", "20", "Amit") that would drop context.
@@ -191,32 +185,36 @@ async def generate_reply(
     # current_instruction and customer_context (near the top) are always preserved.
     _slim_system = full_system[:8000] if len(full_system) > 8000 else None
 
+    _small_model = settings.llm_model_classifier
+    _hard_failure: Exception | None = None
     for model in _models:
         _messages = messages
-        if model == "llama-3.1-8b-instant" and _slim_system is not None:
+        if model == _small_model and _slim_system is not None:
             _messages = [{"role": "system", "content": _slim_system}] + messages[1:]
         try:
-            _kwargs = {}
-            if response_format is not None:
-                _kwargs["response_format"] = response_format
-            response = await client.chat.completions.create(
-                model=model,
-                messages=_messages,
-                max_tokens=150,
-                temperature=0.3,
-                **_kwargs,
+            response = await llm_client.chat(
+                model, _messages, max_tokens=150, temperature=0.3,
+                response_format=response_format, client=client,
             )
+        except llm_health.LLMUnavailableError:
+            raise
         except Exception as exc:
             exc_str = str(exc)
             if "429" in exc_str or "413" in exc_str:
                 logger.warning("Model %s rejected (429/413), trying next: %s", model, exc_str[:120])
                 continue
+            if "404" in exc_str or "model_not_found" in exc_str:
+                logger.error("Model %s not found on Groq (404), trying next: %s", model, exc_str[:120])
+                llm_health.record_failure("reply_model_not_found", exc)
+                _hard_failure = exc
+                continue
+            llm_health.record_failure("reply", exc)
             raise
 
-        reply = response.choices[0].message.content
+        reply = llm_client.final_text(response)
         if not reply:
-            raise RuntimeError("OpenAI returned an empty response.")
-        reply = reply.strip()
+            llm_health.record_failure("reply_empty", f"model={model} returned no final content")
+            raise RuntimeError("LLM returned an empty response.")
         usage = getattr(response, "usage", None)
         if usage is not None:
             _last_usage.set({
@@ -227,6 +225,8 @@ async def generate_reply(
         logger.info("AI reply | prompt_v:%s | model:%s | reply_len:%d | tokens_approx:%d", prompt_hash, model, len(reply), len(reply.split()))
         return reply
 
+    if _hard_failure is not None:
+        raise llm_health.LLMUnavailableError(f"no usable reply model: {_hard_failure}") from _hard_failure
     logger.error("All Groq models rate limited — returning busy fallback reply.")
     return _BUSY_FALLBACK_REPLY
 

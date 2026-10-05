@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 WhatsApp + Instagram + Website chat AI agent SaaS platform targeting the Indian market. Clients self-serve their own AI agent setup. Conceptually similar to TailorTalk.ai. Payments via Razorpay, messaging via Meta Cloud API.
 
-**AI providers — this is not "Gemini" despite legacy naming:** conversational replies, intent classification, and product-image recognition all run on **Groq** (`llama-3.3-70b-versatile` for replies, `llama-3.1-8b-instant` for classification/fallback, see `app/services/gemini_service.py` and `app/services/vision_service.py`). Google Gemini (`GEMINI_API_KEY`, `app/services/photo_enhancement_service.py`) is used only for the AI photo-enhancement feature on catalogue images — nothing else. The `gemini_service.py` filename, the `Client.gemini_system_prompt` column, and the `role='model'` convention are pre-Groq-migration names that were never renamed; don't infer from them that replies go through Gemini.
+**AI providers — this is not "Gemini" despite legacy naming:** conversational replies, intent classification, and product-image recognition all run on **Groq**. Model ids are NOT hardcoded: they come from `LLM_MODEL_REPLY` / `LLM_MODEL_CLASSIFIER` / `LLM_MODEL_VISION` / `LLM_MODEL_STT` (defaults in `app/config.py`; verify with `python scripts/check_llm_models.py`, which lists Groq's `/models`). All chat calls go through `app/services/llm_client.py` (reasoning-model handling, final-content-only parsing, JSON repair); `app/services/llm_health.py` holds the failure counter, circuit breaker and startup model check (see `gemini_service.py`, `conversation_flow.py`, `vision_service.py`). Google Gemini (`GEMINI_API_KEY`, `app/services/photo_enhancement_service.py`) is used only for the AI photo-enhancement feature on catalogue images — nothing else. The `gemini_service.py` filename, the `Client.gemini_system_prompt` column, and the `role='model'` convention are pre-Groq-migration names that were never renamed; don't infer from them that replies go through Gemini.
 
 ## Commands
 
@@ -114,6 +114,9 @@ INSTAGRAM_ACCESS_TOKEN=
 RAZORPAY_KEY_ID=
 RAZORPAY_KEY_SECRET=
 PUBLIC_SHOP_BASE_URL=
+LLM_MODEL_REPLY=
+LLM_MODEL_CLASSIFIER=
+LLM_MODEL_VISION=
 ```
 
 - `WHATSAPP_ACCESS_TOKEN`/`WHATSAPP_PHONE_NUMBER_ID` are the **global fallback** used only when a client has no credentials of its own on `Client.whatsapp_access_token`/`Client.whatsapp_phone_number_id`. Every WhatsApp send in `app/services/outbound.py` prefers the per-client values when the caller has the `Client` row loaded — see the module docstring there for why that resolution happens via already-loaded objects rather than a DB lookup inside the send path.
@@ -129,6 +132,7 @@ We never collect money: the customer pays the seller's UPI directly and sends a 
 - **Core**: `payment_verification_service.py` (approve/reject/cancel/expire; row-locked + idempotent, audit rows in `order_audit_log`). Inbound screenshots: `payment_inbound.py`, wrapped around `handle_inbound_message` (no vision model runs on proofs). Media is re-hosted in our storage (`media_service.py`) because Meta URLs expire.
 - **Dashboard sends** go through `channel_sender.py` → `outbound.py` (24h window / opt-out / block enforced by `send_gate`). A dashboard send pauses the bot (`conversation_control.py`; `ai_enabled` stays the flag the pipeline reads, `bot_pause_source='human_send'` auto-resumes after `Client.bot_auto_resume_minutes` idle). Approve/reject templates are sent even while the bot is paused.
 - **Log hygiene** (`app/log_redaction.py`): `httpx`/`httpcore` loggers are WARNING (they log full URLs incl. `access_token=`), and uvicorn's access log is filtered to redact `*token=` query values — this is how the SSE JWT in `/events/stream?token=` stays out of logs. Never log tokens/URLs carrying them. A startup IG `debug_token` failure sets a runtime flag (`channel_status.py`) that makes `outbound.ig_*` skip sends and `/health` report `"Instagram disconnected"`.
+- **LLM failures are never silent**: classifier wrappers keep their safe defaults but call `llm_health.record_failure()` (ERROR log + counter → `llm_failures_last_hour` on `/health`). After `llm_breaker_threshold` consecutive hard failures (or a missing configured model at startup) the breaker opens: `/health` shows `LLM unavailable`, LLM calls short-circuit, and the order pipeline answers with the deterministic `llm_unavailable_rephrase` template instead of an AI error. A probe re-closes it once the LLM recovers. Empty `LLM_MODEL_VISION` or a missing vision model disables image matching (text-only fallback).
 - **Realtime**: SSE (`GET /events/stream?token=`) from an in-process hub (`realtime_service.py`, single-instance like the rate limiter — swap `publish()` for Redis pub/sub when scaling out) with a DB-derived polling fallback (`GET /events/poll?since=`).
 - **Permission**: `payment_verify` (Owner always; in the Manager preset). Payment settings (`/settings/payment`) are Owner-only.
 - Dependency: `segno` (pure-python QR PNG for the `upi://pay?...&tn=Order{id}` code).

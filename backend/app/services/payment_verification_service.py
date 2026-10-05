@@ -95,6 +95,22 @@ def build_upi_uri(upi_id: str, payee_name: str | None, amount: float, order_id: 
     )
 
 
+_qr_failure_warned = False
+
+
+def _warn_qr_failure_once(order_id: int, exc: Exception) -> None:
+    """Log QR generation failure at WARNING the first time only (text payment message is still sent)."""
+    global _qr_failure_warned
+    if _qr_failure_warned:
+        logger.debug("UPI QR generation failed for order %s: %s", order_id, exc)
+        return
+    _qr_failure_warned = True
+    logger.warning(
+        "UPI QR generation failed (order %s): %s: %s — sending the text payment message without a QR. "
+        "Further failures are logged at DEBUG.", order_id, type(exc).__name__, exc,
+    )
+
+
 def make_qr_png(data: str) -> bytes:
     """Render `data` as a PNG QR code (pure-python, no image-library dependency)."""
     import segno
@@ -202,7 +218,7 @@ async def build_payment_instruction(
             await media_service.store_media(client.id, png, "image/png", folder="payment-qr")
         )
     except Exception as exc:
-        logger.error("UPI QR generation failed for order %s: %s", order.id, exc)
+        _warn_qr_failure_once(order.id, exc)
     if qr_url is None and getattr(client, "upi_qr_url", None):
         qr_url = media_service.absolute_url(client.upi_qr_url)
 

@@ -72,13 +72,37 @@ class Settings(BaseSettings):
     use_tool_router: bool = False  # Phase 0: shadow; Phase 1+: live routing
     shadow_router_enabled: bool = False  # set True to re-enable background shadow Groq call
 
-    # ── LLM cost-cascade tuning (tier thresholds/models) — tunable post-launch
+    # ── LLM models (Groq) — the ONLY place model names live. Override per
+    # environment with the LLM_MODEL_* env vars; verify with
+    # `python scripts/check_llm_models.py` (lists Groq's live /models).
+    # NOTE: the legacy CLASSIFY_MODEL / REPLY_MODEL env vars are no longer read.
+    groq_base_url: str = "https://api.groq.com/openai/v1"
+    llm_model_reply: str = "openai/gpt-oss-20b"        # Tier 3: open-ended/ambiguous reply generation
+    # Tier 2 cheap classification + JSON extraction. Defaults to the reply model
+    # until /models confirms a smaller/faster one — see scripts/check_llm_models.py.
+    llm_model_classifier: str = "openai/gpt-oss-20b"
+    llm_model_vision: str = "qwen/qwen3.6-27b"         # "" = vision disabled (image matching skipped)
+    llm_model_stt: str = "whisper-large-v3-turbo"      # voice-note transcription
+    # Extra models tried (in order) when the reply model is rate-limited/missing.
+    # Comma-separated; empty = fall back to llm_model_classifier only.
+    llm_model_reply_fallbacks: str = ""
+    # Reasoning models (e.g. gpt-oss) spend completion tokens on hidden reasoning
+    # before the answer, so tiny max_tokens budgets (YES/NO classifiers) would
+    # come back empty. For models whose id starts with one of these prefixes we
+    # send reasoning_effort and add headroom to max_tokens.
+    llm_reasoning_model_prefixes: str = "openai/gpt-oss"
+    llm_reasoning_effort: str = "low"                  # "" = don't send
+    llm_reasoning_headroom_tokens: int = 512
+    # Circuit breaker: after this many consecutive non-429 LLM failures the
+    # reply path is bypassed (deterministic template) and re-probed periodically.
+    llm_breaker_threshold: int = 3
+    llm_probe_interval_seconds: int = 60
+
+    # ── LLM cost-cascade tuning (tier thresholds) — tunable post-launch
     # without a redeploy. See app/routers/webhook.py ROUTE logging for tier
     # distribution measurement.
     catalog_match_threshold: float = 0.8   # Tier 1: confidence to auto-pin a single match
     catalog_suggest_threshold: float = 0.55  # Tier 1: confidence to surface a "did you mean" list
-    classify_model: str = "llama-3.1-8b-instant"   # Tier 2: cheap intent classification only
-    reply_model: str = "llama-3.3-70b-versatile"   # Tier 3: open-ended/ambiguous reply generation
     reply_topk: int = 8         # Tier 3: max candidate SKUs injected into the prompt
     classify_cache_size: int = 2000  # Tier 2: normalized-phrase → intent LRU cache size
 

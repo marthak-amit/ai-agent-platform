@@ -9,11 +9,10 @@ this into customer text — see app.services.render_reply.
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
 
-from app.services import gemini_service
+from app.services import gemini_service, llm_client
 
 logger = logging.getLogger(__name__)
 
@@ -52,11 +51,8 @@ def _parse(raw_text: str | None) -> IntentResult | None:
     """Parse a model response into an IntentResult, or None if it isn't valid JSON."""
     if not raw_text:
         return None
-    try:
-        data = json.loads(raw_text)
-    except (json.JSONDecodeError, TypeError):
-        return None
-    if not isinstance(data, dict) or "intent" not in data:
+    data = llm_client.parse_json_object(raw_text)
+    if data is None or "intent" not in data:
         return None
     slots = data.get("slots") or {}
     if not isinstance(slots, dict):

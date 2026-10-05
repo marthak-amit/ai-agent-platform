@@ -193,8 +193,9 @@ async def test_generate_reply_calls_correct_model(mock_get_client, mock_settings
     await generate_reply("ping")
 
     call_kwargs = mock_client.chat.completions.create.call_args.kwargs
-    assert call_kwargs["model"] == "llama-3.3-70b-versatile"
-    assert call_kwargs["max_tokens"] == 150
+    assert call_kwargs["model"] == mock_settings.llm_model_reply
+    # Reasoning models get extra headroom on top of the 150-token reply budget.
+    assert call_kwargs["max_tokens"] >= 150
     assert call_kwargs["temperature"] == 0.3
 
 

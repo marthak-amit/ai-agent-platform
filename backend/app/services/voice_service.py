@@ -4,7 +4,7 @@ Voice note transcription service using Groq Whisper.
 Cost reference: Groq Whisper charges ~$0.04/hour of audio.
 A typical WhatsApp voice note is 10–15 seconds → ~$0.0002 per note (~₹0.02).
 
-Model: whisper-large-v3-turbo — fast, multilingual, handles Hindi/Gujarati/English
+Model: LLM_MODEL_STT (a Groq Whisper model) — fast, multilingual, handles Hindi/Gujarati/English
 well for Indian WhatsApp business use cases.
 """
 
@@ -65,7 +65,7 @@ async def transcribe_voice_note(
     try:
         transcription = client.audio.transcriptions.create(
             file=(filename, audio_bytes, mime_type),
-            model="whisper-large-v3-turbo",
+            model=get_settings().llm_model_stt,
             language="hi",
             response_format="text",
             prompt=(
