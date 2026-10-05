@@ -3,7 +3,7 @@ import { Outlet, useLocation } from "react-router-dom";
 import Nav from "./components/Nav";
 import Footer from "./components/Footer";
 
-/** Scrolls the window to the top (or to a #hash target) whenever the route changes. */
+/** Scrolls the window to the top (or to a #hash target) whenever the route changes. this hers */
 function ScrollToTop() {
   const { pathname, hash, key } = useLocation();
 
