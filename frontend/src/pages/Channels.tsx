@@ -4,16 +4,20 @@ import Layout from "../components/Layout";
 import AgentCanvas, { type ChannelCardConfig } from "../components/channels/AgentCanvas";
 import ChannelDrawer, { CopyButton, CopyField, FieldInput, Step } from "../components/channels/ChannelDrawer";
 import {
+  completeWhatsAppEmbeddedSignup,
   disconnectInstagram,
   getCommentReplyStats,
   getInstagramConnectUrl,
   getProfile,
+  getWhatsAppSignupConfig,
   testWhatsApp,
   updateChannelCredentials,
   updateProfile,
   type CommentReplyStats,
+  type WhatsAppSignupConfig,
 } from "../api/client";
 import { useAuth } from "../context/AuthContext";
+import { launchWhatsAppEmbeddedSignup } from "../utils/whatsappEmbeddedSignup";
 import { X } from "lucide-react";
 
 const BASE_URL = (import.meta.env.VITE_API_URL ?? "https://yourplatform.com/api").replace(/\/api$/, "");
@@ -106,6 +110,10 @@ export default function Channels() {
   const [waSaved, setWaSaved] = useState(false);
   const [waTesting, setWaTesting] = useState(false);
   const [waTestResult, setWaTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [waSignupConfig, setWaSignupConfig] = useState<WhatsAppSignupConfig | null>(null);
+  const [waConnecting, setWaConnecting] = useState(false);
+  const [waConnectError, setWaConnectError] = useState<string | null>(null);
+  const [waManualEntry, setWaManualEntry] = useState(false);
 
   const [igConnecting, setIgConnecting] = useState(false);
   const [igDisconnecting, setIgDisconnecting] = useState(false);
@@ -144,6 +152,7 @@ export default function Channels() {
         getCommentReplyStats().then(setCommentStats).catch(() => {});
       }
     });
+    getWhatsAppSignupConfig().then(setWaSignupConfig).catch(() => setWaSignupConfig({ enabled: false }));
 
     // The OAuth callback redirects back here with ?ig_status=connected|cancelled|error|no_ig_account
     const params = new URLSearchParams(window.location.search);
@@ -195,6 +204,29 @@ export default function Channels() {
       setWaTestResult({ ok: false, msg: detail });
     } finally {
       setWaTesting(false);
+    }
+  }
+
+  async function connectWhatsAppEmbedded() {
+    if (!waSignupConfig?.enabled || !waSignupConfig.app_id || !waSignupConfig.config_id) return;
+    setWaConnecting(true);
+    setWaConnectError(null);
+    try {
+      const { code, wabaId, phoneNumberId } = await launchWhatsAppEmbeddedSignup(
+        waSignupConfig.app_id,
+        waSignupConfig.config_id
+      );
+      await completeWhatsAppEmbeddedSignup({ code, waba_id: wabaId, phone_number_id: phoneNumberId });
+      await refreshChannelStatus();
+      setWaSaved(true);
+      setTimeout(() => setWaSaved(false), 2000);
+    } catch (err: unknown) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
+        (err instanceof Error ? err.message : "Could not connect WhatsApp. Please try again.");
+      setWaConnectError(detail);
+    } finally {
+      setWaConnecting(false);
     }
   }
 
@@ -289,35 +321,88 @@ export default function Channels() {
 
       <ChannelDrawer title="WhatsApp" open={openDrawer === "whatsapp"} onClose={() => setOpenDrawer(null)}>
         <div className="space-y-4">
-          <div className="space-y-2">
-            <Step n={1} text="Get your WhatsApp Business number" />
-            <Step n={2} text="Enter your Meta Phone Number ID below" />
-            <Step n={3} text="Enter your WhatsApp Access Token below" />
-            <Step n={4} text="Set the webhook URL in Meta Developer Dashboard → Webhooks" />
-          </div>
+          {waSignupConfig?.enabled && !waManualEntry ? (
+            <>
+              <div className="space-y-2">
+                <Step n={1} text="Click Connect WhatsApp below" />
+                <Step n={2} text="Log in with the Facebook account that manages your WhatsApp Business Account (or create one)" />
+                <Step n={3} text="Pick or add a phone number and approve the permissions" />
+                <Step n={4} text="You're connected — no tokens to copy" />
+              </div>
 
-          <CopyField label="Webhook URL" value={`${BASE_URL}/webhook`} />
-          <CopyField label="Webhook Verify Token" value={verifyToken} hint="paste in Meta Dashboard" />
+              {waConnectError && (
+                <div className="rounded-lg px-4 py-2.5 text-sm bg-red-50 text-red-600 border border-red-200">
+                  {waConnectError}
+                </div>
+              )}
+              {waConnected && (
+                <div className="rounded-lg px-4 py-2.5 text-sm bg-green-50 text-green-700 border border-green-200">
+                  WhatsApp connected{profile.whatsapp_phone_number_id ? ` — ${profile.whatsapp_phone_number_id}` : ""}.
+                </div>
+              )}
 
-          <FieldInput label="Phone Number ID" value={waPhoneId} onChange={setWaPhoneId} placeholder="e.g. 123456789012345" />
-          <FieldInput label="Access Token" value={waToken} onChange={setWaToken} type="password" secret placeholder="EAAxxxxxxxx…" />
+              <button onClick={connectWhatsAppEmbedded} disabled={waConnecting}
+                className="w-full py-2.5 rounded-lg bg-brand-primaryDark text-white text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                {waConnecting ? "Connecting…" : waConnected ? "Reconnect WhatsApp" : "Connect WhatsApp"}
+              </button>
 
-          {waTestResult && (
-            <div className={`rounded-lg px-4 py-2.5 text-sm ${waTestResult.ok ? "bg-green-50 text-green-700 border border-green-200" : "bg-red-50 text-red-600 border border-red-200"}`}>
-              {waTestResult.msg}
-            </div>
+              {waConnected && (
+                <button onClick={runWhatsAppTest} disabled={waTesting}
+                  className="w-full py-2.5 rounded-lg border border-brand-primary/20 text-brand-primaryDark text-sm font-semibold hover:bg-brand-primary/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+                  {waTesting ? t("channels.testing") : t("channels.test")}
+                </button>
+              )}
+              {waTestResult && (
+                <div className={`rounded-lg px-4 py-2.5 text-sm ${waTestResult.ok ? "bg-green-50 text-green-700 border border-green-200" : "bg-red-50 text-red-600 border border-red-200"}`}>
+                  {waTestResult.msg}
+                </div>
+              )}
+
+              <button onClick={() => setWaManualEntry(true)}
+                className="text-xs text-gray-400 hover:text-gray-600 mx-auto block transition-colors">
+                Enter Phone Number ID / Access Token manually instead
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="space-y-2">
+                <Step n={1} text="Get your WhatsApp Business number" />
+                <Step n={2} text="Enter your Meta Phone Number ID below" />
+                <Step n={3} text="Enter your WhatsApp Access Token below" />
+                <Step n={4} text="Set the webhook URL in Meta Developer Dashboard → Webhooks" />
+              </div>
+
+              <CopyField label="Webhook URL" value={`${BASE_URL}/webhook`} />
+              <CopyField label="Webhook Verify Token" value={verifyToken} hint="paste in Meta Dashboard" />
+
+              <FieldInput label="Phone Number ID" value={waPhoneId} onChange={setWaPhoneId} placeholder="e.g. 123456789012345" />
+              <FieldInput label="Access Token" value={waToken} onChange={setWaToken} type="password" secret placeholder="EAAxxxxxxxx…" />
+
+              {waTestResult && (
+                <div className={`rounded-lg px-4 py-2.5 text-sm ${waTestResult.ok ? "bg-green-50 text-green-700 border border-green-200" : "bg-red-50 text-red-600 border border-red-200"}`}>
+                  {waTestResult.msg}
+                </div>
+              )}
+
+              <div className="flex gap-3">
+                <button onClick={saveWhatsApp} disabled={waSaving || !waPhoneId || !waToken}
+                  className="flex-1 py-2.5 rounded-lg bg-brand-primaryDark text-white text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                  {waSaving ? t("channels.saving") : waSaved ? "✓ Saved" : t("channels.save")}
+                </button>
+                <button onClick={runWhatsAppTest} disabled={waTesting || !waConnected}
+                  className="flex-1 py-2.5 rounded-lg border border-brand-primary/20 text-brand-primaryDark text-sm font-semibold hover:bg-brand-primary/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+                  {waTesting ? t("channels.testing") : t("channels.test")}
+                </button>
+              </div>
+
+              {waSignupConfig?.enabled && (
+                <button onClick={() => setWaManualEntry(false)}
+                  className="text-xs text-gray-400 hover:text-gray-600 mx-auto block transition-colors">
+                  ← Use one-click Connect WhatsApp instead
+                </button>
+              )}
+            </>
           )}
-
-          <div className="flex gap-3">
-            <button onClick={saveWhatsApp} disabled={waSaving || !waPhoneId || !waToken}
-              className="flex-1 py-2.5 rounded-lg bg-brand-primaryDark text-white text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
-              {waSaving ? t("channels.saving") : waSaved ? "✓ Saved" : t("channels.save")}
-            </button>
-            <button onClick={runWhatsAppTest} disabled={waTesting || !waConnected}
-              className="flex-1 py-2.5 rounded-lg border border-brand-primary/20 text-brand-primaryDark text-sm font-semibold hover:bg-brand-primary/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-              {waTesting ? t("channels.testing") : t("channels.test")}
-            </button>
-          </div>
         </div>
       </ChannelDrawer>
 

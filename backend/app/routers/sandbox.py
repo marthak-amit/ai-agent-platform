@@ -254,9 +254,9 @@ async def sandbox_message(
     ]
     lead_status = lead_service._classify(all_messages)  # noqa: SLF001
 
-    # Auto-advance onboarding to "agent tested" (step 5) on first sandbox use
-    if client.onboarding_step < 5:
-        client.onboarding_step = 5
+    # Auto-advance onboarding to "agent tested" (step 6) on first sandbox use
+    if client.onboarding_step < 6:
+        client.onboarding_step = 6
         await db.commit()
 
     elapsed_ms = int((time.monotonic() - start_ms) * 1000)

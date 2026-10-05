@@ -2,11 +2,16 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   addProduct,
+  completeWhatsAppEmbeddedSignup,
+  getInstagramConnectUrl,
+  getWhatsAppSignupConfig,
   updateOnboardingStep,
   updateProfile,
+  type WhatsAppSignupConfig,
 } from "../api/client";
 import { api } from "../api/client";
 import { useAuth } from "../context/AuthContext";
+import { launchWhatsAppEmbeddedSignup } from "../utils/whatsappEmbeddedSignup";
 import { SandboxUI } from "./Sandbox";
 import {
   CheckCircle2,
@@ -131,9 +136,11 @@ const STEP_LABELS = [
   "Products",
   "Agent",
   "WhatsApp",
+  "Instagram",
   "Test",
   "Done",
 ];
+const TOTAL_STEPS = STEP_LABELS.length;
 
 function StepBar({ current }: { current: number }) {
   return (
@@ -166,7 +173,7 @@ function StepBar({ current }: { current: number }) {
         })}
       </div>
       <p className="text-xs text-gray-400 mt-2">
-        Step {Math.min(current, 6)} of 6
+        Step {Math.min(current, TOTAL_STEPS)} of {TOTAL_STEPS}
       </p>
     </div>
   );
@@ -202,7 +209,7 @@ export default function Onboarding() {
   // Initialise wizard step from server state — resume if partially complete
   const [step, setStep] = useState<number>(() => {
     const s = client?.onboarding_step ?? 0;
-    return s >= 6 ? 6 : s + 1;
+    return s >= TOTAL_STEPS ? TOTAL_STEPS : s + 1;
   });
 
   const [submitting, setSubmitting] = useState(false);
@@ -231,8 +238,18 @@ export default function Onboarding() {
   const [waNumber, setWaNumber] = useState(client?.whatsapp_number ?? "");
   const [waPhoneId, setWaPhoneId] = useState("");
   const [waToken, setWaToken] = useState("");
+  const [waSignupConfig, setWaSignupConfig] = useState<WhatsAppSignupConfig | null>(null);
+  const [waConnecting, setWaConnecting] = useState(false);
+  const [waConnectError, setWaConnectError] = useState<string | null>(null);
+  const [waManualEntry, setWaManualEntry] = useState(false);
+  const [waEmbeddedConnected, setWaEmbeddedConnected] = useState(false);
 
-  // Step 6 — summary
+  // Step 5 — Instagram
+  const [igConnecting, setIgConnecting] = useState(false);
+  const [igStatus, setIgStatus] = useState<string | null>(null);
+  const igConnected = !!client?.instagram_connected;
+
+  // Step 7 — summary
   const [productCount, setProductCount] = useState(0);
   const [catUrl, setCatUrl] = useState("");
   const [copiedCat, setCopiedCat] = useState(false);
@@ -248,6 +265,26 @@ export default function Onboarding() {
   useEffect(() => {
     setSystemPrompt(buildPrompt(businessType, businessName, businessDesc, toneKey));
   }, [businessType, businessName, businessDesc, toneKey]);
+
+  useEffect(() => {
+    getWhatsAppSignupConfig().then(setWaSignupConfig).catch(() => setWaSignupConfig({ enabled: false }));
+  }, []);
+
+  // The Instagram OAuth callback redirects back here (return_to=onboarding)
+  // with ?ig_status=connected|cancelled|error|no_ig_account.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const status = params.get("ig_status");
+    if (!status) return;
+    setIgStatus(status);
+    params.delete("ig_status");
+    const rest = params.toString();
+    window.history.replaceState({}, "", window.location.pathname + (rest ? `?${rest}` : ""));
+    if (status === "connected") {
+      refreshProfile();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── helpers ──────────────────────────────────────────────────────────────
 
@@ -389,21 +426,66 @@ export default function Onboarding() {
     }
   }
 
-  async function handleStep5() {
-    // Sandbox auto-advances step 5 on first message; just move wizard forward
-    await advance(5);
+  async function connectWhatsAppEmbeddedOnboarding() {
+    if (!waSignupConfig?.enabled || !waSignupConfig.app_id || !waSignupConfig.config_id) return;
+    setWaConnecting(true);
+    setWaConnectError(null);
+    try {
+      const { code, wabaId, phoneNumberId } = await launchWhatsAppEmbeddedSignup(
+        waSignupConfig.app_id,
+        waSignupConfig.config_id
+      );
+      await completeWhatsAppEmbeddedSignup({ code, waba_id: wabaId, phone_number_id: phoneNumberId });
+      await refreshProfile();
+      setWaEmbeddedConnected(true);
+    } catch (err: unknown) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
+        (err instanceof Error ? err.message : "Could not connect WhatsApp. Please try again.");
+      setWaConnectError(detail);
+    } finally {
+      setWaConnecting(false);
+    }
+  }
+
+  async function connectInstagramOnboarding() {
+    setIgConnecting(true);
+    try {
+      const { url } = await getInstagramConnectUrl("onboarding");
+      window.location.href = url;
+    } catch {
+      setIgConnecting(false);
+    }
+  }
+
+  async function handleStep5(skip = false) {
+    if (skip) {
+      await advance(5);
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await advance(5);
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   async function handleStep6() {
+    // Sandbox auto-advances step 6 on first message; just move wizard forward
+    await advance(6);
+  }
+
+  async function handleStep7() {
     setSubmitting(true);
     try {
-      await updateOnboardingStep(6);
+      await updateOnboardingStep(7);
       await refreshProfile();
       // Build catalogue URL if slug exists
       if (client?.catalogue_slug) {
         setCatUrl(`${window.location.origin}/shop/${client.catalogue_slug}`);
       }
-      setStep(7); // "done" screen
+      setStep(8); // "done" screen
     } catch {
       // Still navigate even if step update fails
       navigate("/dashboard");
@@ -422,12 +504,12 @@ export default function Onboarding() {
 
   // Count products added (approximate from DB via profile)
   const addedProducts = productCount;
-  const waConnected = !!(waPhoneId && waToken);
+  const waConnected = !!(waPhoneId && waToken) || waEmbeddedConnected || !!client?.whatsapp_connected;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-brand-primary/5 via-white to-brand-primary/5 flex items-center justify-center px-4 py-12">
       <div className="bg-white rounded-2xl shadow-lg border border-gray-100 w-full max-w-2xl">
-        {step <= 6 && <StepBar current={step} />}
+        {step <= TOTAL_STEPS && <StepBar current={step} />}
 
         <div className="px-8 pb-10">
 
@@ -735,75 +817,220 @@ export default function Onboarding() {
                 </p>
               </div>
 
-              <div className="flex flex-col gap-4">
-                <div>
-                  <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1.5">
-                    WhatsApp Business Number
-                  </label>
-                  <input
-                    type="tel"
-                    value={waNumber}
-                    onChange={(e) => setWaNumber(e.target.value)}
-                    className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
-                    placeholder="+91 98765 43210"
-                  />
-                </div>
+              {waSignupConfig?.enabled && !waManualEntry ? (
+                <>
+                  <div className="flex flex-col gap-2 text-sm text-gray-600">
+                    <p>1. Click Connect WhatsApp below</p>
+                    <p>2. Log in with the Facebook account that manages your WhatsApp Business Account (or create one)</p>
+                    <p>3. Pick or add a phone number and approve the permissions</p>
+                  </div>
 
-                <div>
-                  <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1.5">
-                    Phone Number ID (from Meta Developer Console)
-                  </label>
-                  <input
-                    type="text"
-                    value={waPhoneId}
-                    onChange={(e) => setWaPhoneId(e.target.value)}
-                    className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-primary"
-                    placeholder="123456789012345"
-                  />
-                </div>
+                  {waConnectError && <p className="text-sm text-red-600">{waConnectError}</p>}
+                  {waConnected && (
+                    <div className="flex items-center gap-2 text-sm text-gray-700">
+                      <CheckCircle2 size={18} className="text-green-500 shrink-0" />
+                      WhatsApp connected.
+                    </div>
+                  )}
 
-                <div>
-                  <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1.5">
-                    Access Token
-                  </label>
-                  <input
-                    type="password"
-                    value={waToken}
-                    onChange={(e) => setWaToken(e.target.value)}
-                    className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-primary"
-                    placeholder="EAAGm..."
-                  />
-                </div>
+                  {error && <p className="text-sm text-red-600">{error}</p>}
+
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => setStep(3)}
+                      className="flex-1 border border-gray-200 text-gray-700 rounded-xl py-2.5 text-sm font-medium hover:bg-gray-50 transition-colors"
+                    >
+                      ← Back
+                    </button>
+                    {waConnected ? (
+                      <button
+                        onClick={() => handleStep4(true)}
+                        disabled={submitting}
+                        className="flex-1 flex items-center justify-center gap-2 bg-brand-primaryDark text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors"
+                      >
+                        {submitting ? <Loader2 size={16} className="animate-spin" /> : null}
+                        Continue <ChevronRight size={16} />
+                      </button>
+                    ) : (
+                      <button
+                        onClick={connectWhatsAppEmbeddedOnboarding}
+                        disabled={waConnecting}
+                        className="flex-1 flex items-center justify-center gap-2 bg-brand-primaryDark text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors"
+                      >
+                        {waConnecting ? <Loader2 size={16} className="animate-spin" /> : null}
+                        Connect WhatsApp <ChevronRight size={16} />
+                      </button>
+                    )}
+                  </div>
+                  {!waConnected && <SkipLink onClick={() => handleStep4(true)} label="Skip for now — I'll connect later" />}
+                  <button
+                    onClick={() => setWaManualEntry(true)}
+                    className="text-xs text-gray-400 hover:text-gray-600 mx-auto transition-colors"
+                  >
+                    Enter Phone Number ID / Access Token manually instead
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div className="flex flex-col gap-4">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1.5">
+                        WhatsApp Business Number
+                      </label>
+                      <input
+                        type="tel"
+                        value={waNumber}
+                        onChange={(e) => setWaNumber(e.target.value)}
+                        className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
+                        placeholder="+91 98765 43210"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1.5">
+                        Phone Number ID (from Meta Developer Console)
+                      </label>
+                      <input
+                        type="text"
+                        value={waPhoneId}
+                        onChange={(e) => setWaPhoneId(e.target.value)}
+                        className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-primary"
+                        placeholder="123456789012345"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1.5">
+                        Access Token
+                      </label>
+                      <input
+                        type="password"
+                        value={waToken}
+                        onChange={(e) => setWaToken(e.target.value)}
+                        className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-primary"
+                        placeholder="EAAGm..."
+                      />
+                    </div>
+                  </div>
+
+                  <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-3 text-xs text-blue-700">
+                    You can always connect WhatsApp later from <strong>Settings → Channels</strong>. It takes about 5 minutes with a Meta Business account.
+                  </div>
+
+                  {error && <p className="text-sm text-red-600">{error}</p>}
+
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => setStep(3)}
+                      className="flex-1 border border-gray-200 text-gray-700 rounded-xl py-2.5 text-sm font-medium hover:bg-gray-50 transition-colors"
+                    >
+                      ← Back
+                    </button>
+                    <button
+                      onClick={() => handleStep4(false)}
+                      disabled={submitting}
+                      className="flex-1 flex items-center justify-center gap-2 bg-brand-primaryDark text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors"
+                    >
+                      {submitting ? <Loader2 size={16} className="animate-spin" /> : null}
+                      Connect WhatsApp <ChevronRight size={16} />
+                    </button>
+                  </div>
+                  <SkipLink onClick={() => handleStep4(true)} label="Skip for now — I'll connect later" />
+                  {waSignupConfig?.enabled && (
+                    <button
+                      onClick={() => setWaManualEntry(false)}
+                      className="text-xs text-gray-400 hover:text-gray-600 mx-auto transition-colors"
+                    >
+                      ← Use one-click Connect WhatsApp instead
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          {/* ── STEP 5: Connect Instagram ─────────────────────────────────── */}
+          {step === 5 && (
+            <div className="flex flex-col gap-5">
+              <div>
+                <h2 className="text-2xl font-bold text-gray-900">Connect Instagram</h2>
+                <p className="text-sm text-gray-400 mt-1">
+                  Your AI agent will reply to Instagram DMs and comments too. You'll need an Instagram
+                  Business account linked to a Facebook Page.
+                </p>
               </div>
 
-              <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-3 text-xs text-blue-700">
-                You can always connect WhatsApp later from <strong>Settings → Channels</strong>. It takes about 5 minutes with a Meta Business account.
-              </div>
+              {igStatus === "cancelled" && (
+                <div className="rounded-lg px-4 py-2.5 text-sm bg-amber-50 text-amber-700 border border-amber-200">
+                  Connection cancelled. You can try again anytime.
+                </div>
+              )}
+              {igStatus === "no_ig_account" && (
+                <div className="rounded-lg px-4 py-2.5 text-sm bg-amber-50 text-amber-700 border border-amber-200">
+                  That Facebook account has no Instagram Business account linked. Connect your Instagram
+                  account to a Facebook Page first, then try again.
+                </div>
+              )}
+              {igStatus === "error" && (
+                <div className="rounded-lg px-4 py-2.5 text-sm bg-red-50 text-red-600 border border-red-200">
+                  Something went wrong connecting Instagram. Please try again.
+                </div>
+              )}
+              {igStatus === "connected" && (
+                <div className="rounded-lg px-4 py-2.5 text-sm bg-green-50 text-green-700 border border-green-200">
+                  Instagram connected successfully.
+                </div>
+              )}
+
+              {igConnected ? (
+                <div className="flex items-center gap-2 text-sm text-gray-700">
+                  <CheckCircle2 size={18} className="text-green-500 shrink-0" />
+                  Your Instagram Business account is connected.
+                </div>
+              ) : (
+                <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-3 text-xs text-blue-700">
+                  You can always connect Instagram later from <strong>Settings → Channels</strong>. It
+                  takes about a minute with a Facebook login.
+                </div>
+              )}
 
               {error && <p className="text-sm text-red-600">{error}</p>}
 
               <div className="flex gap-3">
                 <button
-                  onClick={() => setStep(3)}
+                  onClick={() => setStep(4)}
                   className="flex-1 border border-gray-200 text-gray-700 rounded-xl py-2.5 text-sm font-medium hover:bg-gray-50 transition-colors"
                 >
                   ← Back
                 </button>
-                <button
-                  onClick={() => handleStep4(false)}
-                  disabled={submitting}
-                  className="flex-1 flex items-center justify-center gap-2 bg-brand-primaryDark text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors"
-                >
-                  {submitting ? <Loader2 size={16} className="animate-spin" /> : null}
-                  Connect WhatsApp <ChevronRight size={16} />
-                </button>
+                {igConnected ? (
+                  <button
+                    onClick={() => handleStep5(false)}
+                    disabled={submitting}
+                    className="flex-1 flex items-center justify-center gap-2 bg-brand-primaryDark text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors"
+                  >
+                    {submitting ? <Loader2 size={16} className="animate-spin" /> : null}
+                    Continue <ChevronRight size={16} />
+                  </button>
+                ) : (
+                  <button
+                    onClick={connectInstagramOnboarding}
+                    disabled={igConnecting}
+                    className="flex-1 flex items-center justify-center gap-2 bg-brand-primaryDark text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors"
+                  >
+                    {igConnecting ? <Loader2 size={16} className="animate-spin" /> : null}
+                    Connect Instagram <ChevronRight size={16} />
+                  </button>
+                )}
               </div>
-              <SkipLink onClick={() => handleStep4(true)} label="Skip for now — I'll connect later" />
+              {!igConnected && (
+                <SkipLink onClick={() => handleStep5(true)} label="Skip for now — I'll connect later" />
+              )}
             </div>
           )}
 
-          {/* ── STEP 5: Test Agent ────────────────────────────────────────── */}
-          {step === 5 && (
+          {/* ── STEP 6: Test Agent ────────────────────────────────────────── */}
+          {step === 6 && (
             <div className="flex flex-col gap-5">
               <div>
                 <h2 className="text-2xl font-bold text-gray-900">Test your agent</h2>
@@ -818,13 +1045,13 @@ export default function Onboarding() {
 
               <div className="flex gap-3">
                 <button
-                  onClick={() => setStep(4)}
+                  onClick={() => setStep(5)}
                   className="flex-1 border border-gray-200 text-gray-700 rounded-xl py-2.5 text-sm font-medium hover:bg-gray-50 transition-colors"
                 >
                   ← Back to configure
                 </button>
                 <button
-                  onClick={handleStep5}
+                  onClick={handleStep6}
                   disabled={submitting}
                   className="flex-1 flex items-center justify-center gap-2 bg-brand-primaryDark text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors"
                 >
@@ -835,8 +1062,8 @@ export default function Onboarding() {
             </div>
           )}
 
-          {/* ── STEP 6: Ready summary ─────────────────────────────────────── */}
-          {step === 6 && (
+          {/* ── STEP 7: Ready summary ─────────────────────────────────────── */}
+          {step === 7 && (
             <div className="flex flex-col gap-6">
               <div className="text-center">
                 <div className="text-5xl mb-3">🎉</div>
@@ -860,6 +1087,11 @@ export default function Onboarding() {
                     label: "WhatsApp connected",
                     done: waConnected,
                     skipped: !waConnected,
+                  },
+                  {
+                    label: "Instagram connected",
+                    done: igConnected,
+                    skipped: !igConnected,
                   },
                   { label: "Agent tested", done: true },
                 ].map((item, i) => (
@@ -904,7 +1136,7 @@ export default function Onboarding() {
 
               <div className="flex gap-3">
                 <button
-                  onClick={handleStep6}
+                  onClick={handleStep7}
                   disabled={submitting}
                   className="flex-1 flex items-center justify-center gap-2 bg-brand-primaryDark text-white rounded-xl py-3 text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors"
                 >
@@ -923,8 +1155,8 @@ export default function Onboarding() {
             </div>
           )}
 
-          {/* ── STEP 7: Navigate after done ──────────────────────────────── */}
-          {step === 7 && (
+          {/* ── STEP 8: Navigate after done ──────────────────────────────── */}
+          {step === 8 && (
             <div className="flex flex-col items-center gap-4 py-8">
               <Loader2 size={32} className="animate-spin text-brand-primaryDark" />
               <p className="text-sm text-gray-500">Taking you to your dashboard...</p>

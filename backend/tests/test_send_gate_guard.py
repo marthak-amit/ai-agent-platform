@@ -39,6 +39,7 @@ GRAPH_URL_READONLY_WHITELIST = {
     "app/main.py",                        # debug_token (GET)
     "app/routers/channels.py",            # channel setup reads
     "app/routers/integrations.py",        # integration setup reads
+    "app/routers/whatsapp_signup.py",     # embedded signup token exchange (no /messages)
 }
 
 CHANNEL_SERVICE_NAMES = {"whatsapp_service", "instagram_service"}

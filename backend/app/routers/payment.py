@@ -181,6 +181,8 @@ async def razorpay_webhook(
                         kind=MessageKind.UTILITY_TEMPLATE,
                         db=db,
                         client_id=owner.id if owner else None,
+                        phone_number_id=owner.whatsapp_phone_number_id if owner else None,
+                        access_token=owner.whatsapp_access_token if owner else None,
                     )
                 except Exception as exc:
                     logger.warning("Customer payment confirmation WhatsApp failed: %s", exc)
@@ -249,6 +251,8 @@ async def razorpay_webhook(
                         kind=MessageKind.UTILITY_TEMPLATE,
                         db=db,
                         client_id=owner.id if owner else None,
+                        phone_number_id=owner.whatsapp_phone_number_id if owner else None,
+                        access_token=owner.whatsapp_access_token if owner else None,
                     )
                     logger.info("Invoice generated and sent for payment %s.", payment.id)
                 except Exception as exc:
@@ -288,6 +292,8 @@ async def razorpay_webhook(
                         kind=MessageKind.UTILITY_TEMPLATE,
                         db=db,
                         client_id=owner.id if owner else None,
+                        phone_number_id=owner.whatsapp_phone_number_id if owner else None,
+                        access_token=owner.whatsapp_access_token if owner else None,
                     )
                 except Exception as exc:
                     logger.error(

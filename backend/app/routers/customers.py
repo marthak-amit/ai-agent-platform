@@ -255,6 +255,8 @@ async def send_message(
             db=db,
             client_id=client.id,
             customer=c,
+            phone_number_id=client.whatsapp_phone_number_id,
+            access_token=client.whatsapp_access_token,
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"WhatsApp send failed: {exc}")

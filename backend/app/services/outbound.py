@@ -17,6 +17,20 @@ Suppressed sends return None (dict-returning senders) or False
 (bool-returning senders) — they never raise, so callers' existing
 try/except blocks keep meaning "transport error", not "policy refusal".
 tests/test_send_gate_guard.py enforces that no other module bypasses this.
+
+WhatsApp per-client credentials (phone_number_id/access_token): the WhatsApp
+send functions below accept these as explicit optional overrides, falling
+back to the global env-var config when omitted — same convention as
+send_owner_text. They are deliberately NOT resolved here via a DB lookup on
+client_id: this module runs on the same AsyncSession as a live request, which
+elsewhere (cost_log) fires an un-awaited background persist task on that same
+session — asyncpg does not allow concurrent operations on one connection, so
+an extra query here intermittently collided with it ("another operation is in
+progress"). Callers that already have the Client object loaded (webhook.py,
+order_service.py, payment.py, scheduler.py, the orders/customers routers)
+pass its whatsapp_phone_number_id/whatsapp_access_token straight through —
+zero new queries. Callers without it loaded (follow-ups, campaigns) fall back
+to the global config for now rather than risk that race.
 """
 
 from __future__ import annotations
@@ -141,6 +155,8 @@ async def send_text(
     conversation_id: int | None = None,
     customer=None,
     is_optout_confirmation: bool = False,
+    phone_number_id: str | None = None,
+    access_token: str | None = None,
 ) -> dict | None:
     """Gated WhatsApp plain-text send. Returns Meta's response, or None if suppressed."""
     decision, customer = await _gate(
@@ -149,8 +165,13 @@ async def send_text(
     )
     if not decision.allowed:
         return None
+    kwargs: dict = {}
+    if phone_number_id:
+        kwargs["phone_number_id"] = phone_number_id
+    if access_token:
+        kwargs["access_token"] = access_token
     result = await whatsapp_service._raw_send_text_message(
-        to_phone_number=to_phone_number, message_text=message_text
+        to_phone_number=to_phone_number, message_text=message_text, **kwargs
     )
     if is_optout_confirmation:
         await _stamp_optout_confirmed(db, customer)
@@ -164,6 +185,7 @@ async def send_buttons(
     *,
     kind: MessageKind,
     phone_number_id: str | None = None,
+    access_token: str | None = None,
     db=None,
     client_id: int | None = None,
     conversation_id: int | None = None,
@@ -175,9 +197,13 @@ async def send_buttons(
     )
     if not decision.allowed:
         return False
+    kwargs: dict = {}
+    if access_token:
+        kwargs["access_token"] = access_token
     return await whatsapp_service._raw_send_button_message(
         to_phone_number=to_phone_number, body_text=body_text, buttons=buttons,
         phone_number_id=phone_number_id,
+        **kwargs,
     )
 
 
@@ -190,6 +216,7 @@ async def send_list(
     *,
     kind: MessageKind,
     phone_number_id: str | None = None,
+    access_token: str | None = None,
     db=None,
     client_id: int | None = None,
     conversation_id: int | None = None,
@@ -201,9 +228,14 @@ async def send_list(
     )
     if not decision.allowed:
         return False
+    kwargs: dict = {}
+    if access_token:
+        kwargs["access_token"] = access_token
     return await whatsapp_service._raw_send_list_message(
         to_phone_number=to_phone_number, header_text=header_text, body_text=body_text,
-        button_text=button_text, sections=sections, phone_number_id=phone_number_id,
+        button_text=button_text, sections=sections,
+        phone_number_id=phone_number_id,
+        **kwargs,
     )
 
 
@@ -217,6 +249,8 @@ async def send_image(
     client_id: int | None = None,
     conversation_id: int | None = None,
     customer=None,
+    phone_number_id: str | None = None,
+    access_token: str | None = None,
 ) -> dict | None:
     """Gated WhatsApp image send. Returns Meta's response, or None if suppressed."""
     decision, customer = await _gate(
@@ -224,8 +258,13 @@ async def send_image(
     )
     if not decision.allowed:
         return None
+    kwargs: dict = {}
+    if phone_number_id:
+        kwargs["phone_number_id"] = phone_number_id
+    if access_token:
+        kwargs["access_token"] = access_token
     return await whatsapp_service._raw_send_image_message(
-        to_phone_number=to_phone_number, image_url=image_url, caption=caption
+        to_phone_number=to_phone_number, image_url=image_url, caption=caption, **kwargs
     )
 
 
@@ -240,6 +279,8 @@ async def send_document(
     client_id: int | None = None,
     conversation_id: int | None = None,
     customer=None,
+    phone_number_id: str | None = None,
+    access_token: str | None = None,
 ) -> dict | None:
     """Gated WhatsApp document send (PDF invoices). None if suppressed."""
     decision, customer = await _gate(
@@ -247,9 +288,14 @@ async def send_document(
     )
     if not decision.allowed:
         return None
+    kwargs: dict = {}
+    if phone_number_id:
+        kwargs["phone_number_id"] = phone_number_id
+    if access_token:
+        kwargs["access_token"] = access_token
     return await whatsapp_service._raw_send_document_message(
         to_phone_number=to_phone_number, document_url=document_url,
-        filename=filename, caption=caption,
+        filename=filename, caption=caption, **kwargs,
     )
 
 

@@ -119,6 +119,7 @@ _STEPS = [
     "agent_configured",
     "products_added",
     "whatsapp_connected",
+    "instagram_connected",
 ]
 
 
@@ -130,7 +131,8 @@ def get_setup_status(client: Client) -> dict:
         registered         — always true (client exists and is authenticated).
         agent_configured   — business_type and business_description are set.
         products_added     — products list is non-empty.
-        whatsapp_connected — whatsapp_number is set.
+        whatsapp_connected  — whatsapp_number is set.
+        instagram_connected — instagram_access_token is set.
 
     Args:
         client: The authenticated Client ORM instance.
@@ -147,6 +149,7 @@ def get_setup_status(client: Client) -> dict:
         "agent_configured": bool(client.business_type and client.business_description),
         "products_added": bool(client.products),
         "whatsapp_connected": bool(client.whatsapp_number),
+        "instagram_connected": bool(client.instagram_access_token),
     }
 
     done = [s for s in _STEPS if state[s]]

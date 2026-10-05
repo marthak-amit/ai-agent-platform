@@ -446,7 +446,7 @@ async def test_button_confirm(replay_http, replay_session, monkeypatch):
 
     captured: list[str] = []
 
-    async def _capture(to_phone_number, message_text):
+    async def _capture(to_phone_number, message_text, phone_number_id=None, access_token=None):
         captured.append(message_text)
 
     monkeypatch.setattr(
@@ -499,7 +499,7 @@ async def test_button_cancel(replay_http, replay_session, monkeypatch):
 
     captured: list[str] = []
 
-    async def _capture(to_phone_number, message_text):
+    async def _capture(to_phone_number, message_text, phone_number_id=None, access_token=None):
         captured.append(message_text)
 
     monkeypatch.setattr(

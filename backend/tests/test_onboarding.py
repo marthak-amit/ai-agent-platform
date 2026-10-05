@@ -94,14 +94,15 @@ def test_generate_api_key_is_unique():
 
 
 def test_get_setup_status_empty_client():
-    """Fresh client has only 'registered' done — 25%."""
+    """Fresh client has only 'registered' done — 20%."""
     c = Client(id=1, email="x@y.com", hashed_password="h")
     status = onboarding_service.get_setup_status(c)
-    assert status["completion_percentage"] == 25
+    assert status["completion_percentage"] == 20
     assert status["steps_done"] == ["registered"]
     assert "agent_configured" in status["steps_pending"]
     assert "products_added" in status["steps_pending"]
     assert "whatsapp_connected" in status["steps_pending"]
+    assert "instagram_connected" in status["steps_pending"]
 
 
 def test_get_setup_status_after_setup_agent():
@@ -114,6 +115,7 @@ def test_get_setup_status_after_setup_agent():
         business_description="Online store",
         products=[{"name": "Widget", "price": 99}],
         whatsapp_number="+919876543210",
+        instagram_access_token="ig_token_xyz",
     )
     status = onboarding_service.get_setup_status(c)
     assert status["completion_percentage"] == 100
@@ -121,7 +123,7 @@ def test_get_setup_status_after_setup_agent():
 
 
 def test_get_setup_status_partial():
-    """Client with type+description but no products/whatsapp is 50%."""
+    """Client with type+description but no products/whatsapp/instagram is 40%."""
     c = Client(
         id=1,
         email="x@y.com",
@@ -130,17 +132,22 @@ def test_get_setup_status_partial():
         business_description="A clinic",
     )
     status = onboarding_service.get_setup_status(c)
-    assert status["completion_percentage"] == 50
+    assert status["completion_percentage"] == 40
     assert "agent_configured" in status["steps_done"]
     assert "products_added" in status["steps_pending"]
     assert "whatsapp_connected" in status["steps_pending"]
+    assert "instagram_connected" in status["steps_pending"]
 
 
 # ── router tests ─────────────────────────────────────────────────────────────
 
 
 def test_setup_agent_creates_prompt_and_api_key(client, mock_db, mock_settings, make_test_user):
-    """POST /onboarding/setup-agent returns client_id, api_key, and setup_status."""
+    """POST /onboarding/setup-agent returns client_id, api_key, and setup_status.
+
+    setup-agent doesn't touch Instagram credentials, so completion tops out at
+    80% (4/5 steps) even with products + whatsapp_number supplied.
+    """
     from app.services.auth_service import create_access_token
 
     token = create_access_token({"sub": "owner@biz.com"})
@@ -172,12 +179,12 @@ def test_setup_agent_creates_prompt_and_api_key(client, mock_db, mock_settings, 
     data = response.json()
     assert data["client_id"] == 7
     assert data["api_key"].startswith("vp_")
-    assert data["setup_status"]["completion_percentage"] == 100
-    assert data["setup_status"]["steps_pending"] == []
+    assert data["setup_status"]["completion_percentage"] == 80
+    assert data["setup_status"]["steps_pending"] == ["instagram_connected"]
 
 
 def test_setup_agent_without_products_and_whatsapp(client, mock_db, mock_settings, make_test_user):
-    """POST /onboarding/setup-agent with only required fields returns 50% completion."""
+    """POST /onboarding/setup-agent with only required fields returns 40% completion."""
     from app.services.auth_service import create_access_token
 
     token = create_access_token({"sub": "owner@biz.com"})
@@ -199,9 +206,10 @@ def test_setup_agent_without_products_and_whatsapp(client, mock_db, mock_setting
 
     assert response.status_code == 200
     data = response.json()
-    assert data["setup_status"]["completion_percentage"] == 50
+    assert data["setup_status"]["completion_percentage"] == 40
     assert "products_added" in data["setup_status"]["steps_pending"]
     assert "whatsapp_connected" in data["setup_status"]["steps_pending"]
+    assert "instagram_connected" in data["setup_status"]["steps_pending"]
 
 
 def test_setup_agent_invalid_business_type(client, mock_db, mock_settings, make_test_user):
@@ -273,7 +281,7 @@ def test_setup_agent_requires_auth(client):
 
 
 def test_onboarding_status_fresh_client(client, mock_db, mock_settings, make_test_user):
-    """GET /onboarding/status returns 25% for a client with no onboarding data."""
+    """GET /onboarding/status returns 20% for a client with no onboarding data."""
     from app.services.auth_service import create_access_token
 
     token = create_access_token({"sub": "owner@biz.com"})
@@ -286,7 +294,7 @@ def test_onboarding_status_fresh_client(client, mock_db, mock_settings, make_tes
 
     assert response.status_code == 200
     data = response.json()
-    assert data["completion_percentage"] == 25
+    assert data["completion_percentage"] == 20
     assert data["steps_done"] == ["registered"]
 
 

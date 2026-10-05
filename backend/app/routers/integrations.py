@@ -38,26 +38,32 @@ OAUTH_SCOPES = "instagram_basic,instagram_manage_messages,pages_show_list,pages_
 STATE_ALGORITHM = "HS256"
 STATE_EXPIRE_SECONDS = 600  # 10 minutes — long enough to complete the Meta consent screen
 
+# Where the callback sends the browser back to. Whitelisted (not an arbitrary
+# URL) so the OAuth state can't be abused as an open redirect.
+RETURN_PATHS = {"channels": "/channels", "onboarding": "/onboarding"}
+DEFAULT_RETURN_TO = "channels"
 
-def _create_state_token(client_id: int) -> str:
+
+def _create_state_token(client_id: int, return_to: str) -> str:
     """Sign a short-lived state token binding the OAuth flow to one client_id."""
     from datetime import datetime, timedelta, timezone
 
     settings = get_settings()
     payload = {
         "client_id": client_id,
+        "return_to": return_to,
         "purpose": "ig_oauth_state",
         "exp": datetime.now(timezone.utc) + timedelta(seconds=STATE_EXPIRE_SECONDS),
     }
     return jwt.encode(payload, settings.secret_key, algorithm=STATE_ALGORITHM)
 
 
-def _verify_state_token(state: str) -> int:
+def _verify_state_token(state: str) -> tuple[int, str]:
     """
     Decode and validate the OAuth state token.
 
     Returns:
-        The bound client_id.
+        (client_id, return_to) — return_to is always a valid RETURN_PATHS key.
 
     Raises:
         HTTPException 400: If the state is missing, expired, malformed, or
@@ -77,15 +83,25 @@ def _verify_state_token(state: str) -> int:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid OAuth state.",
         )
-    return int(payload["client_id"])
+    return_to = payload.get("return_to")
+    if return_to not in RETURN_PATHS:
+        return_to = DEFAULT_RETURN_TO
+    return int(payload["client_id"]), return_to
 
 
 @router.get("/connect")
 async def connect_instagram(
     current_client: Annotated[Client, Depends(get_current_client)],
+    return_to: str = Query(default=DEFAULT_RETURN_TO),
 ) -> dict:
     """
     Build the Meta OAuth authorize URL for the current client to connect Instagram.
+
+    Args:
+        return_to: Where the OAuth callback should send the browser back to
+            once the flow completes — "channels" (default, the standalone
+            Settings → Channels page) or "onboarding" (mid-wizard). Any other
+            value falls back to "channels".
 
     Returns:
         {"url": "<authorize url>"} — the frontend redirects the browser there.
@@ -100,7 +116,9 @@ async def connect_instagram(
             detail="Instagram connection is not configured on this server yet.",
         )
 
-    state = _create_state_token(current_client.id)
+    if return_to not in RETURN_PATHS:
+        return_to = DEFAULT_RETURN_TO
+    state = _create_state_token(current_client.id, return_to)
     params = {
         "client_id": settings.meta_app_id,
         "redirect_uri": settings.meta_oauth_redirect_uri,
@@ -126,25 +144,30 @@ async def instagram_callback(
     and store both on the client that started the flow.
 
     Returns:
-        Redirect to the dashboard settings page with a status query param
-        (connected | cancelled | error) instead of a raw 500, since this is
-        a browser-facing redirect endpoint.
+        Redirect to wherever the flow was started from (Settings → Channels,
+        or mid-onboarding) with a status query param (connected | cancelled |
+        error | no_ig_account) instead of a raw 500, since this is a
+        browser-facing redirect endpoint. Falls back to /channels when the
+        state can't be decoded (e.g. it expired) since there's no return_to
+        to recover at that point.
     """
     settings = get_settings()
-    frontend_settings_url = f"{settings.frontend_url}/settings"
+    fallback_url = f"{settings.frontend_url}{RETURN_PATHS[DEFAULT_RETURN_TO]}"
 
     if error:
         logger.info("Instagram OAuth cancelled by user: %s", error)
-        return RedirectResponse(f"{frontend_settings_url}?ig_status=cancelled")
+        return RedirectResponse(f"{fallback_url}?ig_status=cancelled")
 
     if not code or not state:
-        return RedirectResponse(f"{frontend_settings_url}?ig_status=error")
+        return RedirectResponse(f"{fallback_url}?ig_status=error")
 
     try:
-        client_id = _verify_state_token(state)
+        client_id, return_to = _verify_state_token(state)
     except HTTPException:
         logger.warning("Instagram OAuth callback with invalid/replayed state.")
-        return RedirectResponse(f"{frontend_settings_url}?ig_status=error")
+        return RedirectResponse(f"{fallback_url}?ig_status=error")
+
+    frontend_settings_url = f"{settings.frontend_url}{RETURN_PATHS[return_to]}"
 
     client = await db.get(Client, client_id)
     if client is None:

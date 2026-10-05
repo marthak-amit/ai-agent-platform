@@ -133,12 +133,13 @@ async def _raw_send_button_message(
     body_text: str,
     buttons: list[dict],
     phone_number_id: str | None = None,
+    access_token: str | None = None,
 ) -> bool:
     """
     Send a WhatsApp interactive button message (max 3 buttons).
 
-    Falls back to the configured phone_number_id if none is passed.
-    Button titles are silently truncated to Meta's 20-character limit.
+    Falls back to the configured phone_number_id/access_token if none is
+    passed. Button titles are silently truncated to Meta's 20-character limit.
 
     Args:
         to_phone_number: Recipient E.164 phone without '+'.
@@ -146,6 +147,7 @@ async def _raw_send_button_message(
         buttons:         List of dicts: [{"id": str, "title": str}, ...]
                          Maximum 3 buttons; extras are dropped.
         phone_number_id: Override the configured WhatsApp phone number ID.
+        access_token:    Override the configured WhatsApp access token.
 
     Returns:
         True if Meta accepted the message (HTTP 200), False otherwise.
@@ -154,7 +156,7 @@ async def _raw_send_button_message(
     pid = phone_number_id or settings.whatsapp_phone_number_id
     url = f"{META_API_BASE_URL}/{META_API_VERSION}/{pid}/messages"
     headers = {
-        "Authorization": f"Bearer {settings.whatsapp_access_token}",
+        "Authorization": f"Bearer {access_token or settings.whatsapp_access_token}",
         "Content-Type": "application/json",
     }
     payload = {
@@ -197,6 +199,7 @@ async def _raw_send_list_message(
     button_text: str,
     sections: list[dict],
     phone_number_id: str | None = None,
+    access_token: str | None = None,
 ) -> bool:
     """
     Send a WhatsApp interactive list message (scrollable item picker).
@@ -210,6 +213,7 @@ async def _raw_send_list_message(
                          [{"title": str, "rows": [{"id": str, "title": str,
                            "description": str}, ...]}, ...]
         phone_number_id: Override the configured WhatsApp phone number ID.
+        access_token:    Override the configured WhatsApp access token.
 
     Returns:
         True if Meta accepted the message (HTTP 200), False otherwise.
@@ -218,7 +222,7 @@ async def _raw_send_list_message(
     pid = phone_number_id or settings.whatsapp_phone_number_id
     url = f"{META_API_BASE_URL}/{META_API_VERSION}/{pid}/messages"
     headers = {
-        "Authorization": f"Bearer {settings.whatsapp_access_token}",
+        "Authorization": f"Bearer {access_token or settings.whatsapp_access_token}",
         "Content-Type": "application/json",
     }
     payload = {
@@ -247,7 +251,13 @@ async def _raw_send_list_message(
         return response.status_code == 200
 
 
-async def _raw_send_image_message(to_phone_number: str, image_url: str, caption: str | None = None) -> dict:
+async def _raw_send_image_message(
+    to_phone_number: str,
+    image_url: str,
+    caption: str | None = None,
+    phone_number_id: str | None = None,
+    access_token: str | None = None,
+) -> dict:
     """
     Send an image WhatsApp message (by public URL) to a recipient.
 
@@ -259,6 +269,8 @@ async def _raw_send_image_message(to_phone_number: str, image_url: str, caption:
         to_phone_number: Recipient phone number in E.164 format without '+'.
         image_url:       Publicly reachable URL of the image to send.
         caption:         Optional caption text shown under the image.
+        phone_number_id: Override the configured WhatsApp phone number ID.
+        access_token:    Override the configured WhatsApp access token.
 
     Returns:
         The parsed JSON response dict from Meta API on success.
@@ -268,13 +280,11 @@ async def _raw_send_image_message(to_phone_number: str, image_url: str, caption:
     """
     settings = get_settings()
 
-    url = (
-        f"{META_API_BASE_URL}/{META_API_VERSION}"
-        f"/{settings.whatsapp_phone_number_id}/messages"
-    )
+    pid = phone_number_id or settings.whatsapp_phone_number_id
+    url = f"{META_API_BASE_URL}/{META_API_VERSION}/{pid}/messages"
 
     headers = {
-        "Authorization": f"Bearer {settings.whatsapp_access_token}",
+        "Authorization": f"Bearer {access_token or settings.whatsapp_access_token}",
         "Content-Type": "application/json",
     }
 
@@ -297,7 +307,12 @@ async def _raw_send_image_message(to_phone_number: str, image_url: str, caption:
 
 
 async def _raw_send_document_message(
-    to_phone_number: str, document_url: str, filename: str, caption: str | None = None
+    to_phone_number: str,
+    document_url: str,
+    filename: str,
+    caption: str | None = None,
+    phone_number_id: str | None = None,
+    access_token: str | None = None,
 ) -> dict:
     """
     Send a document WhatsApp message (by public URL) to a recipient.
@@ -310,6 +325,8 @@ async def _raw_send_document_message(
         document_url:    Publicly reachable URL of the document to send.
         filename:        Filename shown to the recipient, e.g. "Invoice-INV-7-0001.pdf".
         caption:         Optional caption text shown under the document.
+        phone_number_id: Override the configured WhatsApp phone number ID.
+        access_token:    Override the configured WhatsApp access token.
 
     Returns:
         The parsed JSON response dict from Meta API on success.
@@ -319,13 +336,11 @@ async def _raw_send_document_message(
     """
     settings = get_settings()
 
-    url = (
-        f"{META_API_BASE_URL}/{META_API_VERSION}"
-        f"/{settings.whatsapp_phone_number_id}/messages"
-    )
+    pid = phone_number_id or settings.whatsapp_phone_number_id
+    url = f"{META_API_BASE_URL}/{META_API_VERSION}/{pid}/messages"
 
     headers = {
-        "Authorization": f"Bearer {settings.whatsapp_access_token}",
+        "Authorization": f"Bearer {access_token or settings.whatsapp_access_token}",
         "Content-Type": "application/json",
     }
 

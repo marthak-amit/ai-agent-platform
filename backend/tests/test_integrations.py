@@ -40,9 +40,9 @@ def _make_client(client_id=1, email="owner@biz.com", **overrides):
 
 
 def test_state_token_round_trips_client_id(mock_settings):
-    """A freshly minted state token decodes back to the same client_id."""
-    state = _create_state_token(42)
-    assert _verify_state_token(state) == 42
+    """A freshly minted state token decodes back to the same client_id and return_to."""
+    state = _create_state_token(42, "channels")
+    assert _verify_state_token(state) == (42, "channels")
 
 
 def test_state_token_rejects_garbage(mock_settings):
@@ -84,7 +84,7 @@ def test_connect_returns_authorize_url_bound_to_caller(client, mock_db, mock_set
     from urllib.parse import parse_qs, urlparse
 
     state = parse_qs(urlparse(url).query)["state"][0]
-    assert _verify_state_token(state) == 7
+    assert _verify_state_token(state) == (7, "channels")
 
 
 def test_callback_writes_only_the_bound_clients_row(client, mock_db, mock_settings):
@@ -95,7 +95,7 @@ def test_callback_writes_only_the_bound_clients_row(client, mock_db, mock_settin
     in the same request).
     """
     target_client = _make_client(client_id=7, email="owner@biz.com")
-    state = _create_state_token(7)
+    state = _create_state_token(7, "channels")
 
     mock_db.get = AsyncMock(return_value=target_client)
 
@@ -123,6 +123,42 @@ def test_callback_writes_only_the_bound_clients_row(client, mock_db, mock_settin
     assert target_client.instagram_access_token == "long-lived-token"
     assert target_client.instagram_account_id == "1784145800001"
     mock_db.commit.assert_awaited()
+
+
+def test_callback_returns_to_onboarding_when_state_says_so(client, mock_db, mock_settings):
+    """
+    return_to="onboarding" on /connect must round-trip through the state token
+    so the callback redirects to /onboarding, not the default /channels — this
+    is what lets the onboarding wizard's Instagram step resume correctly
+    instead of dropping the client onto the standalone Settings → Channels page.
+    """
+    target_client = _make_client(client_id=7, email="owner@biz.com")
+    state = _create_state_token(7, "onboarding")
+
+    mock_db.get = AsyncMock(return_value=target_client)
+
+    dummy_request = httpx.Request("GET", "https://graph.facebook.com/")
+    fake_responses = [
+        httpx.Response(200, json={"access_token": "short-lived-token"}, request=dummy_request),
+        httpx.Response(200, json={"access_token": "long-lived-token"}, request=dummy_request),
+        httpx.Response(
+            200,
+            json={"data": [{"instagram_business_account": {"id": "1784145800001"}}]},
+            request=dummy_request,
+        ),
+    ]
+
+    with patch("httpx.AsyncClient.get", AsyncMock(side_effect=fake_responses)):
+        response = client.get(
+            "/integrations/instagram/callback",
+            params={"code": "auth-code-123", "state": state},
+            follow_redirects=False,
+        )
+
+    assert response.status_code in (302, 307)
+    location = response.headers["location"]
+    assert "/onboarding" in location
+    assert "ig_status=connected" in location
 
 
 def test_callback_rejects_replayed_or_mismatched_state(client, mock_db, mock_settings):

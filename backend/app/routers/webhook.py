@@ -481,6 +481,7 @@ async def receive_message(
     try:
         await send_pipeline_result(
             result, db=db, conv=conv, sender_phone=sender_phone, pid=pid,
+            access_token=getattr(client, "whatsapp_access_token", None) if client else None,
         )
     except Exception as exc:
         logger.error("WhatsApp send error: %s", exc)

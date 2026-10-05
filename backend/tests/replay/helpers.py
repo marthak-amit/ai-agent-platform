@@ -170,14 +170,17 @@ def capture_all(monkeypatch) -> list[str]:
     """
     captured: list[str] = []
 
-    async def _capture_text(to_phone_number, message_text):
+    async def _capture_text(to_phone_number, message_text, phone_number_id=None, access_token=None):
         captured.append(message_text)
 
-    async def _capture_button(to_phone_number, body_text, buttons, phone_number_id=None):
+    async def _capture_button(to_phone_number, body_text, buttons, phone_number_id=None, access_token=None):
         captured.append(body_text)
         return True
 
-    async def _capture_list(to_phone_number, header_text, body_text, button_text, sections, phone_number_id=None):
+    async def _capture_list(
+        to_phone_number, header_text, body_text, button_text, sections,
+        phone_number_id=None, access_token=None,
+    ):
         captured.append(body_text)
         return True
 

@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-WhatsApp + Instagram + Website chat AI agent SaaS platform targeting the Indian market. Clients self-serve their own AI agent setup. Conceptually similar to TailorTalk.ai. Payments via Razorpay, AI via Google Gemini, messaging via Meta Cloud API.
+WhatsApp + Instagram + Website chat AI agent SaaS platform targeting the Indian market. Clients self-serve their own AI agent setup. Conceptually similar to TailorTalk.ai. Payments via Razorpay, messaging via Meta Cloud API.
+
+**AI providers — this is not "Gemini" despite legacy naming:** conversational replies, intent classification, and product-image recognition all run on **Groq** (`llama-3.3-70b-versatile` for replies, `llama-3.1-8b-instant` for classification/fallback, see `app/services/gemini_service.py` and `app/services/vision_service.py`). Google Gemini (`GEMINI_API_KEY`, `app/services/photo_enhancement_service.py`) is used only for the AI photo-enhancement feature on catalogue images — nothing else. The `gemini_service.py` filename, the `Client.gemini_system_prompt` column, and the `role='model'` convention are pre-Groq-migration names that were never renamed; don't infer from them that replies go through Gemini.
 
 ## Commands
 
@@ -66,7 +68,7 @@ React + Tailwind CSS dashboard for client self-serve setup. Communicates only wi
 Meta Cloud API webhook → /webhook (FastAPI)
   → parse sender + message
   → conversation_service: load/create conversation in DB
-  → gemini_service: build prompt + call Gemini API
+  → gemini_service: build prompt + call Groq API (see naming note above)
   → whatsapp/instagram sender: reply via Meta Cloud API
   → lead_service: tag lead based on conversation signals
 ```
@@ -99,15 +101,23 @@ Features must be built in this sequence (each depends on the previous):
 Store in `backend/.env` (never commit):
 ```
 DATABASE_URL=
+GROQ_API_KEY=
 GEMINI_API_KEY=
+META_APP_ID=
 META_APP_SECRET=
 META_VERIFY_TOKEN=
+META_OAUTH_REDIRECT_URI=
+META_WHATSAPP_CONFIG_ID=
 WHATSAPP_ACCESS_TOKEN=
 WHATSAPP_PHONE_NUMBER_ID=
 INSTAGRAM_ACCESS_TOKEN=
 RAZORPAY_KEY_ID=
 RAZORPAY_KEY_SECRET=
 ```
+
+- `WHATSAPP_ACCESS_TOKEN`/`WHATSAPP_PHONE_NUMBER_ID` are the **global fallback** used only when a client has no credentials of its own on `Client.whatsapp_access_token`/`Client.whatsapp_phone_number_id`. Every WhatsApp send in `app/services/outbound.py` prefers the per-client values when the caller has the `Client` row loaded — see the module docstring there for why that resolution happens via already-loaded objects rather than a DB lookup inside the send path.
+- `META_APP_ID`/`META_OAUTH_REDIRECT_URI` back the self-serve Instagram OAuth connect flow (`app/routers/integrations.py`).
+- `META_WHATSAPP_CONFIG_ID` is the WhatsApp **Embedded Signup** Configuration ID (Meta App Dashboard → WhatsApp → Embedded Signup → Configurations) that powers the self-serve "Connect WhatsApp" button (`app/routers/whatsapp_signup.py`). Unset = that button is disabled and clients fall back to manually pasting Phone Number ID / Access Token. Getting a client fully live also requires them to appear as a Meta test user or the app to have passed Review for `whatsapp_business_management`/`whatsapp_business_messaging` — see Meta Business Settings → Roles → Test Users during development.
 
 ## Image Recognition (Vision Service)
 
@@ -127,7 +137,7 @@ Both WhatsApp and Instagram support product image matching via `app/services/vis
 raw `bytes` (post-download) or a URL `str` (direct pass-through). Both are converted
 to the `image_url` content block that Groq expects.
 
-**Vision model:** `meta-llama/llama-4-scout-17b-16e-instruct` on Groq.  
+**Vision model:** `qwen/qwen3.6-27b` on Groq (`meta-llama/llama-4-scout-17b-16e-instruct` was used previously but was deprecated by Groq on 2026-07-17 and now 404s — see `app/services/vision_service.py`).  
 **Cost:** ~₹0.07 per image.
 
 **Instagram image flow:**

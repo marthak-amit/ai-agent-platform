@@ -179,27 +179,27 @@ async def update_progress(
     Advance the onboarding wizard step for the authenticated client.
 
     Only advances forward — a lower step value is ignored to prevent regression.
-    When step reaches 6, onboarding_completed is set to True.
+    When step reaches 7, onboarding_completed is set to True.
 
     Args:
-        body:           {step: int} — target step number (1-6).
+        body:           {step: int} — target step number (1-7).
         current_client: JWT-authenticated Client from the dependency.
         db:             Injected async DB session.
 
     Returns:
         ProgressResponse with updated onboarding_step and onboarding_completed.
     """
-    if body.step < 0 or body.step > 6:
+    if body.step < 0 or body.step > 7:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="step must be between 0 and 6",
+            detail="step must be between 0 and 7",
         )
 
     # Only advance, never regress
     if body.step > current_client.onboarding_step:
         current_client.onboarding_step = body.step
 
-    if current_client.onboarding_step >= 6:
+    if current_client.onboarding_step >= 7:
         current_client.onboarding_completed = True
 
     await db.commit()

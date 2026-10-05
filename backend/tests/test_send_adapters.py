@@ -48,6 +48,7 @@ async def test_whatsapp_adapter_sends_pre_image_before_text(conv):
     mock_outbound.send_image.assert_called_once_with(
         "919876543210", "https://media.example.com/1/1/a.jpg", None,
         kind=MessageKind.PIPELINE_REPLY, db=None, client_id=1, conversation_id=1,
+        phone_number_id=None, access_token=None,
     )
 
 

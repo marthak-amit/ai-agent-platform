@@ -35,6 +35,7 @@ async def send_pipeline_result(
     conv,
     sender_phone: str,
     pid: str | None,
+    access_token: str | None = None,
 ) -> None:
     """
     Send *result* via the WhatsApp Cloud API, mirroring webhook.py's original
@@ -58,6 +59,8 @@ async def send_pipeline_result(
         db=db,
         client_id=getattr(conv, "client_id", None),
         conversation_id=conv.id,
+        phone_number_id=pid,
+        access_token=access_token,
     )
 
     for _pre_img_url, _pre_img_caption in (result.pre_images or []):
@@ -87,7 +90,6 @@ async def send_pipeline_result(
             sender_phone,
             result.text,
             [{"id": _nb(b.id), "title": b.title} for b in result.buttons],
-            phone_number_id=pid,
             **_gate_kw,
         )
         if not sent:
@@ -109,7 +111,6 @@ async def send_pipeline_result(
                     for r in result.list_options
                 ],
             }],
-            phone_number_id=pid,
             **_gate_kw,
         )
         if not sent:

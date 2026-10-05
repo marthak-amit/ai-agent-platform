@@ -151,6 +151,8 @@ async def _generate_and_send_invoice(db: AsyncSession, order: Order, client) -> 
             db=db,
             client_id=order.client_id,
             conversation_id=order.conversation_id,
+            phone_number_id=getattr(client, "whatsapp_phone_number_id", None),
+            access_token=getattr(client, "whatsapp_access_token", None),
         )
 
     logger.info("Invoice %s generated for order %s.", invoice_number, order.order_number)
@@ -494,6 +496,8 @@ async def _notify_customer_dispatched(order: Order, client, db=None) -> None:
         db=db,
         client_id=order.client_id,
         conversation_id=order.conversation_id,
+        phone_number_id=client.whatsapp_phone_number_id,
+        access_token=client.whatsapp_access_token,
     )
 
 

@@ -337,8 +337,30 @@ export async function updateChannelCredentials(payload: {
   return data;
 }
 
-export async function getInstagramConnectUrl(): Promise<{ url: string }> {
-  const { data } = await api.get("/integrations/instagram/connect");
+export interface WhatsAppSignupConfig {
+  enabled: boolean;
+  app_id?: string;
+  config_id?: string;
+}
+
+export async function getWhatsAppSignupConfig(): Promise<WhatsAppSignupConfig> {
+  const { data } = await api.get("/integrations/whatsapp/signup-config");
+  return data;
+}
+
+export async function completeWhatsAppEmbeddedSignup(payload: {
+  code: string;
+  waba_id: string;
+  phone_number_id: string;
+}): Promise<{ success: boolean; whatsapp_phone_number_id: string; whatsapp_number?: string }> {
+  const { data } = await api.post("/integrations/whatsapp/embedded-signup", payload);
+  return data;
+}
+
+export async function getInstagramConnectUrl(returnTo?: "channels" | "onboarding"): Promise<{ url: string }> {
+  const { data } = await api.get("/integrations/instagram/connect", {
+    params: returnTo ? { return_to: returnTo } : undefined,
+  });
   return data;
 }
 

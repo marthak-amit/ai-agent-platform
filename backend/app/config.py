@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     instagram_business_account_id: str = ""
     meta_app_id: str = ""
     meta_oauth_redirect_uri: str = ""
+    # WhatsApp Embedded Signup (Tech Provider flow) — the Configuration ID
+    # created in Meta App Dashboard → WhatsApp → Embedded Signup → Configurations.
+    # Empty = the self-serve "Connect WhatsApp" button is disabled and clients
+    # fall back to manual phone_number_id/access_token entry.
+    meta_whatsapp_config_id: str = ""
     razorpay_key_id: str = ""
     razorpay_key_secret: str = ""
     cloudinary_cloud_name: str = ""

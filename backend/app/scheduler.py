@@ -444,6 +444,8 @@ async def _send_abandoned_intent_followups(db) -> None:
                         db=db,
                         client_id=conv.client_id,
                         conversation_id=conv.id,
+                        phone_number_id=client.whatsapp_phone_number_id,
+                        access_token=client.whatsapp_access_token,
                     )
                 if _sent is None:
                     # Gate refused (opt-out / block / window re-closed since the

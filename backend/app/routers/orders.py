@@ -291,6 +291,8 @@ async def notify_customer(
             kind=MessageKind.MANUAL_AGENT,
             db=db,
             client_id=client.id,
+            phone_number_id=client.whatsapp_phone_number_id,
+            access_token=client.whatsapp_access_token,
         )
     except Exception as exc:
         logger.error("Failed to notify customer for order %s: %s", order.order_number, exc)

@@ -140,7 +140,7 @@ class Client(Base):
     payment_instructions: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
 
     # Onboarding wizard progress (migration 0029)
-    # 0=registered, 1=profile, 2=products, 3=agent, 4=whatsapp, 5=tested, 6=complete
+    # 0=registered, 1=profile, 2=products, 3=agent, 4=whatsapp, 5=instagram, 6=tested, 7=complete
     onboarding_step: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default="0")
     onboarding_completed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
 

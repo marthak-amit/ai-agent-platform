@@ -98,6 +98,7 @@ def mock_settings(monkeypatch):
     monkeypatch.setattr("app.routers.webhook.get_settings", lambda: test_settings)
     monkeypatch.setattr("app.routers.instagram.get_settings", lambda: test_settings)
     monkeypatch.setattr("app.routers.integrations.get_settings", lambda: test_settings)
+    monkeypatch.setattr("app.routers.whatsapp_signup.get_settings", lambda: test_settings)
     monkeypatch.setattr("app.routers.admin.get_settings", lambda: test_settings)
     monkeypatch.setattr("app.routers.team.get_settings", lambda: test_settings)
     monkeypatch.setattr("app.services.gemini_service.get_settings", lambda: test_settings)
