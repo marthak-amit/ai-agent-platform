@@ -212,7 +212,7 @@ async def instagram_callback(
             pages_resp.raise_for_status()
             pages = pages_resp.json().get("data", [])
     except httpx.HTTPStatusError as exc:
-        logger.error("Instagram OAuth token exchange failed: %s", exc.response.text)
+        logger.error("Instagram OAuth token exchange failed: HTTP %s", exc.response.status_code)
         return RedirectResponse(f"{frontend_settings_url}?ig_status=error")
     except httpx.RequestError as exc:
         logger.error("Instagram OAuth network error: %s", exc)

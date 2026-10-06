@@ -1,0 +1,148 @@
+[
+  {
+    "sku": "A001",
+    "name": "banarasi saree",
+    "price": 999.0,
+    "category": "Saree",
+    "description": "this is best sadi",
+    "colors": [],
+    "sizes": [],
+    "in_stock": false
+  },
+  {
+    "sku": "SR29821",
+    "name": "Kanjivaram Silk Saree",
+    "price": 4200.0,
+    "category": "Saree",
+    "description": "Authentic South Indian Kanjivaram in vibrant colours with temple border.",
+    "colors": [
+      "Gold",
+      "Green",
+      "Purple"
+    ],
+    "sizes": [],
+    "in_stock": true
+  },
+  {
+    "sku": "SR27754",
+    "name": "Banarasi Silk Saree",
+    "price": 2450.0,
+    "category": "Saree",
+    "description": "Pure Banarasi silk with gold zari work. Perfect for weddings and festivals.",
+    "colors": [
+      "Blue",
+      "Pink",
+      "Red"
+    ],
+    "sizes": [],
+    "in_stock": true
+  },
+  {
+    "sku": "LH10042",
+    "name": "Designer Lehenga",
+    "price": 6500.0,
+    "category": "Lehenga",
+    "description": "Heavily embroidered bridal lehenga choli set. Available in red, pink, and navy.",
+    "colors": [
+      "Navy",
+      "Pink",
+      "Red"
+    ],
+    "sizes": [
+      "L",
+      "M",
+      "S",
+      "XL",
+      "XXL"
+    ],
+    "in_stock": true
+  },
+  {
+    "sku": "KU23444",
+    "name": "Kurti best",
+    "price": 1030.0,
+    "category": "Kurti",
+    "description": "this is best kurti",
+    "colors": [],
+    "sizes": [],
+    "in_stock": true
+  },
+  {
+    "sku": "SR33210",
+    "name": "Cotton Printed Saree",
+    "price": 850.0,
+    "category": "Saree",
+    "description": "Breathable pure cotton saree in floral prints. Machine washable and everyday-friendly.",
+    "colors": [],
+    "sizes": [],
+    "in_stock": true
+  },
+  {
+    "sku": "PR17761",
+    "name": "Traditional choli",
+    "price": 3999.0,
+    "category": "Other",
+    "description": "This is the traditional choli. best for garba and occasional outfits.",
+    "colors": [
+      "Gold",
+      "Green",
+      "Pink",
+      "Red",
+      "White"
+    ],
+    "sizes": [
+      "38",
+      "3XL",
+      "40",
+      "L",
+      "M",
+      "S",
+      "XL",
+      "XXL"
+    ],
+    "in_stock": true
+  },
+  {
+    "sku": "PR10983",
+    "name": "chair",
+    "price": 450.0,
+    "category": "Other",
+    "description": "seating chair. rest chair",
+    "colors": [],
+    "sizes": [
+      "medium",
+      "small"
+    ],
+    "in_stock": true
+  },
+  {
+    "sku": "SR31045",
+    "name": "Georgette Party Wear",
+    "price": 1100.0,
+    "category": "Saree",
+    "description": "Lightweight georgette saree with embroidery. Ideal for parties and evening events.",
+    "colors": [
+      "Black",
+      "Blue",
+      "Red"
+    ],
+    "sizes": [
+      "L",
+      "M",
+      "S",
+      "XL",
+      "XXL"
+    ],
+    "in_stock": true
+  },
+  {
+    "sku": "KU76326",
+    "name": "kurti new one",
+    "price": 239.0,
+    "category": "Kurti",
+    "description": "this is new pne",
+    "colors": [],
+    "sizes": [],
+    "in_stock": true
+  }
+]

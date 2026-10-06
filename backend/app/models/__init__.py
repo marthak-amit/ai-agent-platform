@@ -11,6 +11,7 @@ from app.models.client import Client
 from app.models.client_monthly_usage import ClientMonthlyUsage
 from app.models.conversation import Conversation
 from app.models.cost_log import CostLogEntry
+from app.models.llm_usage import LLMUsage
 from app.models.customer import Customer
 from app.models.follow_up import FollowUp
 from app.models.ig_comment_reply import IgCommentReply
@@ -35,7 +36,7 @@ from app.models.user import User
 
 __all__ = [
     "Campaign", "CampaignRecipient", "Client", "ClientMonthlyUsage", "Conversation", "CostLogEntry",
-    "Customer", "FollowUp", "IgCommentReply", "KnowledgeBase", "Lead", "Message", "MessageTemplate", "Order", "OrderAuditLog", "OrderLineItem", "PaymentProof", "StockReservation",
+    "Customer", "FollowUp", "IgCommentReply", "KnowledgeBase", "LLMUsage", "Lead", "Message", "MessageTemplate", "Order", "OrderAuditLog", "OrderLineItem", "PaymentProof", "StockReservation",
     "Payment", "PhotoGenerationLog", "Plan", "Product", "ProductVariant", "RestockNotification", "StockLog",
     "StyleReference", "UsageLog", "User",
 ]

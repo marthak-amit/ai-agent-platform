@@ -42,6 +42,7 @@ const EVENT_TYPES: RealtimeEvent["type"][] = [
 ];
 const POLL_MS = 5_000;
 const SSE_RETRY_MS = 60_000;
+const SSE_RECONNECT_MS = 3_000;
 const MAX_SSE_ERRORS = 3;
 const STABLE_MS = 10_000;
 
@@ -131,11 +132,22 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
       retryTimer = window.setTimeout(connectSse, SSE_RETRY_MS);
     };
 
-    function connectSse() {
+    async function connectSse() {
       if (closed) return;
       stopPolling();
       setConnection("connecting");
-      es = new EventSource(`${BASE_URL}/events/stream?token=${encodeURIComponent(token as string)}`);
+      // One-time ticket instead of the JWT, so nothing sensitive lands in access logs.
+      let ticket: string;
+      try {
+        ({ data: { ticket } } = await api.post<{ ticket: string }>("/events/ticket"));
+      } catch {
+        errors += 1;
+        if (errors >= MAX_SSE_ERRORS) startPolling();
+        else retryTimer = window.setTimeout(connectSse, SSE_RECONNECT_MS);
+        return;
+      }
+      if (closed) return;
+      es = new EventSource(`${BASE_URL}/events/stream?ticket=${encodeURIComponent(ticket)}`);
       es.onopen = () => {
         openedAt = Date.now();
         setConnection("live");
@@ -157,11 +169,12 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
         // instead of reconnecting forever. Only a long-lived stream resets the count.
         errors = openedAt && Date.now() - openedAt >= STABLE_MS ? 1 : errors + 1;
         openedAt = 0;
-        if (errors >= MAX_SSE_ERRORS) {
-          es?.close();
-          es = null;
-          startPolling();
-        }
+        // Tickets are single-use, so never let EventSource auto-reconnect with the
+        // spent one — close and reconnect with a fresh ticket (or fall back to polling).
+        es?.close();
+        es = null;
+        if (errors >= MAX_SSE_ERRORS) startPolling();
+        else retryTimer = window.setTimeout(connectSse, SSE_RECONNECT_MS);
       };
     }
 

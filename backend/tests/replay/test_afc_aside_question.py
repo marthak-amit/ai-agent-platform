@@ -15,6 +15,14 @@ Fix: run_summary_confirmation() now tries the same catalog SKU/name-lookup
 + availability-answer tier FIX2/FIX4 already use at order_collection,
 before falling to KB/fact-table, and the raw LLM fallback has been removed
 entirely in favor of a localized "I don't have that information" template.
+
+FIX4 parity (later change): when the question names a DIFFERENT product, the
+answer is followed by "Would you like to order <product>? (Yes / No)" and the
+conversation moves to the 'awaiting_afc_switch_confirm' micro-stage (candidate
+in interrupted_sku) instead of re-dumping the old summary right after an
+answer about another product. The pinned order and its summary_shown flag are
+untouched, and declining resumes the SAME summary (asserted below). Questions
+about the pinned product / generic asides still leave the stage as-is.
 """
 
 from __future__ import annotations
@@ -124,8 +132,11 @@ async def test_availability_question_about_named_product_answers_from_catalog(
         )
     assert resp.status_code == 200
 
+    # The question is about ANOTHER product: answered from the catalog, then a switch is offered. The
+    # pending order itself (pinned product, summary) is untouched.
     conv = await _reload_conv(replay_session, conv_id)
-    assert conv.current_stage == "awaiting_final_confirmation", "Aside question must not advance/change stage"
+    assert conv.current_stage == "awaiting_afc_switch_confirm", "Switch offer must open the AFC micro-stage"
+    assert conv.interrupted_sku == product_b.sku
     assert conv.pending_product_sku == product_a.sku, "Aside question must not switch the pinned product"
     assert conv.summary_shown is True
 
@@ -134,8 +145,27 @@ async def test_availability_question_about_named_product_answers_from_catalog(
     assert "Traditional Choli" in reply or "available" in reply.lower(), (
         f"Expected a real catalog-grounded answer about {product_b.sku}, got: {reply!r}"
     )
+    assert "Would you like to order Traditional Choli? (Yes / No)" in reply
     # The historical bug's exact filler text must never appear.
     assert "લાગશે" not in reply and "check and get back" not in reply.lower()
+
+    # Declining resumes THIS summary (not order_collection) and drops the stashed candidate.
+    sent_texts.clear()
+    with mock.patch(
+        "app.services.whatsapp_service._raw_send_text_message",
+        side_effect=lambda to_phone_number, message_text, **kw: sent_texts.append(message_text),
+    ), mock.patch(
+        "app.services.whatsapp_service._raw_send_button_message",
+        side_effect=lambda to_phone_number, body_text, *a, **kw: sent_texts.append(body_text) or True,
+    ):
+        resp = await send_message(
+            replay_http, phone, "no", wamid=f"wamid.q001.no.{time.time_ns()}", phone_number_id=pnid,
+        )
+    assert resp.status_code == 200
+    conv = await _reload_conv(replay_session, conv_id)
+    assert conv.current_stage == "awaiting_final_confirmation" and conv.interrupted_sku is None
+    assert conv.pending_product_sku == product_a.sku and conv.summary_shown is True
+    assert sent_texts and "Kurti New One" in sent_texts[-1], f"Expected the original summary back, got: {sent_texts!r}"
 
 
 @pytest.mark.asyncio
@@ -184,8 +214,9 @@ async def test_gujarati_script_named_sku_question_gets_grounded_answer(
     assert resp.status_code == 200
 
     conv = await _reload_conv(replay_session, conv_id)
-    assert conv.current_stage == "awaiting_final_confirmation"
-    assert conv.pending_product_sku == product_a.sku
+    assert conv.current_stage == "awaiting_afc_switch_confirm", "named other product → switch offer (FIX4 parity)"
+    assert conv.interrupted_sku == product_b.sku
+    assert conv.pending_product_sku == product_a.sku and conv.summary_shown is True
 
     assert sent_texts, "Expected a reply to be sent"
     reply = sent_texts[-1]

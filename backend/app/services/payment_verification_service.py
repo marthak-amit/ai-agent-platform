@@ -22,7 +22,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -108,6 +108,38 @@ def _warn_qr_failure_once(order_id: int, exc: Exception) -> None:
     logger.warning(
         "UPI QR generation failed (order %s): %s: %s — sending the text payment message without a QR. "
         "Further failures are logged at DEBUG.", order_id, type(exc).__name__, exc,
+    )
+
+
+_qr_url_warned = False
+
+
+def is_public_url(url: str | None) -> bool:
+    """
+    True when Meta's servers could fetch `url`: an absolute http(s) URL that isn't loopback/private.
+
+    A relative '/uploads/…' path (BACKEND_PUBLIC_URL and R2 both unset) or a localhost URL is rejected
+    by the WhatsApp Cloud API when it tries to download the image.
+    """
+    if not url or not url.startswith(("http://", "https://")):
+        return False
+    host = (urlparse(url).hostname or "").lower()
+    return not (
+        host in ("localhost", "0.0.0.0", "::1") or host.startswith(("127.", "10.", "192.168."))
+        or host.endswith((".local", ".internal"))
+    )
+
+
+def _warn_qr_url_once(url: str) -> None:
+    """Warn (once per process) that the payment QR can't be delivered because its URL isn't public."""
+    global _qr_url_warned
+    if _qr_url_warned:
+        return
+    _qr_url_warned = True
+    logger.warning(
+        "Payment QR is generated but its URL %r is not publicly fetchable, so WhatsApp can't download it — "
+        "sending the text payment message (with the 'send the screenshot' line) instead of a QR. "
+        "Set BACKEND_PUBLIC_URL or configure R2_* to deliver the QR image.", url,
     )
 
 
@@ -219,8 +251,15 @@ async def build_payment_instruction(
         )
     except Exception as exc:
         _warn_qr_failure_once(order.id, exc)
+    if qr_url is not None and not is_public_url(qr_url):
+        _warn_qr_url_once(qr_url)
+        qr_url = None
     if qr_url is None and getattr(client, "upi_qr_url", None):
-        qr_url = media_service.absolute_url(client.upi_qr_url)
+        static_url = media_service.absolute_url(client.upi_qr_url)
+        if is_public_url(static_url):
+            qr_url = static_url
+        else:
+            _warn_qr_url_once(static_url)
 
     if qr_url is None:
         text = f"{text}\n\n{closing}"

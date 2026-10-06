@@ -171,6 +171,8 @@ async def widget_message(
             history=history_dicts,
             system_prompt=client.gemini_system_prompt,
             catalogue_context=catalogue_context,
+            client_id=client.id,
+            conversation_id=conv.id,
         )
     except Exception as exc:
         logger.error("Gemini error on widget message: %s", exc)

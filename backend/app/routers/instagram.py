@@ -109,49 +109,35 @@ async def _get_active_client(db: AsyncSession, instagram_account_id: str | None 
     """
     Return the active client matching the given Instagram Business Account ID.
 
-    Looks up Client.instagram_account_id first (multi-tenant). Falls back to
-    the first active client for single-tenant / development compatibility.
+    Looks up Client.instagram_account_id only. There is deliberately NO
+    fallback: an absent, unknown or inactive account id returns None and the
+    caller drops the event. Routing an unmapped account to "the first active
+    client" would hand one tenant's customers to another tenant.
 
     Args:
         db:                    Active async DB session.
         instagram_account_id:  The IGBAID from webhook entry.id. May be None.
 
     Returns:
-        Active Client ORM instance, or None.
+        The matching active Client, or None when nothing maps to this id.
     """
-    if instagram_account_id:
-        result = await db.execute(
-            select(Client).where(
-                Client.instagram_account_id == instagram_account_id,
-                Client.is_active == True,  # noqa: E712
-            ).limit(1)
-        )
-        client = result.scalar_one_or_none()
-        if client:
-            return client
-        logger.warning(
-            "No active client for instagram_account_id=%s — falling back to first active client.",
-            instagram_account_id,
-        )
+    if not instagram_account_id:
+        logger.warning("Instagram webhook without an account id — dropped (no tenant mapping).")
+        return None
 
     result = await db.execute(
-        select(Client).where(Client.is_active == True).limit(1)  # noqa: E712
+        select(Client).where(
+            Client.instagram_account_id == instagram_account_id,
+            Client.is_active == True,  # noqa: E712
+        ).limit(1)
     )
-    return result.scalar_one_or_none()
-
-
-async def _get_active_client_plan(db: AsyncSession) -> str:
-    """
-    Return the plan_slug of the first active client, defaulting to 'starter'.
-
-    Used to gate Instagram processing before any payload parsing — so no
-    instagram_account_id is available yet; falls back to the first active
-    client like _get_active_client(db, None) already does.
-
-    Kept as a standalone async helper so tests can patch it independently.
-    """
-    client = await _get_active_client(db, None)
-    return (client.plan_slug if client else None) or "starter"
+    client = result.scalar_one_or_none()
+    if client is None:
+        logger.warning(
+            "No active client mapped to instagram_account_id=%s — webhook dropped.",
+            instagram_account_id,
+        )
+    return client
 
 
 @router.post("", status_code=status.HTTP_200_OK)
@@ -192,13 +178,6 @@ async def receive_instagram_event(
             detail="Invalid signature.",
         )
 
-    plan_slug = await _get_active_client_plan(db)
-    if not await plan_service.plan_allows_channel(db, plan_slug, "instagram"):
-        logger.info(
-            "Instagram webhook skipped: plan '%s' does not include Instagram.", plan_slug
-        )
-        return {"status": "plan_restricted"}
-
     try:
         payload = InstagramWebhookPayload.model_validate_json(raw_body)
     except Exception as exc:
@@ -206,6 +185,19 @@ async def receive_instagram_event(
         return {"status": "parse_error"}
 
     ig_user_id = payload.get_ig_user_id()
+
+    # Resolve the owning tenant first: an unmapped account is dropped, and the
+    # channel/plan gate below is evaluated against THAT tenant's own plan.
+    tenant = await _get_active_client(db, ig_user_id)
+    if tenant is None:
+        return {"status": "unmapped_account"}
+
+    plan_slug = tenant.plan_slug or "starter"
+    if not await plan_service.plan_allows_channel(db, plan_slug, "instagram"):
+        logger.info(
+            "Instagram webhook skipped: plan '%s' does not include Instagram.", plan_slug
+        )
+        return {"status": "plan_restricted"}
 
     dm = payload.get_first_dm()
     if dm and (dm.message is not None or dm.postback is not None):

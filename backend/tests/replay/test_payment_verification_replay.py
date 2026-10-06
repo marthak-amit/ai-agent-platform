@@ -705,3 +705,72 @@ async def test_missing_upi_blocks_payment_step_and_raises_alert(replay_http, rep
     assert any("being set up" in t for t in sent["texts"])
     assert (await _fresh(replay_session, Client, client.id)).payment_setup_alert_at is not None
     assert (await _fresh(replay_session, Conversation, conv.id)).current_stage != "payment"
+
+
+async def test_missing_upi_message_carries_no_confirm_buttons(replay_http, replay_session, monkeypatch):
+    """
+    Regression: "payment details are being set up" used to go out WITH 'Confirm & Pay / Cancel' buttons, inviting a
+    retry of a step that cannot proceed. It must be plain text.
+    """
+    import unittest.mock as mock
+
+    from app.models.conversation import Conversation
+
+    sent = stub_media_and_capture_sends(monkeypatch)
+    buttons = mock.AsyncMock(return_value=True)
+    monkeypatch.setattr("app.services.whatsapp_service._raw_send_button_message", buttons)
+    client, product, user, phone, pnid = await _seed(replay_session, "0041")
+    client.upi_id = None
+    client.accepts_cod = False
+    await replay_session.commit()
+    replay_session.add(Conversation(
+        phone_number=phone, channel="whatsapp", client_id=client.id, current_stage="awaiting_final_confirmation",
+        pending_product_sku=product.sku, pending_order_quantity=1, customer_name="Asha", delivery_address="Surat",
+        mobile_number=phone, payment_method="UPI", summary_shown=True,
+    ))
+    await replay_session.commit()
+
+    await send_button(replay_http, phone, "confirm_pay", "Confirm & Pay",
+                      wamid=f"wamid.pv41.{time.time_ns()}", phone_number_id=pnid)
+
+    assert any("being set up" in t for t in sent["texts"]), sent
+    buttons.assert_not_called()
+
+
+async def test_unfetchable_qr_still_delivers_the_screenshot_instruction(replay_http, replay_session, monkeypatch, caplog):
+    """
+    Regression (live log): with local storage (no BACKEND_PUBLIC_URL / R2) the QR URL is a relative path Meta can't
+    fetch; the 'send the payment screenshot here' line used to live only in the image caption, so the customer got
+    a payment message without it and no QR. Now the line is in the text, no QR send is attempted, and why is logged.
+    """
+    import logging
+
+    sent = stub_media_and_capture_sends(monkeypatch)
+
+    async def local_store(client_id, data, content_type, folder="chat"):
+        """Local-disk storage: a relative URL."""
+        return f"/uploads/{folder}/1_x.png"
+
+    monkeypatch.setattr("app.services.media_service.store_media", local_store)
+    monkeypatch.setattr("app.services.media_service.absolute_url", lambda u: u)
+    monkeypatch.setattr("app.services.payment_verification_service._qr_url_warned", False)
+    client, product, user, phone, pnid = await _seed(replay_session, "0042")
+    from app.models.conversation import Conversation
+
+    conv = Conversation(
+        phone_number=phone, channel="whatsapp", client_id=client.id, current_stage="awaiting_final_confirmation",
+        pending_product_sku=product.sku, pending_order_quantity=1, customer_name="Asha", delivery_address="Surat",
+        mobile_number=phone, payment_method="UPI", summary_shown=True,
+    )
+    replay_session.add(conv)
+    await replay_session.commit()
+
+    with caplog.at_level(logging.WARNING):
+        await send_button(replay_http, phone, "confirm_pay", "Confirm & Pay",
+                          wamid=f"wamid.pv42.{time.time_ns()}", phone_number_id=pnid)
+
+    instruction = next(t for t in reversed(sent["texts"]) if "Pay to UPI ID" in t)
+    assert instruction.rstrip().endswith("After payment, please send the payment screenshot here.")
+    assert sent["images"] == []
+    assert "not publicly fetchable" in caplog.text
+    assert conv.id

@@ -217,18 +217,15 @@ def test_log_token_status_logs_only_allowed_fields(caplog):
     assert "MyApp" not in caplog.text and "SECRETTOKEN" not in caplog.text
 
 
-async def test_check_instagram_token_invalid_disables_channel(monkeypatch):
-    """An invalid IG token at startup disables the channel without raising."""
+async def test_check_instagram_token_no_longer_uses_global_env_token(monkeypatch):
+    """
+    The startup IG check is per-client (instagram_token_service) — the global env token is not
+    sent to Meta, and an invalid client token never flips the process-wide kill switch.
+    Per-client behaviour is covered in tests/test_instagram_token_service.py.
+    """
     monkeypatch.setattr("app.config.get_settings", lambda: _settings(instagram_access_token="real-looking-token"))
-    _patch_httpx(monkeypatch, {"error": {"code": 190}})
-    await main._check_instagram_token()
-    assert channel_status.is_instagram_disabled() is True
-
-
-async def test_check_instagram_token_inconclusive_keeps_channel(monkeypatch):
-    """A network failure or placeholder token must not disable Instagram."""
-    monkeypatch.setattr("app.config.get_settings", lambda: _settings(instagram_access_token="real-looking-token"))
-    _patch_httpx(monkeypatch, exc=RuntimeError("down"))
+    _patch_httpx(monkeypatch, exc=AssertionError("global token must not be sent to Meta"))
+    monkeypatch.setattr("app.db._get_session_factory", lambda: (_ for _ in ()).throw(RuntimeError("no db")))
     await main._check_instagram_token()
     assert channel_status.is_instagram_disabled() is False
 

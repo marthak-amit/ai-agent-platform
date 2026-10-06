@@ -139,9 +139,10 @@ async def _get_client_by_phone_number_id(db: AsyncSession, phone_number_id: str 
     phone_number_id is the stable Meta numeric ID assigned to the WhatsApp
     Business number — it never changes format unlike display_phone_number.
 
-    Falls back to display_phone_number match (whatsapp_number column) when
-    phone_number_id is absent or unrecognised, then to the first active client
-    for single-tenant compatibility.
+    There is deliberately NO fallback: an absent, unknown or inactive
+    phone_number_id returns None and the caller drops the event. Routing an
+    unmapped number to "the first active client" would hand one tenant's
+    customers (and their messages) to another tenant.
 
     Args:
         db:              Active async DB session.
@@ -149,30 +150,26 @@ async def _get_client_by_phone_number_id(db: AsyncSession, phone_number_id: str 
                          May be None if parsing failed.
 
     Returns:
-        Matching Client instance, or None if no active client exists at all.
+        The matching active Client, or None when nothing maps to this id.
     """
     from app.models.client import Client
 
-    if phone_number_id:
-        result = await db.execute(
-            select(Client).where(
-                Client.whatsapp_phone_number_id == phone_number_id,
-                Client.is_active == True,  # noqa: E712
-            ).limit(1)
-        )
-        client = result.scalar_one_or_none()
-        if client:
-            return client
-        logger.warning(
-            "No active client found for phone_number_id=%s — falling back to first active client.",
-            phone_number_id,
-        )
+    if not phone_number_id:
+        logger.warning("WhatsApp webhook without a phone_number_id — dropped (no tenant mapping).")
+        return None
 
-    # Fallback: first active client (single-tenant compatibility)
     result = await db.execute(
-        select(Client).where(Client.is_active == True).limit(1)  # noqa: E712
+        select(Client).where(
+            Client.whatsapp_phone_number_id == phone_number_id,
+            Client.is_active == True,  # noqa: E712
+        ).limit(1)
     )
-    return result.scalar_one_or_none()
+    client = result.scalar_one_or_none()
+    if client is None:
+        logger.warning(
+            "No active client mapped to phone_number_id=%s — webhook dropped.", phone_number_id
+        )
+    return client
 
 
 # NOTE: _get_system_prompt, _record_usage, _get_catalogue_context, and
@@ -356,6 +353,13 @@ async def receive_message(
     except (IndexError, AttributeError):
         pass
 
+    # Resolve the owning tenant BEFORE any outbound side effect (typing indicator,
+    # voice-note ack): an unmapped phone_number_id must be dropped, never answered
+    # on another tenant's behalf or with the global fallback credentials.
+    client = await _get_client_by_phone_number_id(db, webhook_phone_number_id)
+    if client is None:
+        return {"status": "unmapped_number"}
+
     # Show "typing..." as early as possible — only for messages that survived
     # rate-limit + dedup and are about to enter real processing. Fire-and-
     # forget: never awaited, never allowed to delay or break the reply.
@@ -450,14 +454,9 @@ async def receive_message(
             except Exception as exc:
                 logger.warning("Ack send failed for audio: %s", exc)
 
-    # Resolve the client that owns this WhatsApp number.
-    # display_phone_number in the webhook metadata is the business's number —
-    # match it against client.whatsapp_number set during onboarding.
-    client = await _get_client_by_phone_number_id(db, webhook_phone_number_id)
-
     try:
         conv = await conversation_service.get_or_create_conversation(
-            db, sender_phone, client_id=client.id if client else None
+            db, sender_phone, client_id=client.id
         )
     except Exception as exc:
         logger.error("DB error creating conversation for %s: %s", sender_phone, exc)

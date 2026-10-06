@@ -20,12 +20,12 @@ _SCHEMA_INSTRUCTION = """
 RESPOND WITH ONLY A JSON OBJECT — NO PROSE, NO MARKDOWN, NO EXPLANATION.
 Match exactly this schema:
 {"intent": "ANSWER|ASK_PRODUCT|ASK_PRICE|CHANGE_ADDRESS|SIDE_QUESTION|CHITCHAT|LIST_PRODUCTS",
- "sku": "<single SKU string from the catalogue above, or null>",
+ "sku": "<single SKU string from the product catalogue, or null>",
  "skus": ["<SKU string>", ...] or null  — use this instead of "sku" ONLY when the
    customer is browsing a category and several catalogue items match (e.g. "saree dikhao"),
  "slots": {"color": "<string or null>", "size": "<string or null>", "quantity": <int or null>},
  "question_topic": "delivery_time|payment|quality|null"}
-Only use SKUs that are explicitly listed in the product catalogue given to you above.
+Only use SKUs that are explicitly listed in the product catalogue provided to you.
 Never invent a SKU, product name, or price. If the customer names/confirms a
 product by name (not SKU), resolve it to the matching catalogue SKU.
 """
@@ -91,7 +91,9 @@ async def classify_turn(
     second failure, returns IntentResult(intent="PARSE_FAILED") — callers
     must never forward raw model text to the customer in that case.
     """
-    full_prompt = f"{system_prompt}\n\n{_SCHEMA_INSTRUCTION}"
+    # Schema first: generate_reply() truncates long system prompts for the small fallback
+    # model, and a trailing schema would be cut off (losing the required word "JSON").
+    full_prompt = f"{_SCHEMA_INSTRUCTION}\n\n{system_prompt}"
     raw = await gemini_service.generate_reply(
         user_text,
         history=history,
@@ -99,6 +101,7 @@ async def classify_turn(
         catalogue_context=catalogue_context,
         language=language,
         response_format={"type": "json_object"},
+        purpose="intent",
     )
     result = _parse(raw)
     if result is not None:
@@ -116,6 +119,7 @@ async def classify_turn(
         catalogue_context=catalogue_context,
         language=language,
         response_format={"type": "json_object"},
+        purpose="intent",
     )
     result2 = _parse(raw2)
     if result2 is not None:

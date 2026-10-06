@@ -136,7 +136,10 @@ async def generate_followup_message(db: AsyncSession, lead: Lead) -> str:
     )
 
     try:
-        return await gemini_service.generate_reply(prompt, history=history_dicts)
+        return await gemini_service.generate_reply(
+            prompt, history=history_dicts, purpose="followup",
+            client_id=getattr(lead, "client_id", None), conversation_id=lead.conversation_id,
+        )
     except Exception as exc:
         logger.warning(
             "Gemini follow-up generation failed for lead %d: %s. Using default message.",

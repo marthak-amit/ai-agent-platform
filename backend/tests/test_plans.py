@@ -281,22 +281,27 @@ def test_upgrade_plan_requires_auth(client, seeded_plans):
 
 # ── Instagram plan guard tests ────────────────────────────────────────────────
 
-def test_instagram_webhook_blocked_on_starter(client, mock_db, seeded_plans):
-    """POST /instagram returns plan_restricted when client is on starter plan."""
-    from unittest.mock import patch
+_IG_PAYLOAD = b'{"object":"instagram","entry":[{"id":"ig_biz_1"}]}'
 
+
+def _post_instagram(client, plan_slug: str):
+    """POST a signed-looking Instagram event for a tenant that is on `plan_slug`."""
+    from unittest.mock import MagicMock, patch
+
+    tenant = MagicMock(id=1, plan_slug=plan_slug)
     with patch(
-        "app.routers.instagram._verify_instagram_signature",
-        return_value=True,
+        "app.routers.instagram._verify_instagram_signature", return_value=True,
     ), patch(
-        "app.routers.instagram._get_active_client_plan",
-        new=AsyncMock(return_value="starter"),
+        "app.routers.instagram._get_active_client", new=AsyncMock(return_value=tenant),
     ):
-        response = client.post(
-            "/instagram",
-            content=b'{"object":"instagram"}',
-            headers={"Content-Type": "application/json"},
+        return client.post(
+            "/instagram", content=_IG_PAYLOAD, headers={"Content-Type": "application/json"},
         )
+
+
+def test_instagram_webhook_blocked_on_starter(client, mock_db, seeded_plans):
+    """POST /instagram returns plan_restricted when the tenant is on the starter plan."""
+    response = _post_instagram(client, "starter")
 
     assert response.status_code == 200
     assert response.json()["status"] == "plan_restricted"
@@ -304,48 +309,16 @@ def test_instagram_webhook_blocked_on_starter(client, mock_db, seeded_plans):
 
 def test_instagram_webhook_allowed_on_growth(client, mock_db, seeded_plans):
     """POST /instagram proceeds past the plan guard on growth plan."""
-    from unittest.mock import patch
+    response = _post_instagram(client, "growth")
 
-    with patch(
-        "app.routers.instagram._verify_instagram_signature",
-        return_value=True,
-    ), patch(
-        "app.routers.instagram._get_active_client_plan",
-        new=AsyncMock(return_value="growth"),
-    ), patch(
-        "app.routers.instagram.InstagramWebhookPayload.model_validate_json",
-        side_effect=Exception("parse_error"),
-    ):
-        response = client.post(
-            "/instagram",
-            content=b'{}',
-            headers={"Content-Type": "application/json"},
-        )
-
-    # parse_error means it got past the plan guard
+    # No DM / comment in the payload → "ok" means it got past the plan guard.
     assert response.status_code == 200
-    assert response.json()["status"] == "parse_error"
+    assert response.json()["status"] == "ok"
 
 
 def test_instagram_webhook_allowed_on_pro(client, mock_db, seeded_plans):
     """POST /instagram proceeds past the plan guard on pro plan."""
-    from unittest.mock import patch
-
-    with patch(
-        "app.routers.instagram._verify_instagram_signature",
-        return_value=True,
-    ), patch(
-        "app.routers.instagram._get_active_client_plan",
-        new=AsyncMock(return_value="pro"),
-    ), patch(
-        "app.routers.instagram.InstagramWebhookPayload.model_validate_json",
-        side_effect=Exception("parse_error"),
-    ):
-        response = client.post(
-            "/instagram",
-            content=b'{}',
-            headers={"Content-Type": "application/json"},
-        )
+    response = _post_instagram(client, "pro")
 
     assert response.status_code == 200
-    assert response.json()["status"] == "parse_error"
+    assert response.json()["status"] == "ok"

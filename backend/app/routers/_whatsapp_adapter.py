@@ -121,10 +121,28 @@ async def send_pipeline_result(
     # Deferred product images — sent AFTER the main text/buttons/list, mirroring
     # webhook.py's original end-of-request image queue (a failed image send must
     # never abort the pin path or block the text, which has already been sent).
+    _images_delivered = 0
     for _img_url, _img_caption in (result.images or []):
         try:
-            await outbound.send_image(
+            _img_res = await outbound.send_image(
                 sender_phone, _img_url, _img_caption, **_gate_kw,
             )
         except Exception as _img_exc:
-            logger.error("Product image send error (non-fatal): %s", _img_exc)
+            logger.error("Image send error (non-fatal): url=%s error=%s", _img_url, _img_exc)
+            continue
+        if _img_res:
+            _images_delivered += 1
+            logger.info("Image sent to conv=%s (caption=%s)", conv.id, "yes" if _img_caption else "no")
+        else:
+            logger.warning("Image NOT sent to conv=%s (suppressed by the send gate): url=%s", conv.id, _img_url)
+
+    # The payment QR carries the closing "send the screenshot" line as its caption: if no image reached
+    # the customer, that line (and the instruction to reply with proof) must still reach them as text.
+    if result.image_fallback_text and result.images and not _images_delivered:
+        logger.warning(
+            "Payment QR image not delivered for conv=%s — sending the closing line as text.", conv.id,
+        )
+        try:
+            await outbound.send_text(sender_phone, result.image_fallback_text, **_gate_kw)
+        except Exception as _fb_exc:
+            logger.error("Payment QR fallback text send error: %s", _fb_exc)

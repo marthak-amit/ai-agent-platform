@@ -37,6 +37,7 @@ TRANSPORT_MODULES = {
 GRAPH_URL_READONLY_WHITELIST = {
     "app/services/vision_service.py",     # media download (GET)
     "app/main.py",                        # debug_token (GET)
+    "app/services/instagram_token_service.py",  # IG token /me check + refresh (GET, no /messages)
     "app/routers/channels.py",            # channel setup reads
     "app/routers/integrations.py",        # integration setup reads
     "app/routers/whatsapp_signup.py",     # embedded signup token exchange (no /messages)

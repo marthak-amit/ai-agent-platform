@@ -67,7 +67,7 @@ async def test_whatsapp(
             access_token=access_token,
         )
     except httpx.HTTPStatusError as exc:
-        logger.error("WhatsApp test failed: %s", exc.response.text)
+        logger.error("WhatsApp test failed: HTTP %s", exc.response.status_code)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Meta API error: {exc.response.text}",

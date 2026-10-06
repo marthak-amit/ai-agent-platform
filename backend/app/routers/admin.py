@@ -11,23 +11,25 @@ Endpoints:
 - PUT  /admin/clients/{id}/suspend — suspend a client account
 - PUT  /admin/clients/{id}/activate— activate a suspended client account
 - GET  /admin/revenue              — monthly revenue breakdown by plan
+- GET  /admin/usage/llm            — LLM token/cost rollup across all clients (optional client_id)
 - GET  /admin/plans                — all plans, including inactive ones
 - PUT  /admin/plans/{plan_id}      — update a plan's price/limits/overage rate
 """
 
 import logging
 import secrets
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Any, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db import get_db
+from app.schemas.llm_usage import LLMUsageReport
 from app.schemas.plan import PlanAdminOut, PlanUpdateRequest
-from app.services import admin_service, plan_cache
+from app.services import admin_service, llm_usage_service, plan_cache
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -249,6 +251,27 @@ async def revenue_breakdown(
         RevenueOut with month, total_revenue_inr, and per-plan breakdown.
     """
     return await admin_service.get_revenue_breakdown(db)
+
+
+@router.get(
+    "/usage/llm",
+    response_model=LLMUsageReport,
+    dependencies=[Depends(require_admin)],
+)
+async def llm_usage_report(
+    client_id: Optional[int] = Query(None, description="Restrict to one client; omit for all clients."),
+    from_date: Optional[date] = Query(None, alias="from", description="Inclusive start date (default: 29 days before `to`)."),
+    to_date: Optional[date] = Query(None, alias="to", description="Inclusive end date (default: today)."),
+    limit: int = Query(100, ge=1, le=500, description="Max rows in per_conversation / per_order."),
+    db: AsyncSession = Depends(get_db),
+) -> LLMUsageReport:
+    """
+    LLM tokens, ₹ cost, latency and failures from the llm_usage ledger, platform-wide or per client.
+
+    Requires X-Admin-Key header.
+    """
+    report = await llm_usage_service.usage_report(db, client_id=client_id, start=from_date, end=to_date, limit=limit)
+    return LLMUsageReport(client_id=client_id, **report)
 
 
 @router.get(

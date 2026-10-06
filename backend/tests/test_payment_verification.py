@@ -284,6 +284,49 @@ async def test_build_payment_instruction_falls_back_to_static_qr(monkeypatch):
     assert instr.qr_url == "https://cdn.test/static.png"
 
 
+@pytest.mark.parametrize("url,public", [
+    ("https://cdn.test/qr.png", True), ("http://api.example.com/uploads/qr.png", True),
+    ("/uploads/payment-qr/1_abc.png", False), ("", False), (None, False),
+    ("http://localhost:8000/uploads/qr.png", False), ("http://127.0.0.1:8000/x.png", False),
+    ("http://192.168.1.5/x.png", False), ("https://shop.internal/x.png", False),
+])
+def test_is_public_url_only_accepts_urls_meta_can_fetch(url, public):
+    """Relative '/uploads/…' paths and loopback/private hosts can't be downloaded by WhatsApp."""
+    assert pvs.is_public_url(url) is public
+
+
+async def test_non_public_qr_url_folds_closing_line_into_text(monkeypatch, caplog):
+    """
+    Regression (live log): local storage returns a relative /uploads path (no BACKEND_PUBLIC_URL / R2), Meta
+    can't fetch it, and the closing 'send the screenshot' line used to ride ONLY in the undelivered image
+    caption. Now the QR is dropped, the line is part of the text, and the cause is logged once.
+    """
+    async def local_store(client_id, data, ctype, folder="chat"):
+        """Local-disk storage result: a relative path."""
+        return "/uploads/payment-qr/1_abc.png"
+
+    monkeypatch.setattr(pvs.media_service, "store_media", local_store)
+    monkeypatch.setattr(pvs.media_service, "absolute_url", lambda u: u)   # BACKEND_PUBLIC_URL unset
+    monkeypatch.setattr(pvs, "_qr_url_warned", False)
+    with caplog.at_level("WARNING"):
+        instr = await pvs.build_payment_instruction(_db(), _order(), _client(), _conv())
+    assert instr.qr_url is None
+    assert instr.text.endswith("After payment, please send the payment screenshot here.")
+    assert "not publicly fetchable" in caplog.text and "BACKEND_PUBLIC_URL" in caplog.text
+
+
+async def test_non_public_static_qr_is_not_used_either(monkeypatch):
+    """The seller's uploaded static QR is subject to the same rule."""
+    async def boom(*a, **k):
+        """Generation/upload failure."""
+        raise RuntimeError("r2 down")
+
+    monkeypatch.setattr(pvs.media_service, "store_media", boom)
+    monkeypatch.setattr(pvs.media_service, "absolute_url", lambda u: u)
+    instr = await pvs.build_payment_instruction(_db(), _order(), _client(upi_qr_url="/uploads/static.png"), _conv())
+    assert instr.qr_url is None and instr.text.endswith("send the payment screenshot here.")
+
+
 def test_proof_ack_due_throttles_to_ten_minutes():
     """The 'verification in progress' ack is allowed once per 10 minutes."""
     now = datetime.now(timezone.utc)

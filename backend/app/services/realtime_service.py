@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
+import time
 from collections import defaultdict
 from typing import Any
 
@@ -30,6 +32,30 @@ logger = logging.getLogger(__name__)
 
 _QUEUE_MAX = 200
 _subscribers: dict[int, set[asyncio.Queue]] = defaultdict(set)
+
+# One-time stream tickets: ticket -> (client_id, expires_at monotonic). In-process,
+# single-instance like the hub itself; a redeem landing on another instance fails
+# and the dashboard falls back to polling.
+TICKET_TTL_SECONDS = 60
+_tickets: dict[str, tuple[int, float]] = {}
+
+
+def issue_ticket(client_id: int) -> str:
+    """Mint a single-use, 60-second ticket that authorises one SSE connection."""
+    now = time.monotonic()
+    for stale in [t for t, (_, exp) in _tickets.items() if exp <= now]:
+        _tickets.pop(stale, None)
+    ticket = secrets.token_urlsafe(32)
+    _tickets[ticket] = (client_id, now + TICKET_TTL_SECONDS)
+    return ticket
+
+
+def redeem_ticket(ticket: str) -> int | None:
+    """Consume a ticket; return its client_id, or None if unknown, used or expired."""
+    entry = _tickets.pop(ticket, None)
+    if entry is None or entry[1] <= time.monotonic():
+        return None
+    return entry[0]
 
 
 def subscribe(client_id: int) -> asyncio.Queue:

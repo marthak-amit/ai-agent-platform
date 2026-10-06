@@ -435,9 +435,9 @@ def test_rephrase_template_exists_in_every_language(lang):
 
 
 async def test_analyze_product_image_disabled_returns_none(mock_settings, monkeypatch):
-    """Empty LLM_MODEL_VISION → None without building a Groq client."""
+    """Empty LLM_MODEL_VISION → None without making any LLM call."""
     mock_settings.llm_model_vision = ""
-    monkeypatch.setattr(vision_service, "AsyncGroq", MagicMock(side_effect=AssertionError("must not be called")))
+    monkeypatch.setattr(llm_client, "llm_call", AsyncMock(side_effect=AssertionError("must not be called")))
     assert await vision_service.analyze_product_image(b"img", "catalogue") is None
 
 

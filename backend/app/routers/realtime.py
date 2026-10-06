@@ -1,9 +1,12 @@
 """
 Realtime feed for the dashboard.
 
-- GET /events/stream?token=<jwt>   Server-Sent Events (primary). EventSource
-                                   can't send an Authorization header, so the
-                                   JWT rides in the query string.
+- POST /events/ticket              Exchange the bearer JWT for a single-use,
+                                   60-second stream ticket.
+- GET /events/stream?ticket=<t>    Server-Sent Events (primary). EventSource
+                                   can't send an Authorization header, so a
+                                   one-time ticket (never the JWT) rides in the
+                                   query string and is worthless once logged.
 - GET /events/poll?since=<iso>     Stateless polling fallback derived from the
                                    database — works across instances and when
                                    SSE is blocked by a proxy.
@@ -31,7 +34,7 @@ from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.payment_proof import PaymentProof
 from app.routers.auth import get_current_client
-from app.services import auth_service, channel_sender, realtime_service
+from app.services import channel_sender, realtime_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/events", tags=["realtime"])
@@ -40,19 +43,28 @@ _HEARTBEAT_SECONDS = 15
 _POLL_LIMIT = 200
 
 
-async def _client_from_token(token: str) -> Client:
-    """Authenticate the SSE connection, releasing the DB session immediately."""
-    async with _get_session_factory()() as db:
-        try:
-            return await auth_service.get_current_client(token, db)
-        except ValueError as exc:
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+async def _client_from_ticket(ticket: str) -> Client:
+    """Redeem a one-time stream ticket, releasing the DB session immediately."""
+    client_id = realtime_service.redeem_ticket(ticket)
+    client = None
+    if client_id is not None:
+        async with _get_session_factory()() as db:
+            client = await db.get(Client, client_id)
+    if client is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired stream ticket")
+    return client
+
+
+@router.post("/ticket")
+async def create_stream_ticket(client: Client = Depends(get_current_client)) -> dict:
+    """Issue a single-use ticket (valid 60 s) for opening /events/stream."""
+    return {"ticket": realtime_service.issue_ticket(client.id), "expires_in": realtime_service.TICKET_TTL_SECONDS}
 
 
 @router.get("/stream")
-async def stream_events(request: Request, token: str = Query(...)) -> StreamingResponse:
+async def stream_events(request: Request, ticket: str = Query(...)) -> StreamingResponse:
     """Open the SSE stream for the caller's business (events: see realtime_service)."""
-    client = await _client_from_token(token)
+    client = await _client_from_ticket(ticket)
     queue = realtime_service.subscribe(client.id)
 
     async def gen():

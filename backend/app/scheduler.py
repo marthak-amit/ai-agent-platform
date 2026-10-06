@@ -9,6 +9,8 @@ Jobs:
                                (no payment yet) who have been idle 6h+, guarded to only
                                send free-form WhatsApp/Instagram text within Meta's 24h
                                customer-service window.
+  refresh_instagram_tokens  — fires weekly (Mon 03:00 IST); exchanges every client's stored
+                               Instagram long-lived token for a fresh 60-day one so none expires.
   drain_pending_comment_replies — fires every 5min; sends IG comment private-replies
                                that were queued because the client's IG account was
                                over Meta's 200/hour automated-DM cap when the comment
@@ -475,6 +477,15 @@ async def _send_abandoned_intent_followups(db) -> None:
         logger.info("Abandoned-intent follow-up job complete — sent %d messages.", sent_count)
 
 
+async def _refresh_instagram_tokens_job() -> None:
+    """Scheduled job: refresh all clients' Instagram long-lived tokens (60-day lifetime) before they expire."""
+    from app.db import _get_session_factory
+    from app.services import instagram_token_service
+
+    async with _get_session_factory()() as db:
+        await instagram_token_service.refresh_all_clients(db)
+
+
 async def _drain_pending_comment_replies_job() -> None:
     """Scheduled job: open a DB session and drain queued IG comment replies."""
     from app.db import _get_session_factory
@@ -575,6 +586,12 @@ def start_scheduler() -> None:
         replace_existing=True,
     )
     scheduler.add_job(
+        _refresh_instagram_tokens_job,
+        CronTrigger(day_of_week="mon", hour=3, minute=0, timezone="Asia/Kolkata"),
+        id="refresh_instagram_tokens",
+        replace_existing=True,
+    )
+    scheduler.add_job(
         _expire_unpaid_orders_job,
         CronTrigger(minute="*/30"),
         id="expire_unpaid_orders",
@@ -586,7 +603,8 @@ def start_scheduler() -> None:
         "daily learning at 00:30 IST, "
         "weekly quality check at 23:30 IST Sunday, "
         "open-order nudge check every 6 hours (6h-idle trigger, 24h window guard), "
-        "comment-reply drain every 5 minutes."
+        "comment-reply drain every 5 minutes, "
+        "Instagram token refresh weekly (Mon 03:00 IST)."
     )
 
 

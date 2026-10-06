@@ -191,27 +191,21 @@ async def _check_whatsapp_token() -> None:
 
 async def _check_instagram_token() -> None:
     """
-    Call the Meta token-debug endpoint at startup and log token validity + expiry.
+    Verify every client's own Instagram token at startup (graph.instagram.com/me).
 
-    Logs CRITICAL if the token is invalid or expires within 7 days so the
-    problem is visible in Railway boot logs — not as silent send failures later.
-    An INVALID verdict also disables the Instagram channel for this process
-    (channel_status) so IG sends are skipped instead of failing per attempt;
-    an inconclusive check (network/Meta error) leaves it enabled. Never raises.
-    Skips the check when the token is unset or a placeholder test value.
+    Instagram Login tokens live per client on `clients.instagram_access_token`; there is no
+    global/System User token to check. Logs VALID/INVALID per client_id (never token values) and
+    records verdicts for /health. Informational only — it never disables sends or raises, so a
+    DB or Meta outage cannot block startup.
     """
-    from app.config import get_settings as _gs
+    from app.db import _get_session_factory
+    from app.services import instagram_token_service
 
-    token = _gs().instagram_access_token
-    if not token or token in ("test_token", "test-ig", "test-ig-token"):
-        logger.info("Instagram token check: skipped (test/placeholder token)")
-        return
-
-    verdict, data = await _debug_token(token, "Instagram")
-    _log_token_status("Instagram", verdict, data)
-    if verdict == "invalid":
-        channel_status.disable_instagram("token invalid at startup")
-        logger.warning("Instagram channel DISABLED — IG sends will be skipped until the token is fixed and the app restarted.")
+    try:
+        async with _get_session_factory()() as db:
+            await instagram_token_service.verify_all_clients(db)
+    except Exception as exc:
+        logger.warning("Instagram token check skipped (%s)", type(exc).__name__)
 
 
 async def _check_llm_models() -> None:
@@ -224,7 +218,7 @@ async def _check_llm_models() -> None:
 def _startup_checks() -> None:
     """Log a structured startup banner so Railway logs show config state immediately."""
     from app.config import get_settings as _gs
-    from app.config import ensure_secret_key_is_safe
+    from app.config import DEFAULT_SECRET_KEY, ENV_FILE, ensure_secret_key_is_safe
     from app.services import ocr_service
     s = _gs()
     ensure_secret_key_is_safe(s)
@@ -232,14 +226,15 @@ def _startup_checks() -> None:
     logger.info(sep)
     logger.info("AI Agent Platform Starting")
     logger.info("Environment : %s", s.environment)
+    logger.info("SECRET_KEY default: %s (env file: %s)", s.secret_key == DEFAULT_SECRET_KEY, "found" if ENV_FILE.is_file() else "NOT FOUND")
     logger.info("Groq API    : %s", "configured" if s.groq_api_key else "MISSING ⚠️")
     logger.info(
         "WhatsApp    : %s",
         "test mode" if s.whatsapp_access_token == "test_token" else "configured",
     )
     logger.info(
-        "Instagram   : %s",
-        "configured" if s.instagram_access_token else "not set",
+        "Instagram   : per-client tokens (verified below); global INSTAGRAM_ACCESS_TOKEN fallback %s",
+        "set" if s.instagram_access_token else "not set",
     )
     logger.info(
         "Razorpay    : %s",
@@ -346,6 +341,8 @@ async def health_check(db: AsyncSession = Depends(get_db)) -> dict:
 
     if channel_status.is_instagram_disabled():
         checks["instagram"] = "Instagram disconnected"
+    elif channel_status.instagram_invalid_clients():
+        checks["instagram"] = f"Instagram disconnected for client(s) {channel_status.instagram_invalid_clients()}"
 
     llm = llm_health.health_summary()
     if not llm["available"]:

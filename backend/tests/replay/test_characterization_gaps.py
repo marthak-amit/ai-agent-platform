@@ -880,18 +880,14 @@ async def _seed_two_saree_choice(replay_session, *, suffix: str):
     return phone, pnid
 
 
-async def test_multi_choice_pending_bare_greeting_gets_short_reask_not_list_repeat(
+async def test_multi_choice_pending_bare_greeting_closes_menu_and_greets(
     replay_http, replay_session
 ):
     """
-    BUG 2 characterization test — first branch (short re-ask, not a repeat).
-
-    While pending_choice_skus is open, a bare greeting ("Hi") must NOT be
-    handled by the old "reject bare affirmative, re-ask" path, which
-    verbatim-repeats the full numbered list on every unresolved reply. It
-    must instead get a short, distinct warm re-ask — and the choice list
-    must remain open (still resolvable by a follow-up number) with the
-    greeting counter incremented.
+    A bare greeting ("Hi") while a choice list is pending is answered by the
+    pre-catalog router: the standard greeting template, and the stale menu is
+    CLOSED (it used to stay open behind a short re-ask — conv=60 showed that a
+    menu left open hijacks whatever the customer says next).
     """
     phone, pnid = await _seed_two_saree_choice(replay_session, suffix="0700")
 
@@ -906,67 +902,37 @@ async def test_multi_choice_pending_bare_greeting_gets_short_reask_not_list_repe
     assert resp2.status_code == 200, resp2.text
 
     joined_reply = _joined_replies()
-    print(f"[BUG2] first greeting reply: {joined_reply!r}")
-    assert "please reply with the number of your choice" not in joined_reply.lower(), (
-        f"BUG 2: bare greeting while a choice list is pending must NOT verbatim-repeat "
-        f"the numbered list; got: {joined_reply!r}"
-    )
+    print(f"[BUG2] greeting reply: {joined_reply!r}")
+    assert "please reply with the number of your choice" not in joined_reply.lower()
+    assert "Welcome to" in joined_reply, f"Expected the greeting template, got: {joined_reply!r}"
 
     conv_after_greeting = await _get_conv(replay_session, phone)
-    assert conv_after_greeting.pending_choice_skus, (
-        "First greeting must NOT clear the pending choice list — it should still "
-        "be resolvable by a follow-up number"
+    assert conv_after_greeting.pending_choice_skus is None, (
+        "A greeting must close the stale menu"
     )
-    assert conv_after_greeting.pending_choice_greeting_count == 1, (
-        f"Expected greeting counter to increment to 1, got "
-        f"{conv_after_greeting.pending_choice_greeting_count!r}"
-    )
+    assert not conv_after_greeting.pending_choice_greeting_count
 
 
 async def test_multi_choice_pending_repeated_greetings_break_loop(replay_http, replay_session):
     """
-    BUG 2 characterization test — loop-break branch.
-
-    A customer who keeps greeting instead of answering must not be stuck in
-    an infinite identical-list loop. After the greeting threshold is hit,
-    the pending choice must be cleared (falling back to open intent capture)
-    instead of re-asking with the same list forever.
+    Repeated greetings can never trap the customer in a list loop: the first
+    greeting already closes the menu, so every later greeting just greets.
     """
     phone, pnid = await _seed_two_saree_choice(replay_session, suffix="0701")
 
     resp = await _msg(replay_http, phone, "saree", pnid=pnid, wamid=f"wamid.gl2.list.{int(time.time())}")
     assert resp.status_code == 200, resp.text
-    conv_after_list = await _get_conv(replay_session, phone)
-    assert conv_after_list.pending_choice_skus, "Expected pending_choice_skus set after 'saree'"
+    assert (await _get_conv(replay_session, phone)).pending_choice_skus
 
     from app.services import whatsapp_service
-
-    # First greeting: short re-ask, list stays open (characterized above).
-    whatsapp_service._raw_send_text_message.reset_mock()
-    resp2 = await _msg(replay_http, phone, "Hi", pnid=pnid, wamid=f"wamid.gl2.hi1.{int(time.time())}")
-    assert resp2.status_code == 200, resp2.text
-    conv_after_hi1 = await _get_conv(replay_session, phone)
-    assert conv_after_hi1.pending_choice_skus, "List must still be open after ONE greeting"
-
-    # Second consecutive greeting: loop-break must fire.
-    whatsapp_service._raw_send_text_message.reset_mock()
-    resp3 = await _msg(replay_http, phone, "Hello", pnid=pnid, wamid=f"wamid.gl2.hi2.{int(time.time())}")
-    assert resp3.status_code == 200, resp3.text
-
-    joined_reply = _joined_replies()
-    print(f"[BUG2] second greeting reply: {joined_reply!r}")
-    assert "please reply with the number of your choice" not in joined_reply.lower(), (
-        f"BUG 2: repeated greetings must never re-dump the identical numbered list; "
-        f"got: {joined_reply!r}"
-    )
-
-    conv_after_hi2 = await _get_conv(replay_session, phone)
-    assert conv_after_hi2.pending_choice_skus is None, (
-        "BUG 2: after the greeting threshold is hit, the pending choice must be "
-        f"cleared (fallback to open intent capture); got "
-        f"{conv_after_hi2.pending_choice_skus!r}"
-    )
-    assert conv_after_hi2.pending_choice_greeting_count == 0, (
-        f"Greeting counter must reset once the loop breaks/clears; got "
-        f"{conv_after_hi2.pending_choice_greeting_count!r}"
-    )
+    for i, greeting in enumerate(("Hi", "Hello")):
+        whatsapp_service._raw_send_text_message.reset_mock()
+        resp2 = await _msg(replay_http, phone, greeting, pnid=pnid, wamid=f"wamid.gl2.hi{i}.{int(time.time())}")
+        assert resp2.status_code == 200, resp2.text
+        joined_reply = _joined_replies()
+        assert "please reply with the number of your choice" not in joined_reply.lower(), (
+            f"greeting #{i + 1} must never re-dump the numbered list; got: {joined_reply!r}"
+        )
+        conv_now = await _get_conv(replay_session, phone)
+        assert conv_now.pending_choice_skus is None
+        assert not conv_now.pending_choice_greeting_count

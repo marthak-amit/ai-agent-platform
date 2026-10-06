@@ -19,6 +19,32 @@ def _reset_plan_cache():
     plan_cache.invalidate()
 
 
+@pytest.fixture(autouse=True)
+def _no_llm_usage_persist(monkeypatch):
+    """
+    Never write llm_usage rows from tests (they would otherwise open a real DB session via
+    llm_call). tests/test_llm_usage.py re-patches _persist_row itself to capture/verify rows.
+    """
+    monkeypatch.setattr("app.services.llm_usage_service._persist_row", AsyncMock())
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _router_v2_off_by_default(monkeypatch):
+    """
+    ROUTER_V2 is ON for client_id=1 in production, and every replay database creates client 1 —
+    so without this the whole legacy suite would silently run through the LLM router. Tests that
+    exercise the router opt in per client via Client.router_v2_enabled=True (a DB column that
+    overrides the env default), never via this env var.
+    """
+    from app.config import get_settings
+
+    monkeypatch.setenv("ROUTER_V2_CLIENT_IDS", "")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 def make_test_plans() -> list:
     """Build the 3 seeded Plan ORM rows in-memory, matching migration 0053's seed data."""
     from app.models.plan import Plan
@@ -104,6 +130,7 @@ def mock_settings(monkeypatch):
     monkeypatch.setattr("app.services.gemini_service.get_settings", lambda: test_settings)
     monkeypatch.setattr("app.services.whatsapp_service.get_settings", lambda: test_settings)
     monkeypatch.setattr("app.services.llm_client.get_settings", lambda: test_settings)
+    monkeypatch.setattr("app.services.llm_usage_service.get_settings", lambda: test_settings)
     monkeypatch.setattr("app.services.voice_service.get_settings", lambda: test_settings)
     monkeypatch.setattr("app.services.vision_service.get_settings", lambda: test_settings)
     monkeypatch.setattr("app.services.instagram_service.get_settings", lambda: test_settings)

@@ -9,19 +9,26 @@ Single entry point for Groq chat calls (OpenAI-compatible API).
 - `parse_json_object()` / `chat_json()` tolerate code fences and surrounding
   prose, validate the schema, and retry once on invalid JSON.
 - Every call feeds the llm_health circuit breaker.
+- `llm_call()` / `llm_transcribe()` are THE entry points for application code: they
+  time the call and record real token usage, cost, latency and outcome to the
+  `llm_usage` table (app/services/llm_usage_service.py). Nothing outside this
+  module may touch a provider client directly (CI guard: tests/test_llm_usage.py).
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import time
 from typing import Any, Callable
 
+from groq import Groq
 from openai import AsyncOpenAI
 
 from app.config import get_settings
-from app.services import llm_health
+from app.services import llm_health, llm_usage_service
 from app.services.llm_health import LLMUnavailableError
 
 logger = logging.getLogger(__name__)
@@ -42,6 +49,37 @@ def is_reasoning_model(model: str) -> bool:
     return any(model.startswith(p) for p in prefixes)
 
 
+JSON_MODE_HINT = "Respond only with a valid JSON object."
+
+
+def _mentions_json(messages: list[dict]) -> bool:
+    """True when any message's text contains the word 'json' (what Groq/OpenAI json_object mode requires)."""
+    for m in messages:
+        content = m.get("content")
+        if isinstance(content, list):  # multimodal parts
+            content = " ".join(p.get("text", "") for p in content if isinstance(p, dict))
+        if isinstance(content, str) and "json" in content.lower():
+            return True
+    return False
+
+
+def ensure_json_instruction(messages: list[dict], response_format: dict | None) -> list[dict]:
+    """
+    Guarantee a `json_object` request mentions JSON, else the provider rejects it with HTTP 400
+    ("'messages' must contain the word 'json' ..."). Backstop for prompts that were truncated
+    or never said it; appends JSON_MODE_HINT to the system message. Returns `messages` as-is
+    when no JSON mode is requested or the word is already present (input is never mutated).
+    """
+    if not response_format or response_format.get("type") != "json_object" or _mentions_json(messages):
+        return messages
+    out = [dict(m) for m in messages]
+    for m in out:
+        if m.get("role") == "system" and isinstance(m.get("content"), str):
+            m["content"] = f"{m['content']}\n\n{JSON_MODE_HINT}"
+            return out
+    return [{"role": "system", "content": JSON_MODE_HINT}, *out]
+
+
 def build_request(
     model: str,
     messages: list[dict],
@@ -52,6 +90,7 @@ def build_request(
 ) -> dict[str, Any]:
     """Build chat.completions kwargs, adding reasoning settings/headroom for reasoning models."""
     settings = get_settings()
+    messages = ensure_json_instruction(messages, response_format)
     kwargs: dict[str, Any] = {
         "model": model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature,
     }
@@ -92,6 +131,113 @@ async def chat(
         raise
     llm_health.note_call_result(True)
     return resp
+
+
+def _tokens(usage: Any, field: str) -> int:
+    """Read an int token count from a response.usage object; 0 if absent or not an int."""
+    value = getattr(usage, field, 0)
+    return value if isinstance(value, int) else 0
+
+
+async def llm_call(
+    purpose: str,
+    model: str,
+    messages: list[dict],
+    client_id: int | None = None,
+    conversation_id: int | None = None,
+    order_id: int | None = None,
+    *,
+    max_tokens: int,
+    temperature: float = 0.0,
+    response_format: dict | None = None,
+    client: AsyncOpenAI | None = None,
+    use_breaker: bool = True,
+):
+    """
+    The one chat-completion entry point: call the model, then record the outcome.
+
+    Records purpose, model, response.usage tokens, ₹ cost, latency and success/error_code
+    to `llm_usage` — for failures too (then re-raises). client_id/conversation_id default
+    to the ambient context set by the pipeline. A breaker short-circuit
+    (LLMUnavailableError) made no provider call, so it is not recorded.
+    `use_breaker=False` keeps a side feature (vision) from tripping the reply-path breaker.
+    """
+    t0 = time.perf_counter()
+    try:
+        if use_breaker:
+            resp = await chat(
+                model, messages, max_tokens=max_tokens, temperature=temperature,
+                response_format=response_format, client=client,
+            )
+        else:
+            kwargs = build_request(
+                model, messages, max_tokens=max_tokens, temperature=temperature, response_format=response_format
+            )
+            resp = await (client or get_client()).chat.completions.create(**kwargs)
+    except Exception as exc:
+        if not isinstance(exc, llm_health.LLMUnavailableError):
+            await llm_usage_service.record_usage(
+                purpose=purpose, model=model, latency_ms=int((time.perf_counter() - t0) * 1000), success=False,
+                error_code=llm_usage_service.error_code_for(exc),
+                client_id=client_id, conversation_id=conversation_id, order_id=order_id,
+            )
+        raise
+    usage = getattr(resp, "usage", None)
+    await llm_usage_service.record_usage(
+        purpose=purpose, model=model,
+        prompt_tokens=_tokens(usage, "prompt_tokens"), completion_tokens=_tokens(usage, "completion_tokens"),
+        latency_ms=int((time.perf_counter() - t0) * 1000),
+        client_id=client_id, conversation_id=conversation_id, order_id=order_id,
+    )
+    return resp
+
+
+def get_stt_client() -> Groq:
+    """Groq SDK client for Whisper transcription (the only non-OpenAI-compatible Groq call)."""
+    return Groq(api_key=get_settings().groq_api_key)
+
+
+async def llm_transcribe(
+    purpose: str,
+    model: str,
+    audio_bytes: bytes,
+    filename: str,
+    mime_type: str,
+    client_id: int | None = None,
+    conversation_id: int | None = None,
+    order_id: int | None = None,
+    *,
+    language: str | None = None,
+    prompt: str | None = None,
+    client: Groq | None = None,
+) -> str:
+    """
+    Speech-to-text through Groq Whisper, recorded like any other call.
+
+    Whisper has no token usage, so tokens are 0 and cost is an estimate from the audio size
+    (per-hour pricing with a 10 s minimum). The blocking SDK call runs in a worker thread.
+    """
+    t0 = time.perf_counter()
+    stt = client or get_stt_client()
+    extra = {k: v for k, v in (("language", language), ("prompt", prompt)) if v}
+    try:
+        result = await asyncio.to_thread(
+            stt.audio.transcriptions.create,
+            file=(filename, audio_bytes, mime_type), model=model, response_format="text", **extra,
+        )
+    except Exception as exc:
+        await llm_usage_service.record_usage(
+            purpose=purpose, model=model, latency_ms=int((time.perf_counter() - t0) * 1000), success=False,
+            error_code=llm_usage_service.error_code_for(exc),
+            client_id=client_id, conversation_id=conversation_id, order_id=order_id, cost_inr=0.0,
+        )
+        raise
+    await llm_usage_service.record_usage(
+        purpose=purpose, model=model, latency_ms=int((time.perf_counter() - t0) * 1000),
+        client_id=client_id, conversation_id=conversation_id, order_id=order_id,
+        cost_inr=llm_usage_service.stt_cost_inr(len(audio_bytes)),
+    )
+    return result if isinstance(result, str) else str(result)
 
 
 def strip_reasoning(text: str) -> str:
@@ -140,6 +286,10 @@ async def chat_json(
     messages: list[dict],
     *,
     max_tokens: int,
+    purpose: str = "json",
+    client_id: int | None = None,
+    conversation_id: int | None = None,
+    order_id: int | None = None,
     validate: Callable[[dict], bool] | None = None,
     on_response: Callable[[Any], None] | None = None,
     retries: int = 1,
@@ -148,12 +298,15 @@ async def chat_json(
     Chat in JSON mode and return a validated dict, or None.
 
     Retries (default once) with a repair instruction when the output isn't a
-    JSON object or fails `validate`. `on_response` sees every raw response (for
-    cost logging). API errors propagate to the caller.
+    JSON object or fails `validate`; every attempt is its own `llm_usage` row.
+    `on_response` sees every raw response. API errors propagate to the caller.
     """
     msgs = list(messages)
     for attempt in range(retries + 1):
-        resp = await chat(model, msgs, max_tokens=max_tokens, response_format={"type": "json_object"})
+        resp = await llm_call(
+            purpose, model, msgs, client_id, conversation_id, order_id,
+            max_tokens=max_tokens, response_format={"type": "json_object"},
+        )
         if on_response is not None:
             on_response(resp)
         raw = final_text(resp)

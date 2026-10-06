@@ -32,6 +32,39 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/payments", tags=["payments"])
 
 
+async def _find_pending_order(db: AsyncSession, phone_number: str):
+    """Return the newest awaiting-payment Order for this customer phone, or None."""
+    from app.models.order import Order
+
+    result = await db.execute(
+        select(Order).where(
+            Order.customer_phone == phone_number,
+            Order.status == "payment_pending",
+        ).order_by(Order.created_at.desc()).limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def _owner_for_order(db: AsyncSession, order):
+    """
+    Return the active Client that owns `order`, or None.
+
+    A Payment row carries no client_id, so the linked Order (which does) is the
+    only trustworthy tenant attribution. There is deliberately no "first active
+    client" fallback: with no linked order the tenant is unknown, and acting on
+    another tenant's behalf (their WhatsApp credentials, GSTIN, business name)
+    would leak data across tenants.
+    """
+    if order is None or order.client_id is None:
+        return None
+    from app.models.client import Client
+
+    result = await db.execute(
+        select(Client).where(Client.id == order.client_id, Client.is_active == True).limit(1)  # noqa: E712
+    )
+    return result.scalar_one_or_none()
+
+
 class CreateQRRequest(BaseModel):
     """Request body for creating a Razorpay QR code."""
 
@@ -138,17 +171,9 @@ async def razorpay_webhook(
                 logger.info("Payment %s marked as paid.", qr_code_id)
 
                 # ── Mark linked order as paid ──────────────────────────────
+                linked_order = None
                 try:
-                    from app.models.order import Order
-                    from sqlalchemy import select as _select
-
-                    order_result = await db.execute(
-                        _select(Order).where(
-                            Order.customer_phone == payment.phone_number,
-                            Order.status == "payment_pending",
-                        ).order_by(Order.created_at.desc()).limit(1)
-                    )
-                    linked_order = order_result.scalar_one_or_none()
+                    linked_order = await _find_pending_order(db, payment.phone_number)
                     if linked_order:
                         from datetime import datetime, timezone
                         linked_order.status = "paid"
@@ -160,12 +185,14 @@ async def razorpay_webhook(
                 except Exception as exc:
                     logger.warning("Could not mark linked order as paid: %s", exc)
 
-                from app.models.client import Client
-
-                owner_result = await db.execute(
-                    select(Client).where(Client.is_active == True).limit(1)  # noqa: E712
-                )
-                owner = owner_result.scalar_one_or_none()
+                owner = await _owner_for_order(db, linked_order)
+                if owner is None:
+                    logger.warning(
+                        "Payment %s captured but no tenant could be resolved from a linked order — "
+                        "customer/owner notifications and invoice skipped.",
+                        qr_code_id,
+                    )
+                    return {"status": "ok"}
 
                 # ── Notify customer ────────────────────────────────────────
                 try:
@@ -274,11 +301,16 @@ async def razorpay_webhook(
                     payment.phone_number,
                 )
 
-                from app.models.client import Client
-                owner_result = await db.execute(
-                    select(Client).where(Client.is_active == True).limit(1)  # noqa: E712
+                owner = await _owner_for_order(
+                    db, await _find_pending_order(db, payment.phone_number)
                 )
-                owner = owner_result.scalar_one_or_none()
+                if owner is None:
+                    logger.warning(
+                        "Payment %s failed but no tenant could be resolved from a linked order — "
+                        "notifications skipped.",
+                        qr_code_id,
+                    )
+                    return {"status": "ok"}
 
                 # Notify customer
                 try:
@@ -346,12 +378,23 @@ async def download_invoice(
     if payment.invoice_url is None:
         # Invoice not yet generated — generate on demand.
         try:
-            from app.models.client import Client
+            from app.models.order import Order
 
-            owner_result = await db.execute(
-                select(Client).where(Client.is_active == True).limit(1)  # noqa: E712
-            )
-            owner = owner_result.scalar_one_or_none()
+            order = None
+            if payment.razorpay_payment_id:
+                order_result = await db.execute(
+                    select(Order).where(
+                        Order.razorpay_payment_id == payment.razorpay_payment_id
+                    ).limit(1)
+                )
+                order = order_result.scalar_one_or_none()
+            owner = await _owner_for_order(db, order)
+            if owner is None:
+                # Never render an invoice with another tenant's business/GSTIN details.
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Invoice unavailable: payment is not linked to an order.",
+                )
             amount_inr = payment.amount / 100
             products_for_invoice = [
                 {

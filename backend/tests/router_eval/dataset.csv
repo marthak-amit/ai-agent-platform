@@ -1,0 +1,585 @@
+﻿id,message,language,stage,state,context,heuristic_tags,expected_action,expected_args,notes
+r001,Banarasi silk saree ka price kya hai?,hindi_roman,order_collection,pending_product_sku=SR29821; last_shown_sku=SR29821,"customer: hello
+bot: Welcome to Riya Sarees Surat! 👋 Here's our catalogue: <URL>
+What are you looking for today?","price,vague_product,question",,,
+r002,શું PR17761 ઉપલબ્ધ છે?,gujarati_script,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: Traditional Choli price?
+bot: Traditional choli — ₹3,999.
+
+Would you like to order Traditional choli? (Yes / No)
+customer: હા
+bot: Quantity?
+customer: 5
+bot: We currently accept payments via UPI only.
+
+✅ Order Summary
+━━━━━━━━━━━━━━━
+📦 kurti new one × 5 = ₹1,195
+👤 <NAME>
+📍 <ADDRESS>
+💳 UPI (<EMAIL_OR_UPI>)
+🚚 Delivery in 3–7 business days
+━━━━━━━━━━━━━━━
+Reply:
+1️⃣ Confirm & pay
+2️⃣ Add chair (₹450) too
+3️⃣ Cancel",question,,,
+r003,Is banarasi saree available?,english,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: Are you selling saree?
+bot: Cotton Printed Saree [SR33210] — ₹850
+
+Would you like to order? (Yes / No)
+customer: no
+bot: Sorry, we don't carry no. We currently have: Cotton Printed Saree. Let me know if any of these interest you!
+customer: I want banarasi saree
+bot: Cotton Printed Saree [SR33210] — ₹850
+
+Would you like to order? (Yes / No)","vague_product,question",,,
+r004,aapke store ka address kya hai aur weekends mein khula rehta hai kya,hindi_roman,greeting,has_customer_name=True; has_address=True,,vague_product,,,
+r005,what is the status of my order?,english,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"bot: 🧾 Order #ORD-2026-0042
+• kurti new one × 2 = ₹478
+Total: ₹478
+
+Pay to UPI ID: <EMAIL_OR_UPI>
+(GPay / PhonePe / Paytm / any UPI app)
+
+After payment, please send the payment screenshot here.
+customer: <PII_REPLY>
+bot: Thanks! Our team will verify your payment shortly and update you here.
+bot: Payment confirmed ✅ Your order #ORD-2026-0042 is confirmed.
+customer: Hi
+bot: Welcome back <NAME>! 👋 Here's our latest collection: <URL>
+What are you looking for today?","order_status,question",,,
+r006,તમે સારી વેચો છો?,gujarati_script,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: SR27754
+bot: We currently accept payments via UPI only.
+
+✅ Order Summary
+━━━━━━━━━━━━━━━
+📦 Designer Lehenga Red, S × 1 = ₹6,500
+👤 <NAME>
+📍 <ADDRESS>
+💳 UPI (<EMAIL_OR_UPI>)
+🚚 Delivery in 3–7 business days
+━━━━━━━━━━━━━━━
+customer: confirm
+bot: Please pay ₹6,500 to complete your order:
+UPI ID: <EMAIL_OR_UPI>
+(GPay / PhonePe / Paytm)
+Reply 'paid' once done. ✅
+customer: <PII_REPLY>
+bot: 🎉 Your order has been placed successfully! ✅
+📦 Designer Lehenga Red, S × 1 = ₹6,500
+🚚 Delivery in 3–7 business days
+
+Thank you for shopping with us! 😊
+🛍️ You might also like Kanjivaram Silk Saree (₹4,200) — <URL>",question,,,
+r007,"Kya aap Rajkot mein bhi deliver karte ho aur agar main 3 saree ek saath lu to koi discount milega kya, aur COD available hai kya wahan?",hindi_roman,offer_making,,,"order_status,vague_product,question",,,
+r008,small,english,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: yes
+bot: Sorry, we don't have yes in size. Available sizes: big / medium / small
+customer: Chair
+bot: chair [PR10983] — ₹450
+Available sizes: big, medium, small
+
+Would you like to order? (Yes / No)
+customer: yes
+bot: Size? big / medium / small",size,,,
+r009,COD will be find so how much days it will take to deliver?,english,completed,pending_product_sku=SR29821; summary_shown=True; has_customer_name=True; has_address=True,"customer: is this available?
+bot: The Designer Lehenga [LH10042] is available, and we currently have 7 pieces in stock. Sirf 7 pieces bacha hai, so it's a good idea to place your order soon. Would you like to purchase this lehenga?
+customer: I want 10 peaces
+bot: I apologize, but we only have 7 pieces of the Designer Lehenga [LH10042] in stock. We cannot fulfill an order for 10 pieces. Would you like to place an order for the 7 pieces we have available?
+customer: I want to buy 5 pices
+bot: The Designer Lehenga [LH10042] is priced at ₹6,500. Since you want to buy 5 pieces, the total cost would be ₹32,500. We have enough stock to fulfill your order. Would you like to proceed with the payment, and would you prefer COD or UPI payment?","order_status,question",,,
+r010,શું તમે ખુરશી વેચો છો?,gujarati_script,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: confirm
+bot: Please pay ₹1,700 to complete your order:
+UPI ID: <EMAIL_OR_UPI>
+(GPay / PhonePe / Paytm)
+Reply 'paid' once done. ✅
+customer: <PII_REPLY>
+bot: 🎉 Your order has been placed successfully! ✅
+📦 Cotton Printed Saree × 2 = ₹1,700
+🚚 Delivery in 3–7 business days
+
+Thank you for shopping with us! 😊
+🛍️ You might also like kurti new one (₹239) — <URL>
+customer: what is the status of ORD-2026-0038?
+bot: I'd be happy to help you find the right product from Riya Sarees Surat! Which item are you interested in?",question,,,
+r011,KU76326 વેચો છો?,gujarati_script,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: SR33210
+bot: That option has expired — your last action already went through. Let's continue from here.
+customer: Hi
+bot: Hey <NAME>! Welcome back 👋
+
+Let's finish your order now 🙂
+Size? big / medium / small
+customer: શું તમે ખુરશી વેચો છો?
+bot: Size? big / medium / small",question,,,
+r012,ha mare 100 pic leva che,gujarati_roman,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: <PII_REPLY>
+bot: 🎉 Your order has been placed successfully! ✅
+📦 Traditional choli White, 38 × 2 = ₹7,998
+🚚 Delivery in 20 business days
+
+Thank you for shopping with us! 😊
+🛍️ You might also like Kanjivaram Silk Saree (₹4,200) — <URL>
+customer: hi
+bot: Welcome back <NAME>! 👋 Here's our latest collection: <URL>
+What are you looking for today?
+customer: LH10042 available che bhai?
+bot: Designer Lehenga [LH10042] — ₹6,500
+Available colors: Navy, Pink, Red
+Available sizes: L, M, S, XL, XXL
+
+Would you like to order? (Yes / No)",other,,,
+r013,ask me which size i want to buy,english,completed,pending_product_sku=SR29821; summary_shown=True; has_customer_name=True; has_address=True,"customer: paid
+bot: We only accept UPI payments. Would you like to pay ₹32,500 via UPI?
+customer: ye
+bot: We only accept UPI payments. Please pay ₹32,500 via UPI.
+customer: the material will be good?
+bot: The Designer Lehenga [LH10042] is made of high-quality material, heavily embroidered for a luxurious look. Would you like to proceed with the order?",size,,,
+r014,order karna hai. Banarasi silk chahiye.,english,order_collection,pending_product_sku=SR27754,"customer: Banarasi saree ka price?
+bot: The Banarasi Silk Saree is priced at ₹2,450. Would you like to place an order?",order_status,,,
+r015,Banarasi saree ka price?,english,order_collection,pending_product_sku=SR27754,,"price,vague_product,question",,,
+r016,10 red and 10 pink,hindi_roman,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: hi
+bot: Welcome back <NAME>! 👋 Here's our latest collection: <URL>
+What are you looking for today?
+customer: LH10042 available che bhai?
+bot: Designer Lehenga [LH10042] — ₹6,500
+Available colors: Navy, Pink, Red
+Available sizes: L, M, S, XL, XXL
+
+Would you like to order? (Yes / No)
+customer: ha mare 100 pic leva che
+bot: Color? Navy / Pink / Red",other,,,
+r017,hey,english,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: yes
+bot: Size? big / medium / small
+customer: is Banarasi Silk?
+bot: Banarasi Silk Saree — ₹2,450.
+
+Size? big / medium / small
+customer: Kanjivaram Silk Saree is available in red color?
+bot: Red isn't available for chair. Available colors: see our catalogue.
+
+Size? big / medium / small",greeting,,,
+r018,XXl,english,completed,pending_product_sku=SR29821; summary_shown=True; has_customer_name=True; has_address=True,"customer: ye
+bot: We only accept UPI payments. Please pay ₹32,500 via UPI.
+customer: the material will be good?
+bot: The Designer Lehenga [LH10042] is made of high-quality material, heavily embroidered for a luxurious look. Would you like to proceed with the order?
+customer: ask me which size i want to buy
+bot: We only accept UPI payments. Since you wanted COD, I'll have to decline that. For the Designer Lehenga, what size would you like to buy?",size,,,
+r019,medium,english,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: 2
+bot: Got it, small. Same for all 2, or different for each? (Same/Different)
+customer: different
+bot: How many of small? (2 left to assign)
+customer: 1
+bot: Item 2 — which size? Available: big / medium / small",size,,,
+r020,are mare 4 chair joi che,gujarati_roman,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: 3
+bot: Got it, big. Same for all 3, or different for each? (Same/Different)
+customer: એ જ
+bot: Got it, big. Same for all 3, or different for each? (Same/Different)
+customer: same
+bot: Hum sirf UPI se payment accept karte hain.
+
+✅ Order Summary
+━━━━━━━━━━━━━━━
+📦 chair big × 3 = ₹1,350
+👤 <NAME>
+📍 <ADDRESS>
+💳 UPI (<EMAIL_OR_UPI>)
+🚚 Delivery in 3–7 business days
+━━━━━━━━━━━━━━━
+Reply karein:
+1️⃣ Confirm & pay
+2️⃣ kurti new one (₹239) bhi add karein
+3️⃣ Cancel",other,,,
+r021,Kanjivaram Silk Saree is available in red color?,english,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: chair?
+bot: chair [PR10983] — ₹450
+Available sizes: big, medium, small
+
+Would you like to order? (Yes / No)
+customer: yes
+bot: Size? big / medium / small
+customer: is Banarasi Silk?
+bot: Banarasi Silk Saree — ₹2,450.
+
+Size? big / medium / small","vague_product,question",,,
+r022,Mare 1 red colour ka and 1 white colour ma joi che,gujarati_roman,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: 1
+bot: We currently accept payments via UPI only.
+
+✅ Order Summary
+━━━━━━━━━━━━━━━
+📦 Traditional choli White, 38 × 1 = ₹3,999
+👤 <NAME>
+📍 <ADDRESS>
+💳 UPI (<EMAIL_OR_UPI>)
+🚚 Delivery in 20 business days
+━━━━━━━━━━━━━━━
+Reply:
+1️⃣ Confirm & pay
+2️⃣ Add Kanjivaram Silk Saree (₹4,200) too
+3️⃣ Cancel
+customer: Mare quantity change karvi che
+bot: Quantity?
+customer: 2
+bot: Hum sirf UPI thi payment accept karie chhe.
+
+✅ Order Summary
+━━━━━━━━━━━━━━━
+📦 Traditional choli White, 38 × 2 = ₹7,998
+👤 <NAME>
+📍 <ADDRESS>
+💳 UPI (<EMAIL_OR_UPI>)
+🚚 Delivery in 20 business days
+━━━━━━━━━━━━━━━",other,,,
+r023,SR27754 wali saree ka price kya hai? Available hai kya?,hindi_roman,order_collection,pending_product_sku=SR29821; last_shown_sku=SR29821,"customer: Cotton saree kitni stock mein hai? Available hai kya?
+bot: Cotton Printed Saree [SR33210] — ₹850
+
+Would you like to order? (Yes / No)
+customer: order karna hai. Kanjivaram silk chahiye.
+bot: Kanjivaram Silk Saree [SR29821] — ₹4,200
+Color? Gold / Green / Purple / Red
+customer: Mujhe ek saree gift karni hai apni maa ko. Budget ₹2000 hai. Kya option hai?
+bot: Cotton Printed Saree — ₹850.
+
+Colour? Gold / Green / Purple / Red","price,vague_product,question",,,
+r024,Mujhe ek saree gift karni hai apni maa ko. Budget ₹2000 hai. Kya option hai?,hindi_roman,order_collection,pending_product_sku=SR29821; last_shown_sku=SR29821,"customer: Banarasi silk saree ka price kya hai?
+bot: Please reply with the number of your choice:
+1. Banarasi Silk Saree [SR27754] — ₹2,450
+2. Kanjivaram Silk Saree [SR29821] — ₹4,200
+3. banarasi saree [A001] — ₹999
+4. Cotton Printed Saree [SR33210] — ₹850
+5. Georgette Party Wear [SR31045] — ₹1,100
+customer: Cotton saree kitni stock mein hai? Available hai kya?
+bot: Cotton Printed Saree [SR33210] — ₹850
+
+Would you like to order? (Yes / No)
+customer: order karna hai. Kanjivaram silk chahiye.
+bot: Kanjivaram Silk Saree [SR29821] — ₹4,200
+Color? Gold / Green / Purple / Red","vague_product,question",,,
+r025,is Traditional Choli are you selling?,english,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: Kanjivaram Silk Saree is available in red color?
+bot: Red isn't available for chair. Available colors: see our catalogue.
+
+Size? big / medium / small
+customer: hey
+bot: Sorry, we don't have hey in size. Available sizes: big / medium / small
+customer: Traditional Choli
+bot: Size? big / medium / small",question,,,
+r026,Xl,english,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: Lh10042
+bot: Designer Lehenga [LH10042] — ₹6,500
+Available colors: Navy, Pink, Red
+Available sizes: L, M, S, XL, XXL
+
+Would you like to order? (Yes / No)
+customer: yes
+bot: Colour? Navy / Pink / Red
+customer: Red
+bot: Size? L / M / S / XL",size,,,
+r027,How much day delivery?,english,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: LH10042 available?
+bot: Designer Lehenga [LH10042] — ₹6,500
+Available colors: Navy, Pink, Red
+Available sizes: L, M, S, XL, XXL
+
+Would you like to order? (Yes / No)
+customer: PR17761
+bot: Traditional choli [PR17761] — ₹3,999
+Available colors: Gold, Green, Pink, Red, White
+Available sizes: 38, 3XL, 40, L, M, S, XL, XXL
+
+Would you like to order? (Yes / No)
+customer: yes
+bot: Colour? Gold / Green / Pink / Red / White","order_status,question",,,
+r028,Can you please send images?,english,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: Image
+bot: kurti new one [KU76326] — ₹239
+
+Would you like to order? (Yes / No)
+customer: Cna you please share images
+bot: kurti new one [KU76326] — ₹239
+
+Would you like to order? (Yes / No)
+customer: yes
+bot: Quantity?",question,,,
+r029,Traditional Choli price?,english,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: 2
+bot: Yes, we have this available:
+
+kurti new one [KU76326] — ₹239
+
+Would you like to order? (Yes / No)
+customer: images please
+bot: kurti new one [KU76326] — ₹239
+
+Would you like to order? (Yes / No)
+customer: yes
+bot: Quantity?","price,question",,,
+r030,cotton saree chahiye,hindi_roman,greeting,has_customer_name=True; has_address=True,"customer: hello
+bot: Welcome to Riya Sarees Surat! 👋 Here's our catalogue: <URL>
+What are you looking for today?",vague_product,,,
+r031,સારી છે?,gujarati_script,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: SR33210
+bot: Sorry, we don't carry SR33210. We currently have: banarasi saree. Let me know if any of these interest you!
+customer: Hello
+bot: Sorry, we don't carry Hello. We currently have: Cotton Printed Saree. Let me know if any of these interest you!
+customer: LH10042
+bot: Designer Lehenga [LH10042] — ₹6,500
+Available colors: Navy, Pink, Red
+Available sizes: L, M, S, XL, XXL
+
+Would you like to order? (Yes / No)",question,,,
+r032,price kya hai,hindi_roman,product_inquiry,,"customer: hello
+bot: Welcome to Riya Sarees Surat! 👋 Here's our catalogue: <URL>
+What are you looking for today?
+customer: banarasi saree dikhao
+bot: Please reply with the number of your choice:
+1. Banarasi Silk Saree [SR27754] — ₹2,450
+2. banarasi saree [A001] — ₹999
+3. Cotton Printed Saree [SR33210] — ₹850
+4. Kanjivaram Silk Saree [SR29821] — ₹4,200
+5. Georgette Party Wear [SR31045] — ₹1,100",price,,,
+r033,Hi Riya Sarees Surat! I'm checking out your catalogue.,english,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: Hello
+bot: Welcome back <NAME>! 👋 Here's our latest collection: <URL>
+What are you looking for today?
+customer: Hello
+bot: Welcome back <NAME>! 👋 Here's our latest collection: <URL>
+What are you looking for today?
+customer: Saree
+bot: Please reply with the number of your choice:
+1. Cotton Printed Saree [SR33210] — ₹850
+2. banarasi saree [A001] — ₹999
+3. Banarasi Silk Saree [SR27754] — ₹2,450
+4. Kanjivaram Silk Saree [SR29821] — ₹4,200
+5. Georgette Party Wear [SR31045] — ₹1,100","greeting,vague_product",,,
+r034,banarasi saree chahiye,hindi_roman,order_collection,has_customer_name=True,,vague_product,,,
+r035,how many day's it will take to reliver?,english,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: <PII_REPLY>
+bot: That doesn't look like a complete address. Please send house/area, city and a 6-digit pincode.
+customer: <PII_REPLY>
+bot: Sure — what's the new delivery address? Please send house/area, city and pincode.
+customer: <PII_REPLY>
+bot: We currently accept payments via UPI only.
+
+✅ Order Summary
+━━━━━━━━━━━━━━━
+📦 Kurti best × 5 = ₹5,150
+👤 <NAME>
+📍 <ADDRESS>
+💳 UPI
+🚚 Delivery in 3–7 business days
+━━━━━━━━━━━━━━━",question,,,
+r036,સાડી જોઈ છે મારે,gujarati_script,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: Hello
+bot: Sorry, we don't carry Hello. We currently have: Cotton Printed Saree. Let me know if any of these interest you!
+customer: LH10042
+bot: Designer Lehenga [LH10042] — ₹6,500
+Available colors: Navy, Pink, Red
+Available sizes: L, M, S, XL, XXL
+
+Would you like to order? (Yes / No)
+customer: સારી છે?
+bot: Amara badha products dispatch pehla quality check thai chhe.
+
+Shu tame Designer Lehenga [LH10042] order karva mangso cho? (Haa / Na)",other,,,
+r037,"Hi! I want to order:
+Product: kurti new one
+SKU: KU76326
+Qty: 1
+Total: ₹239",hindi_roman,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: Yes
+bot: We currently accept payments via UPI only.
+
+✅ Order Summary
+━━━━━━━━━━━━━━━
+📦 chair medium × 3 = ₹1,350
+👤 <NAME>
+📍 <ADDRESS>
+💳 UPI (<EMAIL_OR_UPI>)
+🚚 Delivery in 3–7 business days
+━━━━━━━━━━━━━━━
+Reply:
+1️⃣ Confirm & pay
+2️⃣ Add Traditional choli (₹3,999) too
+3️⃣ Cancel
+customer: confirm
+bot: Please pay ₹1,350 to complete your order:
+UPI ID: <EMAIL_OR_UPI>
+(GPay / PhonePe / Paytm)
+Reply 'paid' once done. ✅
+customer: <PII_REPLY>
+bot: 🎉 Your order has been placed successfully! ✅
+📦 chair medium × 3 = ₹1,350
+🚚 Delivery in 3–7 business days
+
+Thank you for shopping with us! 😊
+🛍️ You might also like Traditional choli (₹3,999) — <URL>","greeting,order_status,vague_product",,,
+r038,order karna hai. Kanjivaram silk chahiye.,english,order_collection,pending_product_sku=SR29821; last_shown_sku=SR29821,"customer: hello
+bot: Welcome to Riya Sarees Surat! 👋 Here's our catalogue: <URL>
+What are you looking for today?
+customer: Banarasi silk saree ka price kya hai?
+bot: Please reply with the number of your choice:
+1. Banarasi Silk Saree [SR27754] — ₹2,450
+2. Kanjivaram Silk Saree [SR29821] — ₹4,200
+3. banarasi saree [A001] — ₹999
+4. Cotton Printed Saree [SR33210] — ₹850
+5. Georgette Party Wear [SR31045] — ₹1,100
+customer: Cotton saree kitni stock mein hai? Available hai kya?
+bot: Cotton Printed Saree [SR33210] — ₹850
+
+Would you like to order? (Yes / No)",order_status,,,
+r039,Cotton saree kitni stock mein hai? Available hai kya?,hindi_roman,order_collection,pending_product_sku=SR29821; last_shown_sku=SR29821,"customer: hello
+bot: Welcome to Riya Sarees Surat! 👋 Here's our catalogue: <URL>
+What are you looking for today?
+customer: Banarasi silk saree ka price kya hai?
+bot: Please reply with the number of your choice:
+1. Banarasi Silk Saree [SR27754] — ₹2,450
+2. Kanjivaram Silk Saree [SR29821] — ₹4,200
+3. banarasi saree [A001] — ₹999
+4. Cotton Printed Saree [SR33210] — ₹850
+5. Georgette Party Wear [SR31045] — ₹1,100","vague_product,question",,,
+r040,namaste,english,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: Hi
+bot: Welcome back <NAME>! 👋 Here's our latest collection: <URL>
+What are you looking for today?
+customer: what is the status of my order?
+bot: Please reply with the number of your choice:
+1. banarasi saree [A001] — ₹999
+2. Cotton Printed Saree [SR33210] — ₹850
+3. Kurti best [KU23444] — ₹1,030
+4. kurti new one [KU76326] — ₹239
+5. Traditional choli [PR17761] — ₹3,999
+customer: PR10983
+bot: Sorry, I'm a bit busy right now — please try again in a moment, or contact us directly.",greeting,,,
+r041,yes I want to buy red in xl size,english,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: is SR33210 available?
+bot: Cotton Printed Saree [SR33210] — ₹850
+
+Would you like to order? (Yes / No)
+customer: please let me know if choli available
+bot: Here are some options:
+• Traditional choli [PR17761] — ₹3,999
+  Colors: Gold, Green, Pink, Red, White
+• Designer Lehenga [LH10042] — ₹6,500
+  Colors: Navy, Pink, Red
+customer: please send me Designer Lehenga images
+bot: Designer Lehenga [LH10042] — ₹6,500
+Available colors: Navy, Pink, Red
+Available sizes: L, M, S, XL, XXL
+
+Would you like to order? (Yes / No)",size,,,
+r042,theek hai lena hai,hindi_roman,product_inquiry,,"customer: banarasi saree dikhao
+bot: Please reply with the number of your choice:
+1. Banarasi Silk Saree [SR27754] — ₹2,450
+2. banarasi saree [A001] — ₹999
+3. Cotton Printed Saree [SR33210] — ₹850
+4. Kanjivaram Silk Saree [SR29821] — ₹4,200
+5. Georgette Party Wear [SR31045] — ₹1,100
+customer: price kya hai
+bot: Please reply with the number of your choice:
+1. Banarasi Silk Saree [SR27754] — ₹2,450
+2. banarasi saree [A001] — ₹999
+3. Cotton Printed Saree [SR33210] — ₹850
+4. Kanjivaram Silk Saree [SR29821] — ₹4,200
+5. Georgette Party Wear [SR31045] — ₹1,100
+customer: bahut mehnga hai
+bot: Please reply with the number of your choice:
+1. Banarasi Silk Saree [SR27754] — ₹2,450
+2. banarasi saree [A001] — ₹999
+3. Cotton Printed Saree [SR33210] — ₹850
+4. Kanjivaram Silk Saree [SR29821] — ₹4,200
+5. Georgette Party Wear [SR31045] — ₹1,100",other,,,
+r043,Pink with XL,english,completed,pending_product_sku=SR29821; summary_shown=True; has_customer_name=True; has_address=True,"customer: ask me which size i want to buy
+bot: We only accept UPI payments. Since you wanted COD, I'll have to decline that. For the Designer Lehenga, what size would you like to buy?
+customer: XXl
+bot: I think there may be some confusion. The Designer Lehenga [LH10042] is a saree product and does not have a size like XXL. Would you like to confirm your order as previously discussed?
+customer: LH10042
+bot: For the Designer Lehenga [LH10042], sizes available are L, M, S, XL. XXL is out of stock in some colors. Which color would you prefer: Red, Pink, or Navy?",size,,,
+r044,LH10042 available che bhai?,gujarati_roman,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: Yaa sure
+bot: Please pay ₹7,998 to complete your order:
+UPI ID: <EMAIL_OR_UPI>
+(GPay / PhonePe / Paytm)
+Reply 'paid' once done. ✅
+customer: <PII_REPLY>
+bot: 🎉 Your order has been placed successfully! ✅
+📦 Traditional choli White, 38 × 2 = ₹7,998
+🚚 Delivery in 20 business days
+
+Thank you for shopping with us! 😊
+🛍️ You might also like Kanjivaram Silk Saree (₹4,200) — <URL>
+customer: hi
+bot: Welcome back <NAME>! 👋 Here's our latest collection: <URL>
+What are you looking for today?","vague_product,question",,,
+r045,Hi,english,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: KU23444
+bot: Kurti best [KU23444] — ₹1,030
+
+Would you like to order? (Yes / No)
+customer: yes
+bot: Quantity?
+customer: 5
+bot: <NAME>, deliver to: <ADDRESS>? (yes/change)",greeting,,,
+r046,LH10042 is M size available?,english,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: LH10042 is available?
+bot: Yes, L is available for Designer Lehenga.
+
+Quantity?
+customer: Hi
+bot: Hey <NAME>! Welcome back 👋
+
+Let's finish your order now 🙂
+Quantity?
+customer: LH10042 is available?
+bot: Yes, Designer Lehenga is available — ₹6,500. Colors: Navy, Pink, Red. Sizes: L, M, S, XL, XXL.
+
+Quantity? (for chair)","size,vague_product,question",,,
+r047,Mare quantity change karvi che,gujarati_roman,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: ૩૮
+bot: Sorry, we don't have ૩૮ in size. Available sizes: 38 / 3XL / 40 / L / M / S / XL / XXL
+customer: 38
+bot: Quantity?
+customer: 1
+bot: We currently accept payments via UPI only.
+
+✅ Order Summary
+━━━━━━━━━━━━━━━
+📦 Traditional choli White, 38 × 1 = ₹3,999
+👤 <NAME>
+📍 <ADDRESS>
+💳 UPI (<EMAIL_OR_UPI>)
+🚚 Delivery in 20 business days
+━━━━━━━━━━━━━━━
+Reply:
+1️⃣ Confirm & pay
+2️⃣ Add Kanjivaram Silk Saree (₹4,200) too
+3️⃣ Cancel",other,,,
+r048,what is the status of ORD-2026-0038?,english,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,"customer: yes
+bot: We currently accept payments via UPI only.
+
+✅ Order Summary
+━━━━━━━━━━━━━━━
+📦 Cotton Printed Saree × 2 = ₹1,700
+👤 <NAME>
+📍 <ADDRESS>
+💳 UPI (<EMAIL_OR_UPI>)
+🚚 Delivery in 3–7 business days
+━━━━━━━━━━━━━━━
+Reply:
+1️⃣ Confirm & pay
+2️⃣ Add kurti new one (₹239) too
+3️⃣ Cancel
+customer: confirm
+bot: Please pay ₹1,700 to complete your order:
+UPI ID: <EMAIL_OR_UPI>
+(GPay / PhonePe / Paytm)
+Reply 'paid' once done. ✅
+customer: <PII_REPLY>
+bot: 🎉 Your order has been placed successfully! ✅
+📦 Cotton Printed Saree × 2 = ₹1,700
+🚚 Delivery in 3–7 business days
+
+Thank you for shopping with us! 😊
+🛍️ You might also like kurti new one (₹239) — <URL>","order_status,question",,,
+r049,"naam: Priya Shah, address: Adajan Surat",hindi_roman,product_inquiry,,"customer: price kya hai
+bot: Please reply with the number of your choice:
+1. Banarasi Silk Saree [SR27754] — ₹2,450
+2. banarasi saree [A001] — ₹999
+3. Cotton Printed Saree [SR33210] — ₹850
+4. Kanjivaram Silk Saree [SR29821] — ₹4,200
+5. Georgette Party Wear [SR31045] — ₹1,100
+customer: bahut mehnga hai
+bot: Please reply with the number of your choice:
+1. Banarasi Silk Saree [SR27754] — ₹2,450
+2. banarasi saree [A001] — ₹999
+3. Cotton Printed Saree [SR33210] — ₹850
+4. Kanjivaram Silk Saree [SR29821] — ₹4,200
+5. Georgette Party Wear [SR31045] — ₹1,100
+customer: theek hai lena hai
+bot: Please reply with the number of your choice:
+1. Banarasi Silk Saree [SR27754] — ₹2,450
+2. banarasi saree [A001] — ₹999
+3. Cotton Printed Saree [SR33210] — ₹850
+4. Kanjivaram Silk Saree [SR29821] — ₹4,200
+5. Georgette Party Wear [SR31045] — ₹1,100",other,,,
+r050,Hello,english,product_inquiry,pending_product_sku=PR10983; last_shown_sku=PR10983,,greeting,,,

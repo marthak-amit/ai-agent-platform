@@ -14,7 +14,7 @@ import unicodedata as _ud
 
 from collections import OrderedDict
 
-from app.services import cost_log, llm_client, llm_health
+from app.services import llm_client, llm_health
 
 logger = logging.getLogger(__name__)
 
@@ -39,31 +39,6 @@ def _classify_cache_put(key: tuple[str, str], value: dict, max_size: int) -> Non
     _classify_cache.move_to_end(key)
     while len(_classify_cache) > max_size:
         _classify_cache.popitem(last=False)
-
-
-def _log_groq_usage(conversation_id: int | None, call_kind: str, model: str, resp, text: str) -> None:
-    """
-    Append a classify/extract Groq call to the per-conversation cost log so it
-    is visible in the cost report instead of being silently uncounted.
-
-    Args:
-        conversation_id: PK of the Conversation row, or None to skip logging.
-        call_kind:       'classify' or 'extract'.
-        model:           Groq model name used for this call.
-        resp:             The chat.completions.create() response object.
-        text:            The inbound customer text that triggered this call.
-    """
-    if conversation_id is None:
-        return
-    usage = getattr(resp, "usage", None)
-    if usage is None:
-        return
-    cost_log.log(
-        conversation_id, "IN", text,
-        path="LLM", model=model,
-        in_tok=usage.prompt_tokens, out_tok=usage.completion_tokens,
-        call_kind=call_kind,
-    )
 
 # Matches a standalone SKU token (2–4 letters + 4–6 digits), same as catalogue_service.SKU_PATTERN.
 # Also accepts a single optional space between the letter-prefix and digits (voice-transcription tolerance).
@@ -757,9 +732,11 @@ async def classify_user_intent(
         _backoff = 1.0
         for _attempt in range(3):
             try:
-                resp = await llm_client.chat(
+                resp = await llm_client.llm_call(
+                    "classify_intent",
                     settings.llm_model_classifier,
                     [{"role": "user", "content": prompt}],
+                    conversation_id=conversation_id,
                     max_tokens=10,
                     temperature=0,
                 )
@@ -772,7 +749,6 @@ async def classify_user_intent(
                     _backoff *= 2
                     continue
                 raise
-        _log_groq_usage(conversation_id, "classify", settings.llm_model_classifier, resp, user_text)
         logger.info("ROUTE tier=2 cache_hit=false classify model=%s", settings.llm_model_classifier)
         raw = llm_client.final_text(resp).upper()
         if raw in ("ANSWER", "NEW_PRODUCT", "CANCEL", "DISCOUNT_QUERY", "OFF_TOPIC", "OTHER"):
@@ -854,8 +830,9 @@ async def extract_cart_breakdown(
             settings.llm_model_classifier,
             [{"role": "user", "content": prompt}],
             max_tokens=500,
+            purpose="extract_cart",
+            conversation_id=conversation_id,
             validate=_valid,
-            on_response=lambda r: _log_groq_usage(conversation_id, "cart_breakdown", settings.llm_model_classifier, r, user_text),
         )
         if parsed is None:
             llm_health.record_failure("extract_cart_breakdown_invalid_json", "no valid JSON after retry")
@@ -912,9 +889,11 @@ async def classify_buy_intent(user_text: str, product_name: str, conversation_id
         _backoff = 1.0
         for _attempt in range(3):
             try:
-                resp = await llm_client.chat(
+                resp = await llm_client.llm_call(
+                    "classify_buy_intent",
                     settings.llm_model_classifier,
                     [{"role": "user", "content": prompt}],
+                    conversation_id=conversation_id,
                     max_tokens=5,
                     temperature=0,
                 )
@@ -927,7 +906,6 @@ async def classify_buy_intent(user_text: str, product_name: str, conversation_id
                     _backoff *= 2
                     continue
                 raise
-        _log_groq_usage(conversation_id, "classify", settings.llm_model_classifier, resp, user_text)
         raw = llm_client.final_text(resp).upper()
         if not (raw.startswith("YES") or raw.startswith("NO")):
             llm_health.record_failure("classify_buy_intent_invalid_output", f"expected YES/NO, got {raw[:40]!r}")
@@ -983,13 +961,14 @@ async def is_off_topic_message(
         from app.config import get_settings
 
         settings = get_settings()
-        resp = await llm_client.chat(
+        resp = await llm_client.llm_call(
+            "classify_off_topic",
             settings.llm_model_classifier,
             [{"role": "user", "content": prompt}],
+            conversation_id=conversation_id,
             max_tokens=5,
             temperature=0,
         )
-        _log_groq_usage(conversation_id, "classify", settings.llm_model_classifier, resp, user_text)
         raw = llm_client.final_text(resp).upper()
         if not (raw.startswith("YES") or raw.startswith("NO")):
             llm_health.record_failure("is_off_topic_message_invalid_output", f"expected YES/NO, got {raw[:40]!r}")

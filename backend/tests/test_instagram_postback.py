@@ -15,6 +15,10 @@ from app.schemas.instagram import InstagramWebhookPayload
 from app.routers.instagram import _handle_dm
 
 
+# A resolved tenant: _handle_dm now drops DMs whose account maps to no client.
+_TENANT = MagicMock(id=1, instagram_access_token=None)
+
+
 def _no_dup_db() -> MagicMock:
     """A db mock whose dedup-check execute() finds no existing row."""
     db = MagicMock()
@@ -73,7 +77,7 @@ async def test_handle_dm_synthesizes_sku_as_text_message_for_postback():
         return fake_result
 
     with patch(
-        "app.routers.instagram._get_active_client", new=AsyncMock(return_value=None),
+        "app.routers.instagram._get_active_client", new=AsyncMock(return_value=_TENANT),
     ), patch(
         "app.routers.instagram.conversation_service.get_or_create_conversation",
         new=AsyncMock(return_value=fake_conv),
@@ -116,7 +120,7 @@ async def test_handle_dm_postback_with_empty_payload_synthesizes_empty_text():
         return fake_result
 
     with patch(
-        "app.routers.instagram._get_active_client", new=AsyncMock(return_value=None),
+        "app.routers.instagram._get_active_client", new=AsyncMock(return_value=_TENANT),
     ), patch(
         "app.routers.instagram.conversation_service.get_or_create_conversation",
         new=AsyncMock(return_value=fake_conv),
@@ -146,7 +150,7 @@ async def test_handle_dm_postback_synthesizes_a_nonempty_mid_for_dedup():
     no_dup_db = _no_dup_db()
 
     with patch(
-        "app.routers.instagram._get_active_client", new=AsyncMock(return_value=None),
+        "app.routers.instagram._get_active_client", new=AsyncMock(return_value=_TENANT),
     ), patch(
         "app.routers.instagram.conversation_service.get_or_create_conversation",
         new=AsyncMock(return_value=fake_conv),
@@ -178,7 +182,7 @@ async def test_handle_dm_postback_retry_is_deduped_and_skipped():
     handle_inbound_message_mock = AsyncMock()
 
     with patch(
-        "app.routers.instagram._get_active_client", new=AsyncMock(return_value=None),
+        "app.routers.instagram._get_active_client", new=AsyncMock(return_value=_TENANT),
     ), patch(
         "app.routers.instagram.conversation_service.get_or_create_conversation",
         new=AsyncMock(return_value=fake_conv),

@@ -157,3 +157,7 @@ class Client(Base):
     # Delivery time defaults shown to customers (migration 0036)
     delivery_days_min: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=3)
     delivery_days_max: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=7)
+
+    # LLM intent router ("ROUTER_V2", migration 0061): NULL = follow the ROUTER_V2_CLIENT_IDS
+    # env default, True/False = force on/off for this client.
+    router_v2_enabled: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)

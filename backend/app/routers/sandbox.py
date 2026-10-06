@@ -196,6 +196,8 @@ async def sandbox_message(
             system_prompt=system_prompt,
             catalogue_context=catalogue_context,
             language=language,
+            client_id=getattr(client, "id", None),
+            conversation_id=getattr(conv, "id", None),
         )
     except Exception as exc:
         logger.error("Sandbox AI error: %s", exc)

@@ -150,17 +150,6 @@ async def call_tool_router(
             f"Customer message: {user_text}"
         )
 
-        def _log_usage(resp) -> None:
-            """Attribute this router call's tokens to the conversation's cost log."""
-            if conversation_id is not None and getattr(resp, "usage", None) is not None:
-                from app.services import cost_log
-                cost_log.log(
-                    conversation_id, "IN", user_text,
-                    path="LLM", model=settings.llm_model_classifier,
-                    in_tok=resp.usage.prompt_tokens, out_tok=resp.usage.completion_tokens,
-                    call_kind="classify",
-                )
-
         parsed = await llm_client.chat_json(
             settings.llm_model_classifier,
             [
@@ -168,8 +157,9 @@ async def call_tool_router(
                 {"role": "user", "content": user_msg},
             ],
             max_tokens=150,
+            purpose="tool_router",
+            conversation_id=conversation_id,
             validate=lambda d: isinstance(d.get("calls", []), list),
-            on_response=_log_usage,
         )
         if parsed is None:
             llm_health.record_failure("tool_router_invalid_json", "no valid JSON after retry")

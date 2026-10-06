@@ -16,7 +16,7 @@ import base64
 import logging
 
 import httpx
-from groq import AsyncGroq, APIStatusError
+from openai import APIStatusError
 
 from app.config import get_settings
 from app.services import llm_client, llm_health
@@ -109,8 +109,6 @@ async def analyze_product_image(image_source: bytes | str, catalogue_context: st
         llm_health.warn_vision_disabled_once()
         return None
     vision_model = settings.llm_model_vision
-    client = AsyncGroq(api_key=settings.groq_api_key)
-
     if isinstance(image_source, str):
         image_content = {
             "type": "image_url",
@@ -124,9 +122,10 @@ async def analyze_product_image(image_source: bytes | str, catalogue_context: st
         }
 
     try:
-        response = await client.chat.completions.create(
-            model=vision_model,
-            messages=[
+        response = await llm_client.llm_call(
+            "vision",
+            vision_model,
+            [
                 {
                     "role": "user",
                     "content": [
@@ -162,6 +161,7 @@ async def analyze_product_image(image_source: bytes | str, catalogue_context: st
                 }
             ],
             max_tokens=300,
+            use_breaker=False,  # a vision failure must not trip the reply-path breaker
         )
     except APIStatusError as exc:
         logger.error(

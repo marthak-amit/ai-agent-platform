@@ -12,21 +12,22 @@ from __future__ import annotations
 
 import logging
 
-from groq import Groq
-
 from app.config import get_settings
+from app.services import llm_client
 
 logger = logging.getLogger(__name__)
 
 
-def _get_groq_client() -> Groq:
-    """Return a Groq client using GROQ_API_KEY from settings."""
-    return Groq(api_key=get_settings().groq_api_key)
+def _get_groq_client():
+    """Return the Groq STT client (constructed in llm_client, the only module that builds one)."""
+    return llm_client.get_stt_client()
 
 
 async def transcribe_voice_note(
     audio_bytes: bytes,
     filename: str = "audio.ogg",
+    client_id: int | None = None,
+    conversation_id: int | None = None,
 ) -> str:
     """
     Transcribe a WhatsApp or Instagram voice note using Groq Whisper.
@@ -38,6 +39,8 @@ async def transcribe_voice_note(
         audio_bytes: Raw audio bytes (OGG/Opus from WhatsApp, MP4/AAC from Instagram).
         filename:    Filename hint including extension — Groq uses this to infer
                      the codec. Defaults to "audio.ogg" for WhatsApp voice notes.
+        client_id / conversation_id: Optional llm_usage attribution; default to the
+                     pipeline's ambient context.
 
     Returns:
         Transcribed text as a plain string. Returns a fallback message if
@@ -63,11 +66,11 @@ async def transcribe_voice_note(
     mime_type = mime_map.get(ext, "audio/ogg")
 
     try:
-        transcription = client.audio.transcriptions.create(
-            file=(filename, audio_bytes, mime_type),
-            model=get_settings().llm_model_stt,
+        transcription = await llm_client.llm_transcribe(
+            "stt", get_settings().llm_model_stt, audio_bytes, filename, mime_type,
+            client_id=client_id, conversation_id=conversation_id,
+            client=client,
             language="hi",
-            response_format="text",
             prompt=(
                 "This is a WhatsApp voice note from an Indian customer asking about "
                 "textile products, sarees, prices, or placing orders. "

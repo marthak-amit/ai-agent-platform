@@ -182,7 +182,7 @@ async def complete_embedded_signup(
             except httpx.RequestError:
                 pass
     except httpx.HTTPStatusError as exc:
-        logger.error("WhatsApp Embedded Signup token exchange failed: %s", exc.response.text)
+        logger.error("WhatsApp Embedded Signup token exchange failed: HTTP %s", exc.response.status_code)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Meta rejected the WhatsApp connection. Please try again.",

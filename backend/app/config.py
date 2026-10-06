@@ -7,9 +7,14 @@ Access the singleton via `get_settings()`.
 
 import warnings
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+# Anchored to backend/ (not the process CWD) so `uvicorn`, `alembic`, scripts and tests all read the same file.
+ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
 
 class Settings(BaseSettings):
@@ -81,7 +86,7 @@ class Settings(BaseSettings):
     # Tier 2 cheap classification + JSON extraction. Defaults to the reply model
     # until /models confirms a smaller/faster one — see scripts/check_llm_models.py.
     llm_model_classifier: str = "openai/gpt-oss-20b"
-    llm_model_vision: str = "qwen/qwen3.6-27b"         # "" = vision disabled (image matching skipped)
+    llm_model_vision: str = "qwen/qwen3.8-27b"         # "" = vision disabled (image matching skipped)
     llm_model_stt: str = "whisper-large-v3-turbo"      # voice-note transcription
     # Extra models tried (in order) when the reply model is rate-limited/missing.
     # Comma-separated; empty = fall back to llm_model_classifier only.
@@ -98,15 +103,46 @@ class Settings(BaseSettings):
     llm_breaker_threshold: int = 3
     llm_probe_interval_seconds: int = 60
 
+    # ── LLM intent router (ROUTER_V2) — the front door for non-slot messages.
+    # Client ids the router is ON for when Client.router_v2_enabled is NULL
+    # (comma-separated ids, "*" = every client, "" = none). Default: client 1 only.
+    router_v2_client_ids: str = "1"
+    router_confidence_threshold: float = 0.5   # below this the engine asks a clarifying question
+    router_max_tokens: int = 300               # visible-answer budget (reasoning headroom is added on top)
+
+    # ── LLM cost tracking (llm_usage table; see app/services/llm_usage_service.py).
+    # Prices are USD per 1M tokens as (input, output) — VERIFY against the provider's
+    # pricing page. Override as JSON: LLM_PRICE_USD_PER_1M='{"model-id": [in, out]}'.
+    # Models not listed are priced at llm_price_default_usd_per_1m (and warned about once).
+    usd_inr: float = 83.0
+    llm_price_usd_per_1m: dict[str, tuple[float, float]] = {
+        "openai/gpt-oss-20b": (0.075, 0.30),
+        "openai/gpt-oss-120b": (0.15, 0.60),
+        "llama-3.3-70b-versatile": (0.59, 0.79),
+        "llama-3.1-8b-instant": (0.05, 0.08),
+        "qwen/qwen3.8-27b": (0.29, 0.59),   # placeholder: qwen3-32b's price — verify
+        # Gemini image generation (photo enhancement): output is billed per image token (~1290/image).
+        "gemini-2.5-flash-image": (0.30, 30.0),
+    }
+    llm_price_default_usd_per_1m: tuple[float, float] = (0.59, 0.79)
+    # Whisper is billed per audio hour, not tokens (Groq bills a 10 s minimum per request).
+    llm_stt_usd_per_hour: float = 0.04
+    # Day buckets in GET /usage/llm are cut in this timezone.
+    usage_report_timezone: str = "Asia/Kolkata"
+
     # ── LLM cost-cascade tuning (tier thresholds) — tunable post-launch
     # without a redeploy. See app/routers/webhook.py ROUTE logging for tier
     # distribution measurement.
     catalog_match_threshold: float = 0.8   # Tier 1: confidence to auto-pin a single match
     catalog_suggest_threshold: float = 0.55  # Tier 1: confidence to surface a "did you mean" list
+    # Min normalized fuzzy confidence (top score / 2 points per query keyword, 0-1) for
+    # a name-match to open a numbered "which one?" menu (pending_choice_skus). Below
+    # it the message falls through to normal routing instead of showing a menu.
+    catalog_menu_min_confidence: float = 0.6
     reply_topk: int = 8         # Tier 3: max candidate SKUs injected into the prompt
     classify_cache_size: int = 2000  # Tier 2: normalized-phrase → intent LRU cache size
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(env_file=ENV_FILE, env_file_encoding="utf-8")
 
     @field_validator("database_url", mode="before")
     @classmethod

@@ -1,9 +1,13 @@
 """
-Per-conversation message cost logging.
+Per-conversation message timeline + the per-order COST REPORT.
 
-Tracks every inbound/outbound message for a conversation in memory and
-prints a cost report when an order is placed. Template replies cost ₹0;
-LLM replies are priced from the real token usage returned by Groq.
+Tracks every inbound/outbound message for a conversation in memory (which path
+produced it: template vs LLM) and prints a cost report when an order is placed.
+The report's LLM calls and ₹ figures are NOT taken from this module: they come
+from the `llm_usage` table (app/services/llm_usage_service.py), which records
+every provider call with its real token usage. This module only contributes the
+message counts. LLM-path message entries here are priced with the same
+`llm_usage_service.compute_cost_inr` so there is a single price source.
 
 Every entry is also persisted to the cost_log_entries table (see
 app/models/cost_log.py) so cost history survives restarts/deploys and is
@@ -18,29 +22,6 @@ import asyncio
 import logging
 
 logger = logging.getLogger(__name__)
-
-# Groq pricing in USD per 1M tokens (verify against
-# https://groq.com/pricing before relying on these for billing).
-_USD_TO_INR = 83.0
-
-_USD_RATES_PER_1M = {
-    "llama-3.3-70b-versatile": (0.59, 0.79),
-    "llama-3.1-8b-instant": (0.05, 0.08),
-    "meta-llama/llama-4-scout-17b-16e-instruct": (0.11, 0.34),
-    "qwen/qwen3-32b": (0.29, 0.59),
-}
-
-# ₹ per token, keyed by model name. Edit here if Groq pricing changes.
-RATES: dict[str, tuple[float, float]] = {
-    model: (
-        usd_in * _USD_TO_INR / 1_000_000,
-        usd_out * _USD_TO_INR / 1_000_000,
-    )
-    for model, (usd_in, usd_out) in _USD_RATES_PER_1M.items()
-}
-
-# Fallback rate (₹/token) for any model not in RATES.
-_DEFAULT_IN_RATE, _DEFAULT_OUT_RATE = RATES["llama-3.3-70b-versatile"]
 
 _logs: dict[int, list[dict]] = {}
 
@@ -76,8 +57,9 @@ def log(
                          path is 'LLM'.
     """
     if path == "LLM":
-        in_rate, out_rate = RATES.get(model, (_DEFAULT_IN_RATE, _DEFAULT_OUT_RATE))
-        cost = in_tok * in_rate + out_tok * out_rate
+        from app.services import llm_usage_service
+
+        cost = llm_usage_service.compute_cost_inr(model or "", in_tok, out_tok)
         _all_in_tok_samples.append(in_tok)
     else:
         cost = 0.0
@@ -120,81 +102,33 @@ async def _persist(conversation_id: int, entry: dict) -> None:
         logger.warning("cost_log persist failed for conv=%s: %s", conversation_id, exc)
 
 
-def print_report(conversation_id: int, order_number: str) -> None:
+async def print_report(db, conversation_id: int, order_number: str, order_id: int) -> str | None:
     """
-    Print the cost report table for a conversation and clear its log.
+    Log the COST REPORT for a freshly created order, sourced from `llm_usage`.
 
-    Args:
-        conversation_id: PK of the Conversation row.
-        order_number:    The ORD-xxxx number just assigned to the new order.
+    First attributes the conversation's not-yet-attributed llm_usage rows to the order, then
+    renders them with the message counts from the in-memory timeline (which is then cleared).
+    Never raises — a reporting failure must not break order creation. Returns the report text.
     """
-    entries = _logs.get(conversation_id, [])
+    from app.services import llm_usage_service
 
-    header = f" COST REPORT  {order_number} ".center(60, "=")
-    lines = [header, f"{'#':<3}{'DIR':<5}{'PATH':<16}{'TOK(in/out)':<13}{'₹':<9}TEXT"]
+    entries = _logs.pop(conversation_id, [])
+    try:
+        await llm_usage_service.attribute_to_order(db, conversation_id, order_id)
+        rows = await llm_usage_service.fetch_order_rows(db, order_id)
+    except Exception as exc:
+        logger.warning("cost report failed for order %s: %s", order_number, exc)
+        return None
 
-    running_total = 0.0
-    template_count = 0
-    llm_count = 0
-    total_in_tok = 0
-    total_out_tok = 0
-    by_kind: dict[str, dict] = {
-        "classify": {"count": 0, "cost": 0.0},
-        "extract": {"count": 0, "cost": 0.0},
-        "reply": {"count": 0, "cost": 0.0},
-    }
-
-    pending_kinds: list[str] = []  # classify/extract LLM calls since the last OUT row
-    for i, e in enumerate(entries, start=1):
-        running_total += e["cost"]
-        kind = e.get("call_kind")
-        if e["path"] == "LLM":
-            llm_count += 1
-            total_in_tok += e["in_tok"]
-            total_out_tok += e["out_tok"]
-            tok_str = f"{e['in_tok']}/{e['out_tok']}"
-            if kind in by_kind:
-                by_kind[kind]["count"] += 1
-                by_kind[kind]["cost"] += e["cost"]
-            if kind in ("classify", "extract"):
-                pending_kinds.append(kind)
-            path_label = "LLM"
-        else:
-            template_count += 1
-            tok_str = "-"
-            if pending_kinds and e["direction"] == "OUT":
-                path_label = "TEMPLATE+" + "+".join(k.upper() for k in dict.fromkeys(pending_kinds))
-            else:
-                path_label = "TEMPLATE"
-
-        if e["direction"] == "OUT":
-            pending_kinds = []
-
-        preview = e["text"].replace("\n", " ")[:60]
-        lines.append(
-            f"{i:<3}{e['direction']:<5}{path_label:<16}{tok_str:<13}{e['cost']:<9.4f}\"{preview}\""
-        )
-
-    total_messages = len(entries)
-    per_msg = running_total / total_messages if total_messages else 0.0
-
-    lines.append("-" * 60)
-    lines.append(f"messages: {total_messages}  | template: {template_count}  | LLM: {llm_count}")
-    lines.append(f"tokens: {total_in_tok} in / {total_out_tok} out")
-    lines.append(
-        f"classify calls: {by_kind['classify']['count']} (₹{by_kind['classify']['cost']:.4f}) | "
-        f"extract calls: {by_kind['extract']['count']} (₹{by_kind['extract']['cost']:.4f}) | "
-        f"reply calls: {by_kind['reply']['count']} (₹{by_kind['reply']['cost']:.4f})"
+    llm_msgs = sum(1 for e in entries if e["path"] == "LLM")
+    report = llm_usage_service.format_cost_report(
+        order_number, rows,
+        {"messages": len(entries), "template": len(entries) - llm_msgs, "llm": llm_msgs},
     )
-    lines.append(f"total: ₹{running_total:.2f}   per-msg: ₹{per_msg:.4f}")
-    lines.append("=" * 60)
-
-    report = "\n".join(lines)
     print(report)
-    logger.info("cost_report | order:%s | conv:%s | messages:%d | total:₹%.2f",
-                order_number, conversation_id, total_messages, running_total)
-
-    _logs.pop(conversation_id, None)
+    logger.info("cost_report | order:%s | conv:%s | llm_calls:%d | messages:%d | total:₹%.2f",
+                order_number, conversation_id, len(rows), len(entries), sum(r.cost_inr for r in rows))
+    return report
 
 
 def median_input_tokens() -> float:

@@ -78,15 +78,7 @@ def _get_client() -> AsyncOpenAI:
     Returns:
         AsyncOpenAI configured with GROQ_API_KEY and the Groq base URL.
     """
-    settings = get_settings()
-    return AsyncOpenAI(
-        api_key=settings.groq_api_key,
-        base_url=settings.groq_base_url,
-        # The SDK's built-in retry/backoff on 429s would stack on top of our
-        # own model-fallback loop and blow past the webhook's response budget.
-        # We handle 429s ourselves by moving to the next model immediately.
-        max_retries=0,
-    )
+    return llm_client.get_client()  # max_retries=0: we own 429 handling via the model-fallback loop
 
 
 async def generate_reply(
@@ -97,6 +89,9 @@ async def generate_reply(
     language: str | None = None,
     previous_language: str | None = None,
     response_format: dict | None = None,
+    purpose: str = "reply",
+    client_id: int | None = None,
+    conversation_id: int | None = None,
 ) -> str:
     """
     Send a user message to Groq and return the AI-generated reply.
@@ -126,6 +121,10 @@ async def generate_reply(
         previous_language: Fallback for ambiguous single-word replies when
                            language is not pre-detected (used only if language
                            is None).
+        purpose:           Label stored in llm_usage ("reply", "intent", "followup", ...).
+        client_id:         Owning client for llm_usage; defaults to the pipeline's
+                           ambient context when None.
+        conversation_id:   Conversation for llm_usage; same fallback as client_id.
 
     Returns:
         AI-generated reply text as a plain string. If every Groq model in
@@ -192,8 +191,9 @@ async def generate_reply(
         if model == _small_model and _slim_system is not None:
             _messages = [{"role": "system", "content": _slim_system}] + messages[1:]
         try:
-            response = await llm_client.chat(
-                model, _messages, max_tokens=150, temperature=0.3,
+            response = await llm_client.llm_call(
+                purpose, model, _messages, client_id, conversation_id,
+                max_tokens=150, temperature=0.3,
                 response_format=response_format, client=client,
             )
         except llm_health.LLMUnavailableError:

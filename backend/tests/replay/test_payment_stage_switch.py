@@ -162,107 +162,168 @@ async def test_purchase_intent_midpayment_prompts_switch_confirm(replay_http, re
 
 
 # ===========================================================================
-# 2. Confirm "yes" -> order switched, new amount shown
+# 2./3. Confirm "yes" / "no" with a REAL pending order (manual-UPI flow)
 # ===========================================================================
+#
+# In the manual-UPI flow an Order row (pending_payment, stock reserved, QR bound to its amount and
+# number) exists the moment the customer is in the payment stage. These scenarios therefore start by
+# really confirming an order, then switching — the old ones primed a payment-stage conversation with
+# NO order, which hid that "yes" re-sent the OLD order's instruction (old amount, old QR).
 
-async def test_switch_confirm_yes_switches_order(replay_http, replay_session):
-    """
-    "yes" in reply to the switch-confirm prompt must overwrite
-    pending_product_sku with the candidate, recompute the amount, and
-    re-send a fresh payment prompt for the NEW product.
-    """
-    phone = _phone("0002")
-    pnid = _pnid("0002")
+async def _order_in_payment(replay_session, replay_http, monkeypatch, *, suffix: str, saree_sku: str, kurti_sku: str,
+                            kurti_stock: int = 10):
+    """Confirm an order for a saree (₹850), then ask to buy a kurti (₹650): returns the ids + captured sends."""
+    import unittest.mock as mock
+
+    from tests.replay.helpers import stub_media_and_capture_sends
+
+    sent = stub_media_and_capture_sends(monkeypatch)
+    buttons = mock.AsyncMock(return_value=True)
+    monkeypatch.setattr("app.services.whatsapp_service._raw_send_button_message", buttons)
+
+    phone, pnid = _phone(suffix), _pnid(suffix)
     client, saree = await _seed(
-        replay_session, phone=phone, pnid=pnid,
-        product_sku="SAREE02", product_name="Cotton Printed Saree",
+        replay_session, phone=phone, pnid=pnid, product_sku=saree_sku, product_name="Cotton Printed Saree",
         price=850.0, stock=5, payment_method="UPI",
     )
     kurti = await _add_second_product(
-        replay_session, client_id=client.id, sku="KURTI02",
-        name="Printed Kurti Dress", price=650.0,
+        replay_session, client_id=client.id, sku=kurti_sku, name="Printed Kurti Dress", price=650.0,
+        stock=kurti_stock,
     )
-    recent = datetime.now(timezone.utc) - timedelta(hours=1)
     conv_id = await _prime_conv(
-        replay_session, phone=phone, product=saree,
-        stage="awaiting_switch_confirm",
-        pending_product_sku=saree.sku,
-        interrupted_sku=kurti.sku,
-        pending_order_quantity=1,
-        customer_name="Test Customer",
-        delivery_address="123 Test Street",
-        payment_method="UPI",
-        flow_state_at=recent,
+        replay_session, phone=phone, product=saree, stage="awaiting_final_confirmation",
+        pending_product_sku=saree.sku, pending_order_quantity=1, customer_name="Test Customer",
+        delivery_address="123 Test Street", mobile_number=phone, payment_method="UPI", summary_shown=True,
+        flow_state_at=datetime.now(timezone.utc) - timedelta(minutes=5),
     )
+    resp = await _btn(replay_http, phone, "confirm_pay", "Confirm & Pay", pnid=pnid, wamid=f"wamid.sw{suffix}.confirm")
+    assert resp.status_code == 200, resp.text
+    first_orders = await _get_orders(replay_session, conv_id)
+    assert len(first_orders) == 1 and first_orders[0].status == "pending_payment" and first_orders[0].total_amount == 850.0
 
-    from app.services import whatsapp_service
-    whatsapp_service._raw_send_text_message.reset_mock()
+    resp = await _msg(replay_http, phone, "I want to buy kurti dress", pnid=pnid)
+    assert resp.status_code == 200, resp.text
+    conv = await _get_conv(replay_session, conv_id)
+    assert conv.current_stage == "awaiting_switch_confirm" and conv.interrupted_sku == kurti.sku
+    sent["texts"].clear()
+    sent["images"].clear()
+    buttons.reset_mock()
+    return dict(phone=phone, pnid=pnid, client=client, saree=saree, kurti=kurti, conv_id=conv_id,
+                old_order=first_orders[0], sent=sent, buttons=buttons)
+
+
+async def test_switch_confirm_yes_switches_order(replay_http, replay_session, monkeypatch):
+    """
+    "yes" to the switch prompt: the old unpaid order is cancelled (stock released), the conversation moves to
+    the CONFIRM step for the new product (new amount, old variant slots dropped), and confirming creates a
+    brand-new order — own number, amount and QR — so the customer never pays for the old one.
+    """
+    from app.models.order import Order
+
+    ctx = await _order_in_payment(replay_session, replay_http, monkeypatch, suffix="0002",
+                                  saree_sku="SAREE02", kurti_sku="KURTI02")
+    phone, pnid, conv_id, kurti = ctx["phone"], ctx["pnid"], ctx["conv_id"], ctx["kurti"]
 
     resp = await _msg(replay_http, phone, "yes", pnid=pnid)
     assert resp.status_code == 200, resp.text
 
-    reply = _last_reply(whatsapp_service)
-    assert "please pay" in reply.lower()
-    assert "650" in reply, f"Expected new product's amount (650), got: {reply!r}"
-    assert "850" not in reply, f"Must not show the old amount, got: {reply!r}"
-    assert "test@upi" in reply.lower()
-
+    old = (await replay_session.execute(
+        select(Order).where(Order.id == ctx["old_order"].id).execution_options(populate_existing=True))).scalar_one()
+    assert old.status == "cancelled" and old.cancel_reason == "cancelled by customer"
     conv = await _get_conv(replay_session, conv_id)
     assert conv.pending_product_sku == kurti.sku, "Order must be switched to the candidate"
     assert conv.interrupted_sku is None
-    assert conv.current_stage == "payment"
+    assert conv.current_stage == "awaiting_final_confirmation" and conv.summary_shown is True
+
+    summary = ctx["buttons"].call_args.kwargs["body_text"]
+    assert "Printed Kurti Dress" in summary and "650" in summary, summary
+    assert "850" not in summary and "Cotton Printed Saree" not in summary, f"Must not show the old order: {summary!r}"
+    assert [b["title"] for b in ctx["buttons"].call_args.kwargs["buttons"]] == ["Confirm & Pay", "Cancel"]
+
+    # Confirming creates the NEW order with its own instruction (number, new amount, UPI id, QR + closing line).
+    ctx["sent"]["texts"].clear()
+    resp = await _btn(replay_http, phone, "confirm_pay", "Confirm & Pay", pnid=pnid, wamid="wamid.sw0002.confirm2")
+    assert resp.status_code == 200, resp.text
+    orders = await _get_orders(replay_session, conv_id)
+    assert [o.status for o in sorted(orders, key=lambda o: o.id)] == ["cancelled", "pending_payment"]
+    new = max(orders, key=lambda o: o.id)
+    assert new.total_amount == 650.0 and new.product_sku == kurti.sku and new.order_number != old.order_number
+    text = "\n".join(ctx["sent"]["texts"])
+    assert new.order_number in text and "650" in text and "test@upi" in text.lower() and "850" not in text
+    assert ctx["sent"]["images"] and "send the payment screenshot" in ctx["sent"]["images"][-1][1]
+    assert (await _get_conv(replay_session, conv_id)).current_stage == "payment"
 
 
-# ===========================================================================
-# 3. Confirm "no" -> original order/amount preserved, reminder re-sent
-# ===========================================================================
-
-async def test_switch_confirm_no_keeps_original_order(replay_http, replay_session):
+async def test_switch_confirm_no_keeps_original_order(replay_http, replay_session, monkeypatch):
     """
-    "no" (or any non-affirmative reply) must discard the switch candidate,
-    keep the original pending_product_sku/amount, and re-send the SAME
-    payment reminder as before — unchanged.
+    "no" discards the switch candidate and re-sends the SAME open order's instruction (its own number and
+    ₹850 amount) — the order stays pending_payment and nothing about the candidate leaks into the reply.
     """
-    phone = _phone("0003")
-    pnid = _pnid("0003")
-    client, saree = await _seed(
-        replay_session, phone=phone, pnid=pnid,
-        product_sku="SAREE03", product_name="Cotton Printed Saree",
-        price=850.0, stock=5, payment_method="UPI",
-    )
-    kurti = await _add_second_product(
-        replay_session, client_id=client.id, sku="KURTI03",
-        name="Printed Kurti Dress", price=650.0,
-    )
-    recent = datetime.now(timezone.utc) - timedelta(hours=1)
-    conv_id = await _prime_conv(
-        replay_session, phone=phone, product=saree,
-        stage="awaiting_switch_confirm",
-        pending_product_sku=saree.sku,
-        interrupted_sku=kurti.sku,
-        pending_order_quantity=1,
-        customer_name="Test Customer",
-        delivery_address="123 Test Street",
-        payment_method="UPI",
-        flow_state_at=recent,
-    )
+    from app.models.order import Order
 
-    from app.services import whatsapp_service
-    whatsapp_service._raw_send_text_message.reset_mock()
+    ctx = await _order_in_payment(replay_session, replay_http, monkeypatch, suffix="0003",
+                                  saree_sku="SAREE03", kurti_sku="KURTI03")
+    phone, pnid, conv_id, saree = ctx["phone"], ctx["pnid"], ctx["conv_id"], ctx["saree"]
 
     resp = await _msg(replay_http, phone, "no", pnid=pnid)
     assert resp.status_code == 200, resp.text
 
-    reply = _last_reply(whatsapp_service)
-    assert "please pay" in reply.lower()
-    assert "850" in reply, f"Expected original amount (850) preserved, got: {reply!r}"
-    assert "650" not in reply, f"Must not show the candidate's amount, got: {reply!r}"
-    assert "test@upi" in reply.lower()
+    reply = "\n".join(ctx["sent"]["texts"])
+    assert ctx["old_order"].order_number in reply, f"Expected the original order's instruction, got: {reply!r}"
+    assert "850" in reply and "650" not in reply
+    assert "test@upi" in reply.lower() and "send the payment screenshot" in reply
 
     conv = await _get_conv(replay_session, conv_id)
     assert conv.pending_product_sku == saree.sku, "Original order must be preserved"
-    assert conv.interrupted_sku is None
-    assert conv.current_stage == "payment"
+    assert conv.interrupted_sku is None and conv.current_stage == "payment"
+    old = (await replay_session.execute(
+        select(Order).where(Order.id == ctx["old_order"].id).execution_options(populate_existing=True))).scalar_one()
+    assert old.status == "pending_payment"
+
+
+async def test_switch_confirm_yes_is_declined_while_payment_proof_is_under_review(replay_http, replay_session, monkeypatch):
+    """A screenshot is already with the seller (payment_submitted): the order can't be swapped away, and the customer is told why."""
+    from app.models.order import Order
+
+    ctx = await _order_in_payment(replay_session, replay_http, monkeypatch, suffix="0005",
+                                  saree_sku="SAREE05", kurti_sku="KURTI05")
+    phone, pnid, conv_id, saree = ctx["phone"], ctx["pnid"], ctx["conv_id"], ctx["saree"]
+    old = (await replay_session.execute(select(Order).where(Order.id == ctx["old_order"].id))).scalar_one()
+    old.status = "payment_submitted"
+    await replay_session.commit()
+
+    resp = await _msg(replay_http, phone, "yes", pnid=pnid)
+    assert resp.status_code == 200, resp.text
+
+    reply = "\n".join(ctx["sent"]["texts"])
+    assert "already with our team for verification" in reply
+    conv = await _get_conv(replay_session, conv_id)
+    assert conv.pending_product_sku == saree.sku and conv.interrupted_sku is None and conv.current_stage == "payment"
+    fresh = (await replay_session.execute(
+        select(Order).where(Order.id == old.id).execution_options(populate_existing=True))).scalar_one()
+    assert fresh.status == "payment_submitted"
+
+
+async def test_switch_confirm_yes_to_a_sold_out_product_keeps_the_order(replay_http, replay_session, monkeypatch):
+    """The candidate sold out while the customer was deciding: say so, keep the original unpaid order untouched."""
+    from app.models.order import Order
+
+    ctx = await _order_in_payment(replay_session, replay_http, monkeypatch, suffix="0006",
+                                  saree_sku="SAREE06", kurti_sku="KURTI06")
+    phone, pnid, conv_id, kurti = ctx["phone"], ctx["pnid"], ctx["conv_id"], ctx["kurti"]
+    kurti.stock = 0
+    await replay_session.commit()
+
+    resp = await _msg(replay_http, phone, "yes", pnid=pnid)
+    assert resp.status_code == 200, resp.text
+
+    reply = "\n".join(ctx["sent"]["texts"])
+    assert "Printed Kurti Dress" in reply and ctx["old_order"].order_number in reply
+    conv = await _get_conv(replay_session, conv_id)
+    assert conv.pending_product_sku == ctx["saree"].sku and conv.current_stage == "payment"
+    old = (await replay_session.execute(
+        select(Order).where(Order.id == ctx["old_order"].id).execution_options(populate_existing=True))).scalar_one()
+    assert old.status == "pending_payment"
 
 
 # ===========================================================================

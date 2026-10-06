@@ -206,7 +206,7 @@ def test_get_client_uses_openai_api_key(mock_settings):
     from openai import AsyncOpenAI
     from app.services.gemini_service import _get_client
 
-    with patch("app.services.gemini_service.AsyncOpenAI") as mock_cls:
+    with patch("app.services.llm_client.AsyncOpenAI") as mock_cls:
         mock_cls.return_value = MagicMock(spec=AsyncOpenAI)
         _get_client()
         mock_cls.assert_called_once_with(

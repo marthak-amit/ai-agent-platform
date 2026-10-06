@@ -17,6 +17,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+import time
 import uuid
 from typing import Optional
 
@@ -31,7 +32,7 @@ from app.config import get_settings
 from app.models.photo_generation_log import PhotoGenerationLog
 from app.models.product_variant import ProductVariant
 from app.models.style_reference import StyleReference
-from app.services import billing_service
+from app.services import billing_service, llm_usage_service
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +167,9 @@ def _get_genai_client() -> genai.Client:
     return genai.Client(api_key=get_settings().gemini_api_key)
 
 
-async def _call_gemini_fusion(raw_bytes: bytes, style_bytes: bytes, prompt: str) -> bytes:
+async def _call_gemini_fusion(
+    raw_bytes: bytes, style_bytes: bytes, prompt: str, client_id: Optional[int] = None,
+) -> bytes:
     """
     Call Gemini 2.5 Flash Image with the style reference image + raw garment photo.
 
@@ -186,13 +189,29 @@ async def _call_gemini_fusion(raw_bytes: bytes, style_bytes: bytes, prompt: str)
         PhotoEnhancementError: If Gemini returns no image part.
     """
     client = _get_genai_client()
-    response = await client.aio.models.generate_content(
-        model=GEMINI_IMAGE_MODEL,
-        contents=[
-            prompt,
-            types.Part.from_bytes(data=style_bytes, mime_type="image/jpeg"),
-            types.Part.from_bytes(data=raw_bytes, mime_type="image/jpeg"),
-        ],
+    t0 = time.perf_counter()
+    try:
+        response = await client.aio.models.generate_content(
+            model=GEMINI_IMAGE_MODEL,
+            contents=[
+                prompt,
+                types.Part.from_bytes(data=style_bytes, mime_type="image/jpeg"),
+                types.Part.from_bytes(data=raw_bytes, mime_type="image/jpeg"),
+            ],
+        )
+    except Exception as exc:
+        await llm_usage_service.record_usage(
+            purpose="photo_enhancement", model=GEMINI_IMAGE_MODEL, success=False,
+            latency_ms=int((time.perf_counter() - t0) * 1000),
+            error_code=llm_usage_service.error_code_for(exc), client_id=client_id,
+        )
+        raise
+    meta = getattr(response, "usage_metadata", None)
+    await llm_usage_service.record_usage(
+        purpose="photo_enhancement", model=GEMINI_IMAGE_MODEL,
+        prompt_tokens=int(getattr(meta, "prompt_token_count", 0) or 0),
+        completion_tokens=int(getattr(meta, "candidates_token_count", 0) or 0),
+        latency_ms=int((time.perf_counter() - t0) * 1000), client_id=client_id,
     )
 
     candidates = response.candidates or []
@@ -345,7 +364,7 @@ async def generate_variant_photo(
     last_error: Optional[Exception] = None
     for attempt in range(2):  # one retry on failure
         try:
-            generated_bytes = await _call_gemini_fusion(raw_bytes, style_bytes, prompt)
+            generated_bytes = await _call_gemini_fusion(raw_bytes, style_bytes, prompt, client_id)
             break
         except Exception as exc:  # noqa: BLE001 — any Gemini/network failure retries once
             last_error = exc
