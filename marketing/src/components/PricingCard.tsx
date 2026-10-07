@@ -1,12 +1,18 @@
 import type { ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { dashboardSignupUrl } from "../config";
 import CTAButton from "./CTAButton";
 
 export interface PricingPlan {
+  /** billing_plans.code — sent to the dashboard as ?plan=<code>. */
+  code?: string;
   name: string;
   price: string;
   cadence?: string;
+  /** Small line under the price, e.g. "+ 18% GST". */
+  priceNote?: string;
   limit: string;
+  perConversation?: string;
   channels: string;
   badges: string[];
   features: string[];
@@ -76,17 +82,25 @@ export default function PricingCard({ plan, children }: PricingCardProps) {
         </AnimatePresence>
         {plan.cadence && <span className="text-sm text-gray-500">{plan.cadence}</span>}
       </p>
+      {plan.priceNote && <p className="mt-1 text-xs text-gray-500">{plan.priceNote}</p>}
       <ul className="mt-4 space-y-2 text-sm text-gray-600">
-        <li>{plan.limit}</li>
+        <li className="font-medium text-gray-900">{plan.limit}</li>
+        {plan.perConversation && <li>{plan.perConversation}</li>}
         <li>{plan.channels}</li>
         {plan.features.map((feature) => (
           <li key={feature}>{feature}</li>
         ))}
       </ul>
       {children}
-      <CTAButton to="/demo" className="mt-6 w-full">
-        Book a Demo
-      </CTAButton>
+      {plan.code ? (
+        <CTAButton to={dashboardSignupUrl(plan.code)} external className="mt-6 w-full">
+          Get started with {plan.name}
+        </CTAButton>
+      ) : (
+        <CTAButton to="/demo" className="mt-6 w-full">
+          Book a Demo
+        </CTAButton>
+      )}
     </motion.div>
   );
 }

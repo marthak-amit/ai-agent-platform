@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useAuth } from "../context/AuthContext";
 import { useRealtime } from "../context/RealtimeContext";
 import Logo from "./Logo";
+import BillingBanners from "./billing/BillingBanners";
 import type { CurrentUser, PermissionKey } from "../types";
 import {
   LayoutDashboard,
@@ -25,6 +26,7 @@ import {
   Brain,
   Wallet,
   AlertTriangle,
+  CreditCard,
 } from "lucide-react";
 
 const APP_BASE_URL = (import.meta.env.VITE_APP_URL as string) || "http://localhost:5173";
@@ -45,6 +47,7 @@ const NAV_ITEMS: { path: string; key: string; icon: typeof LayoutDashboard; perm
   { path: "/catalogue",     key: "nav.catalogue",     icon: Package, permission: "catalog_edit" },
   { path: "/channels",      key: "nav.channels",      icon: Link2, ownerOnly: true },
   { path: "/sandbox",       key: "nav.sandbox",       icon: FlaskConical, ownerOnly: true },
+  { path: "/billing",       key: "nav.billing",       icon: CreditCard, ownerOnly: true },
   { path: "/settings",      key: "nav.settings",      icon: Settings, ownerOnly: true },
 ];
 
@@ -241,6 +244,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           </button>
           <Logo className="h-8 w-auto" />
         </div>
+
+        {/* Subscription banners: usage / over limit / expiring / grace / expired */}
+        <BillingBanners />
 
         {/* Missing-UPI alert: a customer reached checkout with no UPI ID configured */}
         {setupAlert && (

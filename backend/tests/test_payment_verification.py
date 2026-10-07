@@ -453,7 +453,7 @@ def test_reject_template_text_matches_spec():
 
 
 @pytest.mark.parametrize("key", [
-    "pay_instruction", "pay_send_screenshot", "pay_proof_received", "pay_proof_more",
+    "pay_instruction", "pay_send_screenshot", "pay_proof_received", "pay_proof_more", "pay_awaiting_verification",
     "pay_ask_screenshot", "pay_confirmed", "pay_rejected", "pay_cancelled", "pay_unavailable",
 ])
 @pytest.mark.parametrize("lang", [
@@ -1299,3 +1299,62 @@ async def test_vision_download_uses_supplied_token_in_auth_header(monkeypatch):
     assert await vision_service.download_whatsapp_media("m") == b"img"
     assert await vision_service.download_instagram_media("https://x", access_token="tenant-ig") == b"img"
     assert headers_seen == ["Bearer tenant", "Bearer tenant", "Bearer global-wa", "Bearer global-wa", "Bearer tenant-ig"]
+
+
+async def test_reask_payment_while_under_verification_does_not_resend_upi_instruction(monkeypatch):
+    """A customer chatting while their screenshot awaits seller approval hears 'under verification', not the UPI instruction."""
+    from types import SimpleNamespace
+
+    from app.services import order_pipeline, payment_verification_service as pvs
+
+    order = SimpleNamespace(status="payment_submitted", order_number="ORD-2026-0045")
+
+    async def _open(db, conv_id):
+        """Pretend the conversation has a payment_submitted order."""
+        return order
+
+    monkeypatch.setattr(pvs, "find_open_payment_order", _open)
+    client = SimpleNamespace(upi_id="riyasarees@paytm")
+    conv = SimpleNamespace(id=1, customer_name="Amit", pending_product_sku=None)
+    text = await order_pipeline._render_order_reply(
+        "reask_payment", conv, None, client, None, {}, None, None, False, "english",
+    )
+    assert "ORD-2026-0045" in text and "verif" in text.lower()
+    assert "Pay to UPI ID" not in text
+
+
+async def test_detach_only_when_order_is_under_review(monkeypatch):
+    """The payment stage is released only for a payment_submitted order; pending_payment and bare 'cancel' keep it."""
+    from types import SimpleNamespace
+
+    from app.services import order_pipeline, payment_verification_service as pvs
+
+    resets: list[int] = []
+    state = {"order": SimpleNamespace(status="payment_submitted", order_number="ORD-1")}
+
+    async def _open(db, conv_id):
+        """Return the scripted open order."""
+        return state["order"]
+
+    async def _reset(db, conv_id, conv):
+        """Record the slot reset."""
+        resets.append(conv_id)
+        conv.current_stage = "greeting"
+
+    monkeypatch.setattr(pvs, "find_open_payment_order", _open)
+    monkeypatch.setattr(order_pipeline, "_reset_order_slots_after_completion", _reset)
+    client, msg = SimpleNamespace(id=1), SimpleNamespace(type="text")
+
+    def _conv():
+        """Conversation parked in the payment stage."""
+        return SimpleNamespace(id=7, current_stage="payment")
+
+    assert await order_pipeline.detach_conversation_from_order_under_review(None, _conv(), client, msg, "KU76326") is True
+    assert resets == [7]
+    assert await order_pipeline.detach_conversation_from_order_under_review(None, _conv(), client, msg, "cancel") is False
+    state["order"] = SimpleNamespace(status="pending_payment", order_number="ORD-1")
+    assert await order_pipeline.detach_conversation_from_order_under_review(None, _conv(), client, msg, "hi") is False
+    state["order"] = SimpleNamespace(status="payment_submitted", order_number="ORD-1")
+    browsing = SimpleNamespace(id=8, current_stage="greeting")
+    assert await order_pipeline.detach_conversation_from_order_under_review(None, browsing, client, msg, "hi") is False
+    assert resets == [7]

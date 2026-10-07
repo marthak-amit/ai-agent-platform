@@ -40,6 +40,10 @@ export const createRoot = ViteReactSSG({
           lazy: async () => ({ Component: (await import("./pages/RefundPolicy")).default }),
         },
         {
+          path: "shipping-policy",
+          lazy: async () => ({ Component: (await import("./pages/ShippingPolicy")).default }),
+        },
+        {
           path: "contact",
           lazy: async () => ({ Component: (await import("./pages/Contact")).default }),
         },

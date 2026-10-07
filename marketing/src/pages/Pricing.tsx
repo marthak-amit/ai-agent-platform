@@ -1,18 +1,12 @@
-import { useState } from "react";
 import { Link } from "react-router-dom";
 import SEO, { SITE_URL } from "../components/SEO";
 import CTAButton from "../components/CTAButton";
-import PricingCard, { type PricingPlan } from "../components/PricingCard";
-import BillingToggle, { type BillingCycle } from "../components/BillingToggle";
+import PricingCard from "../components/PricingCard";
 import PageCrossLinks from "../components/PageCrossLinks";
 import Reveal from "../components/motion/Reveal";
 import { StaggerGroup, StaggerItem } from "../components/motion/StaggerGroup";
-import { monthlyPlans, yearlyPlans } from "../content/site";
-
-function toNumericPrice(plan: PricingPlan): number | null {
-  const digits = plan.price.replace(/[^0-9]/g, "");
-  return digits ? Number(digits) : null;
-}
+import { plans } from "../content/site";
+import { GST_LINE, PLAN_SPECS, PRICES_INCLUDE_GST, PRICE_SUMMARY } from "../content/plans";
 
 const productJsonLd = {
   "@context": "https://schema.org",
@@ -21,31 +15,30 @@ const productJsonLd = {
   description:
     "AI sales agent for WhatsApp, Instagram, and website chat — built for fashion retailers in India.",
   brand: { "@type": "Brand", name: "SellerTalk24" },
-  offers: monthlyPlans
-    .map((plan) => {
-      const price = toNumericPrice(plan);
-      if (price === null) return null;
-      return {
-        "@type": "Offer",
-        name: `${plan.name} (monthly)`,
-        price: String(price),
-        priceCurrency: "INR",
-        url: `${SITE_URL}/pricing`,
-        availability: "https://schema.org/InStock",
-      };
-    })
-    .filter(Boolean),
+  // Enterprise is "Contact us" (no price), so it is intentionally not an Offer.
+  offers: PLAN_SPECS.map((plan) => ({
+    "@type": "Offer",
+    name: `${plan.name} — ${plan.conversationsPerMonth} conversations/month`,
+    sku: plan.code,
+    price: String(plan.priceInr),
+    priceCurrency: "INR",
+    priceSpecification: {
+      "@type": "PriceSpecification",
+      price: String(plan.priceInr),
+      priceCurrency: "INR",
+      valueAddedTaxIncluded: PRICES_INCLUDE_GST,
+    },
+    url: `${SITE_URL}/pricing`,
+    availability: "https://schema.org/InStock",
+  })),
 };
 
 export default function Pricing() {
-  const [cycle, setCycle] = useState<BillingCycle>("monthly");
-  const plans = cycle === "monthly" ? monthlyPlans : yearlyPlans;
-
   return (
     <>
       <SEO
         title="Pricing — WhatsApp & Instagram AI Sales Agent Plans | SellerTalk24"
-        description="Transparent monthly pricing for SellerTalk24's WhatsApp & Instagram AI sales agent: Starter ₹1,499/mo, Growth ₹3,499/mo, Pro ₹6,999/mo. Built for fashion retailers in India."
+        description={`Simple monthly pricing for SellerTalk24's WhatsApp & Instagram AI sales agent: ${PRICE_SUMMARY} per month. ${GST_LINE}. Built for fashion retailers in India.`}
         path="/pricing"
         jsonLd={productJsonLd}
       />
@@ -59,16 +52,14 @@ export default function Pricing() {
           <Link to="/features" className="font-semibold text-brand-primaryDark underline">
             order flow
           </Link>{" "}
-          — cart, address, and confirmation — over the channels you need. Plans are activated by
-          our team during onboarding.
+          — cart, address, and confirmation — over the channels you need. Pick a plan, pay securely
+          online, and your AI sales agent is live as soon as the payment goes through.
         </Reveal>
       </section>
 
       <section className="mx-auto max-w-7xl px-4 py-12 sm:px-6 lg:px-8">
         <h2 className="text-center text-2xl font-bold text-gray-900">Choose your plan</h2>
-        <Reveal as="div" className="mt-6">
-          <BillingToggle value={cycle} onChange={setCycle} />
-        </Reveal>
+        <p className="mt-2 text-center text-sm text-gray-500">{GST_LINE}</p>
         <StaggerGroup className="mt-8 grid gap-6 sm:grid-cols-3">
           {plans.map((plan) => (
             <StaggerItem key={plan.name}>
@@ -79,6 +70,7 @@ export default function Pricing() {
 
         <div className="mt-6 rounded-2xl border border-gray-200 bg-gray-50 p-8 text-center">
           <h2 className="text-xl font-semibold text-gray-900">Enterprise</h2>
+          <p className="mt-1 text-2xl font-bold text-gray-900">Contact us</p>
           <p className="mt-2 text-gray-600">Custom message volume, dedicated onboarding, and priority support.</p>
           <CTAButton to="/demo" className="mt-6">
             Let's talk
@@ -86,8 +78,17 @@ export default function Pricing() {
         </div>
 
         <p className="mt-6 text-center text-sm text-gray-500">
-          Billing is currently set up manually by our team — plan upgrades are not yet self-serve.
-          Yearly billing is available on request.
+          Plans are prepaid for 30 days and renewed manually — no auto-debit. Payments by UPI, cards,
+          netbanking and wallets via Razorpay. A conversation is one customer within a 24-hour window,
+          with unlimited messages. See our{" "}
+          <Link to="/refund-policy" className="font-semibold text-brand-primaryDark underline">
+            refund policy
+          </Link>{" "}
+          and{" "}
+          <Link to="/faq" className="font-semibold text-brand-primaryDark underline">
+            FAQ
+          </Link>
+          .
         </p>
       </section>
 

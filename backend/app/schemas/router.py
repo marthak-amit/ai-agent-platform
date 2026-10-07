@@ -108,6 +108,15 @@ class RouterArgs(BaseModel):
     value: Optional[str] = None
     order_id: Optional[str] = None
     focus: Optional[str] = None
+    want_photo: bool = False
+
+    @field_validator("want_photo", mode="before")
+    @classmethod
+    def _clean_want_photo(cls, value: Any) -> bool:
+        """The model may emit true/"true"/"yes"/1; anything else (null, "", "no") means no photo was asked for."""
+        if isinstance(value, str):
+            return value.strip().lower() in ("true", "yes", "1")
+        return bool(value) if isinstance(value, (bool, int)) else False
 
     @field_validator("filters", mode="before")
     @classmethod

@@ -72,7 +72,9 @@ export default function Privacy() {
             <h2 className="text-xl font-semibold text-gray-900">5. Third-party sharing</h2>
             <p className="mt-3">
               We share data only with Meta Platforms, Inc., as required to deliver messages through the
-              WhatsApp Business Platform and Instagram Messaging API. We do not sell customer or merchant
+              WhatsApp Business Platform and Instagram Messaging API, and with Razorpay (our payment
+              processor) for subscription payments — Razorpay handles your card, UPI or bank details
+              directly and we do not store them. [TODO: legal review of third-party list.] We do not sell customer or merchant
               data to advertisers or other third parties, and we do not share data across merchant accounts.
             </p>
           </div>

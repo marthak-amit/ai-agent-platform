@@ -51,6 +51,7 @@ from app.services import (
 )
 from app.services.order_pipeline import InboundContext, handle_inbound_message
 from app.services.send_gate import MessageKind
+from app.services.tenant_routing import find_active_client_by_channel_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/instagram", tags=["instagram"])
@@ -112,7 +113,8 @@ async def _get_active_client(db: AsyncSession, instagram_account_id: str | None 
     Looks up Client.instagram_account_id only. There is deliberately NO
     fallback: an absent, unknown or inactive account id returns None and the
     caller drops the event. Routing an unmapped account to "the first active
-    client" would hand one tenant's customers to another tenant.
+    client" would hand one tenant's customers to another tenant. An account id
+    mapped to more than one active client is ambiguous and is also dropped.
 
     Args:
         db:                    Active async DB session.
@@ -121,23 +123,9 @@ async def _get_active_client(db: AsyncSession, instagram_account_id: str | None 
     Returns:
         The matching active Client, or None when nothing maps to this id.
     """
-    if not instagram_account_id:
-        logger.warning("Instagram webhook without an account id — dropped (no tenant mapping).")
-        return None
-
-    result = await db.execute(
-        select(Client).where(
-            Client.instagram_account_id == instagram_account_id,
-            Client.is_active == True,  # noqa: E712
-        ).limit(1)
+    return await find_active_client_by_channel_id(
+        db, Client.instagram_account_id, instagram_account_id, label="instagram_account_id"
     )
-    client = result.scalar_one_or_none()
-    if client is None:
-        logger.warning(
-            "No active client mapped to instagram_account_id=%s — webhook dropped.",
-            instagram_account_id,
-        )
-    return client
 
 
 @router.post("", status_code=status.HTTP_200_OK)
@@ -260,10 +248,15 @@ async def _handle_dm(
     )
 
     client = await _get_active_client(db, ig_user_id)
+    if client is None:
+        # Defence in depth: the dispatcher already drops unmapped accounts, but a
+        # conversation must never be created without an owning tenant.
+        logger.warning("No active client for Instagram DM %s — dropped.", mid or "")
+        return {"status": "unmapped_account"}
 
     try:
         conv = await conversation_service.get_or_create_conversation(
-            db, sender_igsid, channel="instagram", client_id=client.id if client else None
+            db, sender_igsid, channel="instagram", client_id=client.id
         )
     except Exception as exc:
         logger.error("DB error creating conversation for Instagram %s: %s", sender_igsid, exc)

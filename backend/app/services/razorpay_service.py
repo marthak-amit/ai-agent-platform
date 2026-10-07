@@ -1,12 +1,10 @@
 """
 Razorpay payment service.
 
-Creates UPI QR codes via the Razorpay REST API and verifies
-incoming payment webhook signatures.
+Creates UPI QR codes via the Razorpay REST API. (The old POST /payments/webhook
+receiver and its signature check were removed; SellerTalk24 plan billing has its own
+webhook at POST /billing/webhook — see app/services/billing/webhook.py.)
 """
-
-import hashlib
-import hmac
 
 import httpx
 
@@ -59,26 +57,3 @@ async def create_qr_code(
         )
         response.raise_for_status()
         return response.json()
-
-
-def verify_webhook_signature(payload_bytes: bytes, signature_header: str) -> bool:
-    """
-    Validate the X-Razorpay-Signature header on incoming payment webhooks.
-
-    Razorpay signs the raw request body with HMAC-SHA256 using the webhook
-    secret (RAZORPAY_KEY_SECRET).
-
-    Args:
-        payload_bytes:    Raw bytes of the POST request body.
-        signature_header: Value of the X-Razorpay-Signature header.
-
-    Returns:
-        True if the signature is valid, False otherwise.
-    """
-    settings = get_settings()
-    computed = hmac.new(
-        key=settings.razorpay_key_secret.encode("utf-8"),
-        msg=payload_bytes,
-        digestmod=hashlib.sha256,
-    ).hexdigest()
-    return hmac.compare_digest(computed, signature_header)

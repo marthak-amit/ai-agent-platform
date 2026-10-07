@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import {
   addProduct,
   completeWhatsAppEmbeddedSignup,
@@ -13,6 +14,10 @@ import { api } from "../api/client";
 import { useAuth } from "../context/AuthContext";
 import { launchWhatsAppEmbeddedSignup } from "../utils/whatsappEmbeddedSignup";
 import { SandboxUI } from "./Sandbox";
+import CheckoutModals from "../components/billing/CheckoutModals";
+import PlanPicker from "../components/billing/PlanPicker";
+import { useBilling } from "../context/BillingContext";
+import { useRazorpayCheckout } from "../hooks/useRazorpayCheckout";
 import {
   CheckCircle2,
   ChevronRight,
@@ -138,6 +143,7 @@ const STEP_LABELS = [
   "WhatsApp",
   "Instagram",
   "Test",
+  "Plan",
   "Done",
 ];
 const TOTAL_STEPS = STEP_LABELS.length;
@@ -205,6 +211,11 @@ function SkipLink({
 export default function Onboarding() {
   const { client, refreshProfile } = useAuth();
   const navigate = useNavigate();
+  const { t } = useTranslation();
+  const { state: billingState } = useBilling();
+  // Step 7 — "Choose plan". Not persisted: the backend marks onboarding complete at step 7, so this step only
+  // sits between "Test" (persisted as 6) and the summary (persisted as 7 on "Go to Dashboard").
+  const checkout = useRazorpayCheckout();
 
   // Initialise wizard step from server state — resume if partially complete
   const [step, setStep] = useState<number>(() => {
@@ -485,7 +496,7 @@ export default function Onboarding() {
       if (client?.catalogue_slug) {
         setCatUrl(`${window.location.origin}/shop/${client.catalogue_slug}`);
       }
-      setStep(8); // "done" screen
+      setStep(9); // "done" screen
     } catch {
       // Still navigate even if step update fails
       navigate("/dashboard");
@@ -1062,8 +1073,45 @@ export default function Onboarding() {
             </div>
           )}
 
-          {/* ── STEP 7: Ready summary ─────────────────────────────────────── */}
+          {/* ── STEP 7: Choose plan ───────────────────────────────────────── */}
           {step === 7 && (
+            <div className="flex flex-col gap-5">
+              <div>
+                <h2 className="text-2xl font-bold text-gray-900">{t("billing.onboarding_title")}</h2>
+                <p className="text-sm text-gray-400 mt-1">{t("billing.onboarding_desc")}</p>
+              </div>
+
+              {billingState?.subscription && (
+                <div className="rounded-xl bg-brand-primary/10 border border-brand-primary/30 px-4 py-3 text-sm text-brand-primaryDark font-medium">
+                  {t("billing.onboarding_subscribed", { plan: billingState.subscription.plan.name })}
+                </div>
+              )}
+
+              <PlanPicker checkout={checkout} />
+
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setStep(6)}
+                  disabled={checkout.busy}
+                  className="flex-1 border border-gray-200 text-gray-700 rounded-xl py-2.5 text-sm font-medium hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                >
+                  {t("billing.onboarding_back")}
+                </button>
+                <button
+                  onClick={() => setStep(8)}
+                  disabled={checkout.busy}
+                  className="flex-1 flex items-center justify-center gap-2 bg-brand-primaryDark text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors"
+                >
+                  {billingState?.subscription ? t("billing.onboarding_continue") : t("billing.onboarding_skip")}
+                  <ChevronRight size={16} />
+                </button>
+              </div>
+              <CheckoutModals checkout={checkout} />
+            </div>
+          )}
+
+          {/* ── STEP 8: Ready summary ─────────────────────────────────────── */}
+          {step === 8 && (
             <div className="flex flex-col gap-6">
               <div className="text-center">
                 <div className="text-5xl mb-3">🎉</div>
@@ -1155,8 +1203,8 @@ export default function Onboarding() {
             </div>
           )}
 
-          {/* ── STEP 8: Navigate after done ──────────────────────────────── */}
-          {step === 8 && (
+          {/* ── STEP 9: Navigate after done ──────────────────────────────── */}
+          {step === 9 && (
             <div className="flex flex-col items-center gap-4 py-8">
               <Loader2 size={32} className="animate-spin text-brand-primaryDark" />
               <p className="text-sm text-gray-500">Taking you to your dashboard...</p>

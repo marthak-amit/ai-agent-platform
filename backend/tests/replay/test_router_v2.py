@@ -430,6 +430,153 @@ async def test_hallucinated_sku_is_dropped_never_executed(replay_http, replay_se
     assert conv.pending_product_sku in (None, "KU30001")
 
 
+# ── 2b. photo requests / repeated replies ────────────────────────────────────
+
+def capture_images(monkeypatch) -> list[tuple[str, str | None]]:
+    """Record every (url, caption) the WhatsApp adapter sends as an image (the gate/Meta call is stubbed)."""
+    sent: list[tuple[str, str | None]] = []
+
+    async def _fake_send_image(to, url, caption=None, **_kw):
+        """Pretend the image was delivered."""
+        sent.append((url, caption))
+        return {"messages": [{"id": "wamid.img"}]}
+
+    async def _no_watermark(client_id, sku, url):
+        """Skip R2/watermarking: send the stored URL as is."""
+        return url
+
+    monkeypatch.setattr("app.routers._whatsapp_adapter.outbound.send_image", _fake_send_image)
+    monkeypatch.setattr("app.services.storage_service.get_watermarked_image_url", _no_watermark)
+    return sent
+
+
+async def _set_image(session, sku: str, url: str) -> None:
+    """Give a seeded product a photo."""
+    from app.models.product import Product
+
+    product = (await session.execute(select(Product).where(Product.sku == sku))).scalar_one()
+    product.image_url = url
+    await session.commit()
+
+
+async def test_images_with_a_pinned_product_sends_its_photo_not_the_same_card_again(replay_http, replay_session, router, monkeypatch):
+    """'Imagea' (typo) with a pinned product that HAS a photo → the photo goes out; the router flag isn't even needed."""
+    phone, pnid = ph("0040")
+    captured = capture_all(monkeypatch)
+    images = capture_images(monkeypatch)
+    client, _, _ = await seed_shop(replay_session, phone, pnid)
+    await _set_image(replay_session, "KU30001", "https://img.example.com/ku30001.jpg")
+    await prime_conv(replay_session, phone=phone, client_id=client.id, stage="product_inquiry",
+                     pending_product_sku="KU30001", last_shown_sku="KU30001")
+    router.when("imagea", "show_product", {"sku": "KU30001"})       # model forgot want_photo: engine still sees the typo
+
+    reply = await say(replay_http, captured, phone, pnid, "Imagea")
+
+    assert images == [("https://img.example.com/ku30001.jpg", None)]
+    assert "Printed Kurti [KU30001] — ₹450" in reply
+
+
+async def test_photo_request_for_a_product_without_a_photo_says_so_instead_of_repeating_the_card(replay_http, replay_session, router, monkeypatch):
+    """No image on file → an honest 'no photo yet' line; the reply differs from the card shown before."""
+    phone, pnid = ph("0041")
+    captured = capture_all(monkeypatch)
+    images = capture_images(monkeypatch)
+    client, _, _ = await seed_shop(replay_session, phone, pnid)
+    conv_id = await prime_conv(replay_session, phone=phone, client_id=client.id, stage="product_inquiry",
+                               pending_product_sku="KU30001", last_shown_sku="KU30001")
+    router.when("images", "show_product", {"sku": "KU30001", "want_photo": True})
+
+    reply = await say(replay_http, captured, phone, pnid, "Images")
+
+    assert images == []
+    assert "don't have a photo of Printed Kurti" in reply and "Printed Kurti [KU30001] — ₹450" in reply
+    assert (await get_conv(replay_session, conv_id)).pending_product_sku == "KU30001"
+
+
+async def test_photo_request_misread_as_smalltalk_with_a_pinned_product_is_promoted_to_show_product(replay_http, replay_session, router, monkeypatch):
+    """The model calls 'photos please' smalltalk → the engine promotes it (pinned product + photo wording)."""
+    phone, pnid = ph("0042")
+    captured = capture_all(monkeypatch)
+    images = capture_images(monkeypatch)
+    client, _, _ = await seed_shop(replay_session, phone, pnid)
+    await _set_image(replay_session, "KU30001", "https://img.example.com/ku30001.jpg")
+    await prime_conv(replay_session, phone=phone, client_id=client.id, stage="product_inquiry",
+                     pending_product_sku="KU30001", last_shown_sku="KU30001")
+    router.when("photos please", "smalltalk", confidence=0.6, reply_hint="Sure!")
+
+    await say(replay_http, captured, phone, pnid, "photos please")
+
+    assert len(images) == 1
+
+
+async def test_give_me_images_after_a_search_list_sends_the_photos_of_the_listed_products(replay_http, replay_session, router, monkeypatch):
+    """A search list + 'give me images' → the same list WITH the products' photos (captioned), not a bare repeat."""
+    phone, pnid = ph("0043")
+    captured = capture_all(monkeypatch)
+    images = capture_images(monkeypatch)
+    client, _, _ = await seed_shop(replay_session, phone, pnid)
+    await _set_image(replay_session, "SR20001", "https://img.example.com/sr20001.jpg")
+    await _set_image(replay_session, "SR20003", "https://img.example.com/sr20003.jpg")
+    router.when("sarees under 1000", "search_catalog", {"query": "saree", "filters": {"max_price": 1000}})
+    router.when("give me images", "search_catalog", {"query": "saree", "filters": {"max_price": 1000}, "want_photo": True})
+
+    first = await say(replay_http, captured, phone, pnid, "sarees under 1000")
+    assert images == []
+    second = await say(replay_http, captured, phone, pnid, "Give me images")
+
+    assert [u for u, _ in images] == ["https://img.example.com/sr20001.jpg", "https://img.example.com/sr20003.jpg"]
+    assert images[0][1] == "Green Cotton Saree [SR20001] — ₹899"
+    assert "Green Cotton Saree [SR20001]" in first and "Green Cotton Saree [SR20001]" in second
+
+
+async def test_resending_the_pinned_sku_mid_order_keeps_the_slots_and_shows_the_card(replay_http, replay_session, router, monkeypatch):
+    """Customer is at 'Quantity?' for KU30001 and sends 'KU30001' again → card + the same question, nothing reset."""
+    phone, pnid = ph("0044")
+    captured = capture_all(monkeypatch)
+    images = capture_images(monkeypatch)
+    client, _, _ = await seed_shop(replay_session, phone, pnid)
+    await _set_image(replay_session, "KU30001", "https://img.example.com/ku30001.jpg")
+    conv_id = await prime_conv(replay_session, phone=phone, client_id=client.id, stage="order_collection",
+                               pending_product_sku="KU30001", last_shown_sku="KU30001",
+                               customer_name="Asha", delivery_address="1 Test Road")
+
+    reply = await say(replay_http, captured, phone, pnid, "KU30001")
+
+    assert "Printed Kurti [KU30001] — ₹450" in reply and "Quantity" in reply
+    assert [u for u, _ in images] == ["https://img.example.com/ku30001.jpg"]
+    conv = await get_conv(replay_session, conv_id)
+    assert conv.pending_product_sku == "KU30001" and conv.customer_name == "Asha" and conv.delivery_address == "1 Test Road"
+
+
+async def test_switching_product_mid_order_shows_the_new_products_card_not_just_the_next_question(replay_http, replay_session, router, monkeypatch):
+    """At 'Quantity?' for the kurti the customer sends a saree SKU → switched, with the saree's card before the question."""
+    phone, pnid = ph("0045")
+    captured = capture_all(monkeypatch)
+    capture_images(monkeypatch)
+    client, _, _ = await seed_shop(replay_session, phone, pnid)
+    conv_id = await prime_conv(replay_session, phone=phone, client_id=client.id, stage="order_collection",
+                               pending_product_sku="KU30001", last_shown_sku="KU30001")
+    router.when("sr20002", "show_product", {"sku": "SR20002"})
+
+    reply = await say(replay_http, captured, phone, pnid, "SR20002")
+
+    assert "Okay, switching to this product:" in reply and "Red Silk Saree [SR20002] — ₹2,499" in reply
+    assert (await get_conv(replay_session, conv_id)).pending_product_sku == "SR20002"
+
+
+def test_wants_photo_matches_typos_but_not_ordinary_words():
+    """Typo-tolerant photo detection ('imagea', 'photoo') without catching 'pick', '100 pic' or 'image' lookalikes."""
+    from app.schemas.router import RouterDecision
+    from app.services.router_actions import wants_photo
+
+    for text in ("Images", "Imagea", "give me photoo", "send picture", "photos"):
+        assert wants_photo(None, text), text
+    for text in ("pick one", "100 pic leva che", "imagine that", "2", "Green", "KU30001"):
+        assert not wants_photo(None, text), text
+    flagged = RouterDecision.model_validate({"action": "show_product", "args": {"want_photo": "true"}, "confidence": 0.9})
+    assert wants_photo(flagged, "dikhao")
+
+
 # ── 3. orders: start / answer / change / cancel ──────────────────────────────
 
 async def test_start_order_pins_product_and_asks_first_slot(replay_http, replay_session, router, monkeypatch):

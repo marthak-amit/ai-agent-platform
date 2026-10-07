@@ -1,4 +1,5 @@
 import type { PricingPlan } from "../components/PricingCard";
+import { GST_LINE_SHORT, PLAN_SPECS, formatInr, perConversation } from "./plans";
 
 export const steps = [
   {
@@ -54,44 +55,34 @@ export const featureGroups = [
   },
 ];
 
-export const monthlyPlans: PricingPlan[] = [
-  {
-    name: "Starter",
-    price: "₹1,499",
-    cadence: "/mo",
-    limit: "~800 conversations/mo",
-    channels: "Instagram",
-    badges: ["IG"],
-    features: ["Order flow (cart → address → confirm)"],
-  },
-  {
-    name: "Growth",
-    price: "₹3,499",
-    cadence: "/mo",
-    limit: "~2,000 conversations/mo",
-    channels: "WhatsApp + Instagram",
-    badges: ["WA", "IG"],
-    features: ["Order flow (cart → address → confirm)", "Broadcast / marketing templates"],
-    highlighted: true,
-  },
-  {
-    name: "Pro",
-    price: "₹6,999",
-    cadence: "/mo",
-    limit: "~6,000 conversations/mo",
-    channels: "WhatsApp + Instagram + Website widget",
-    badges: ["WA", "IG"],
-    features: ["Order flow (cart → address → confirm)", "Broadcast / marketing templates", "Priority support"],
-  },
-];
+const BASE_FEATURES = ["Order flow (cart → address → confirm)"];
 
-export const yearlyPlans: PricingPlan[] = monthlyPlans.map((plan) => ({
-  ...plan,
-  price: "Contact us",
-  cadence: undefined,
+export const plans: PricingPlan[] = PLAN_SPECS.map((spec) => ({
+  code: spec.code,
+  name: spec.name,
+  price: formatInr(spec.priceInr),
+  cadence: "/month",
+  priceNote: GST_LINE_SHORT,
+  limit: `${spec.conversationsPerMonth.toLocaleString("en-IN")} conversations/month`,
+  perConversation: `≈ ${perConversation(spec)} per conversation`,
+  channels: spec.instagram ? "WhatsApp + Instagram" : "WhatsApp",
+  badges: spec.instagram ? ["WA", "IG"] : ["WA"],
+  features: [
+    ...BASE_FEATURES,
+    ...(spec.name !== "Starter" ? ["Broadcast / marketing templates"] : []),
+    ...(spec.name === "Pro" ? ["Priority support"] : []),
+  ],
+  highlighted: spec.popular,
 }));
 
-export const faqs = [
+export interface Faq {
+  question: string;
+  answer: string;
+  /** Optional in-site link rendered after the answer (the JSON-LD answer stays plain text). */
+  link?: { to: string; label: string };
+}
+
+export const faqs: Faq[] = [
   {
     question: "What is SellerTalk24?",
     answer:
@@ -100,7 +91,7 @@ export const faqs = [
   {
     question: "Which channels does it support?",
     answer:
-      "WhatsApp and Instagram are both live today. A website chat widget is also available on the Pro plan for stores that want chat on their own site.",
+      "WhatsApp is included in every plan, and Instagram is included in Growth and Pro. A website chat widget is also available — ask us during onboarding if you'd like chat on your own site.",
   },
   {
     question: "How does setup work?",
@@ -112,7 +103,7 @@ export const faqs = [
     answer: "SellerTalk24 can converse in English, Hindi, and Hinglish.",
   },
   {
-    question: "What payment methods are supported?",
+    question: "Which payment methods can my customers use?",
     answer: "Cash on delivery (COD), UPI, and bank transfer — set up per your preferences.",
   },
   {
@@ -121,9 +112,30 @@ export const faqs = [
       "Conversations and order data are stored securely and scoped to your account only. We don't share your catalogue or customer data across merchants.",
   },
   {
-    question: "How do plans get activated?",
+    question: "How does billing work?",
     answer:
-      "Plan upgrades are currently activated manually by our team during onboarding rather than self-serve billing — book a demo and we'll get you set up on the right plan.",
+      "Plans are prepaid for 30 days and you pay from your dashboard — the plan activates as soon as the payment goes through. We don't auto-debit your account: you renew manually, and we remind you before your plan expires. You can upgrade at any time and get credit for the unused part of your current plan; moving to a smaller plan takes effect after your current period ends.",
+  },
+  {
+    question: "What is a conversation?",
+    answer:
+      "A conversation is one customer chatting with your AI agent on one channel within a 24-hour window. Inside that window the number of messages is unlimited — a shopper who sends 50 messages still counts as one conversation. If the same shopper comes back after the 24 hours are over, that starts a new conversation.",
+  },
+  {
+    question: "What if I exceed my limit?",
+    answer:
+      "Your AI sales agent keeps working — we never switch it off mid-month because you went over. We'll show you alerts in your dashboard as you approach and pass your limit, and nudge you to upgrade so you stay within your plan next cycle.",
+  },
+  {
+    question: "What payment methods can I use to pay for my plan?",
+    answer:
+      "You can pay with UPI, credit and debit cards, netbanking, and popular wallets. Payments are processed securely by Razorpay — we never see or store your card details.",
+  },
+  {
+    question: "What is your refund policy?",
+    answer:
+      "Plans are prepaid for 30 days and are generally non-refundable once charged. The full terms, including cancellation, are in our Refund & Cancellation Policy.",
+    link: { to: "/refund-policy", label: "Read the Refund & Cancellation Policy" },
   },
   {
     question: "Who is SellerTalk24 for?",

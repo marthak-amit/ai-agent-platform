@@ -1,13 +1,15 @@
+import { Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 
 interface FAQItemProps {
   question: string;
   answer: string;
+  link?: { to: string; label: string };
   open: boolean;
   onToggle: () => void;
 }
 
-export default function FAQItem({ question, answer, open, onToggle }: FAQItemProps) {
+export default function FAQItem({ question, answer, link, open, onToggle }: FAQItemProps) {
   return (
     <div className="border-b border-gray-200 py-4">
       <button
@@ -36,6 +38,11 @@ export default function FAQItem({ question, answer, open, onToggle }: FAQItemPro
             className="overflow-hidden"
           >
             <p className="mt-3 text-sm text-gray-600">{answer}</p>
+            {link && (
+              <Link to={link.to} className="mt-2 inline-block text-sm font-semibold text-brand-primaryDark underline">
+                {link.label}
+              </Link>
+            )}
           </motion.div>
         )}
       </AnimatePresence>

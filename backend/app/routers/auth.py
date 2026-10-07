@@ -514,7 +514,18 @@ async def update_me(
     if body.whatsapp_access_token is not None:
         current_client.whatsapp_access_token = body.whatsapp_access_token
     if body.gst_number is not None:
-        current_client.gst_number = body.gst_number
+        from app.services.billing.invoices import is_valid_gstin, normalise_gstin
+
+        gstin = normalise_gstin(body.gst_number)
+        # Only validate a CHANGED value: the dashboard re-sends the stored one on every profile save, and
+        # older free-text entries must not start failing those saves. The GSTIN decides CGST/SGST vs IGST on
+        # invoices, so a new value has to be a real, well-formed one.
+        if gstin != normalise_gstin(current_client.gst_number) and gstin is not None and not is_valid_gstin(gstin):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid GSTIN. Expected 15 characters, e.g. 24ABCDE1234F1Z5.",
+            )
+        current_client.gst_number = gstin
     if body.business_address is not None:
         current_client.business_address = body.business_address
     if body.hsn_code is not None:

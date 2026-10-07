@@ -68,6 +68,7 @@ class DenyReason(str, Enum):
     BLOCKED = "blocked"
     WINDOW_CLOSED = "window_closed"
     NO_TEMPLATE_AVAILABLE = "no_template_available"
+    SUBSCRIPTION_INACTIVE = "subscription_inactive"   # client has no plan past grace (billing enforcement)
 
 
 #: Kinds that are business-initiated (no fresh inbound behind them) and must
@@ -78,6 +79,15 @@ PROACTIVE_KINDS = frozenset({
     MessageKind.BROADCAST_MARKETING,
     MessageKind.UTILITY_TEMPLATE,
     MessageKind.MANUAL_AGENT,
+})
+
+
+#: Automated, business-initiated kinds that stop for a client with no plan past grace. Replies to a
+#: customer's own message, transactional templates, human sends and owner alerts are never blocked.
+AUTOMATED_KINDS = frozenset({
+    MessageKind.NUDGE,
+    MessageKind.FOLLOWUP,
+    MessageKind.BROADCAST_MARKETING,
 })
 
 
@@ -192,6 +202,8 @@ async def check_send(
       4. PIPELINE_REPLY → ALLOW: an inbound message by definition opens or
          refreshes the 24h window. For channel="instagram_comment" (Private
          Reply) the window is instead 7 days from the comment timestamp.
+      4b. Automated kinds (NUDGE / FOLLOWUP / BROADCAST_MARKETING) → DENY(SUBSCRIPTION_INACTIVE) for a
+         client with no plan past grace, when billing enforcement is on.
       5. Proactive kinds (NUDGE / FOLLOWUP / BROADCAST_MARKETING /
          UTILITY_TEMPLATE / MANUAL_AGENT): inside the 24h window → ALLOW
          free-form; outside (or no inbound evidence) → ALLOW_TEMPLATE_ONLY.
@@ -257,6 +269,16 @@ async def check_send(
                 return _deny(DenyReason.WINDOW_CLOSED, detail="comment_older_than_7d")
             return SendDecision(Verdict.ALLOW)
         return SendDecision(Verdict.ALLOW)
+
+    # ── Rule 4b: automation stops for a client with no plan past grace ─────
+    # (only when SELLERTALK24_BILLING_ENFORCE is on; fails open — see billing.entitlement)
+    if message_kind in AUTOMATED_KINDS and db is not None:
+        owner_id = client_id if client_id is not None else getattr(customer, "client_id", None)
+        if owner_id is not None:
+            from app.services.billing import entitlement
+
+            if not await entitlement.automation_allowed(db, owner_id):
+                return _deny(DenyReason.SUBSCRIPTION_INACTIVE)
 
     # ── Rule 5: proactive sends must pass the 24h window ───────────────────
     window_open = await _is_window_open(db, customer, conversation_id)

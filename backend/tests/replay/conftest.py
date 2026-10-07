@@ -122,10 +122,13 @@ async def _clean_replay_db(replay_db_url):
         table_names = await conn.run_sync(
             lambda sync_conn: sa.inspect(sync_conn).get_table_names()
         )
-        # `plans` is reference/config data seeded once by the migration
-        # (like alembic_version), not per-test state — truncating it would
-        # leave every test's first plan lookup querying an empty table.
-        tables = [t for t in table_names if t not in ("alembic_version", "plans")]
+        # `plans` / `billing_plans` are reference/config data seeded once by
+        # the migrations (like alembic_version), not per-test state —
+        # truncating them would leave every test's first plan lookup querying
+        # an empty table.
+        tables = [
+            t for t in table_names if t not in ("alembic_version", "plans", "billing_plans")
+        ]
         if tables:
             quoted = ", ".join(f'"{t}"' for t in tables)
             await conn.execute(sa.text(f"TRUNCATE TABLE {quoted} RESTART IDENTITY CASCADE"))

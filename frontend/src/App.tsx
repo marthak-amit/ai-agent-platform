@@ -2,14 +2,17 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "./context/AuthContext";
 import { RealtimeProvider } from "./context/RealtimeContext";
 import { ToastProvider } from "./context/ToastContext";
+import { BillingProvider } from "./context/BillingContext";
 import ProtectedRoute from "./components/ProtectedRoute";
 import RequirePermission from "./components/RequirePermission";
+import PlanParamCapture from "./components/PlanParamCapture";
 import Login from "./pages/Login";
 import Onboarding from "./pages/Onboarding";
 import Dashboard from "./pages/Dashboard";
 import Conversations from "./pages/Conversations";
 import Leads from "./pages/Leads";
 import Settings from "./pages/Settings";
+import Billing from "./pages/Billing";
 import Catalogue from "./pages/Catalogue";
 import Analytics from "./pages/Analytics";
 // import Campaigns from "./pages/Campaigns"; // hidden — see HIDDEN_FEATURES.md
@@ -30,6 +33,8 @@ export default function App() {
       <BrowserRouter>
        <ToastProvider>
         <RealtimeProvider>
+        <BillingProvider>
+        <PlanParamCapture />
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route
@@ -130,6 +135,16 @@ export default function App() {
             }
           />
           <Route
+            path="/billing"
+            element={
+              <ProtectedRoute>
+                <RequirePermission ownerOnly>
+                  <Billing />
+                </RequirePermission>
+              </ProtectedRoute>
+            }
+          />
+          <Route
             path="/settings/payment"
             element={
               <ProtectedRoute>
@@ -175,6 +190,7 @@ export default function App() {
           <Route path="/accept-invite" element={<AcceptInvite />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
+        </BillingProvider>
         </RealtimeProvider>
        </ToastProvider>
       </BrowserRouter>

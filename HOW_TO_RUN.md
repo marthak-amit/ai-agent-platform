@@ -574,7 +574,7 @@ ai-agent-platform/
 │   │   ├── routers/             ← HTTP endpoints — one file per feature area
 │   │   │   ├── webhook.py       ← POST /webhook — receives WhatsApp messages from Meta
 │   │   │   ├── instagram.py     ← POST /instagram/webhook — receives Instagram DMs
-│   │   │   ├── payment.py       ← POST /payments/qr and POST /payments/webhook (Razorpay)
+│   │   │   ├── payment.py       ← POST /payments/qr (legacy Razorpay QR; its webhook receiver was removed — plan billing uses POST /billing/webhook)
 │   │   │   ├── auth.py          ← POST /auth/register and POST /auth/login (JWT)
 │   │   │   ├── onboarding.py    ← POST /onboarding/setup-agent (first-time wizard)
 │   │   │   ├── catalogue.py     ← CRUD for /catalogue/products

@@ -19,18 +19,19 @@ export default function RefundPolicy() {
           <div>
             <h2 className="text-xl font-semibold text-gray-900">1. Subscription fees are non-refundable</h2>
             <p className="mt-3">
-              SellerTalk24 subscription fees are billed in advance for each billing cycle (monthly or
-              yearly, as selected) and are non-refundable once charged, including for any unused portion of
-              a billing cycle.
+              SellerTalk24 plans are prepaid for a 30-day period and the fee is non-refundable once
+              charged, including for any unused portion of the period. [TODO: legal review of this
+              wording.]
             </p>
           </div>
 
           <div>
             <h2 className="text-xl font-semibold text-gray-900">2. Cancellation</h2>
             <p className="mt-3">
-              You may cancel your subscription at any time. Cancellation stops future billing but does not
-              refund the current billing period — you retain access to the service through the end of the
-              period already paid for. To cancel, contact us via our{" "}
+              Plans do not renew automatically, so there is nothing to cancel to avoid a future charge —
+              your plan simply ends when the paid period ends unless you renew it. You retain access to
+              the service through the end of the period already paid for. For any other cancellation
+              request, contact us via our{" "}
               <a href="/contact" className="text-brand-primaryDark underline">
                 Contact page
               </a>

@@ -8,6 +8,7 @@ Access the singleton via `get_settings()`.
 import warnings
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal, Optional
 
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -39,6 +40,49 @@ class Settings(BaseSettings):
     meta_whatsapp_config_id: str = ""
     razorpay_key_id: str = ""
     razorpay_key_secret: str = ""
+    # SellerTalk24 prepaid billing (Razorpay Orders API + Checkout.js).
+    # RAZORPAY_WEBHOOK_SECRET signs webhooks (Razorpay Dashboard → Webhooks); it is NOT the API secret.
+    razorpay_webhook_secret: str = ""
+    # "test" or "live"; must match the key prefix (rzp_test_ / rzp_live_). Mock billing is refused in live.
+    razorpay_mode: Literal["test", "live"] = "test"
+    # None = auto (mock when the Razorpay key id/secret are empty); True/False force it.
+    sellertalk24_billing_mock: Optional[bool] = None
+    # Plan prices in billing_plans are GST-EXCLUSIVE ("₹4,599 + GST"), so the default is False.
+    # True would treat them as GST-inclusive and back-calculate GST out of the price.
+    prices_include_gst: bool = False
+    gst_rate_bps: int = Field(default=1800, ge=0, le=10000)  # basis points: 1800 = 18%
+    # GST state code of the seller (24 = Gujarat). A client whose GSTIN starts with the same
+    # code (or who has no GSTIN) is intra-state -> CGST+SGST; any other state -> IGST.
+    seller_state_code: str = "24"
+    # Seller identity printed on every tax invoice (Settings -> .env). SELLER_GSTIN / SELLER_ADDRESS must be set
+    # before invoices go to real customers; an unset GSTIN prints as "—" and logs a warning.
+    seller_legal_name: str = "SellerTalk24"
+    seller_gstin: str = ""
+    seller_address: str = ""
+    seller_state_name: str = "Gujarat"
+    invoice_prefix: str = "ST24"
+    # Outbound email (billing notifications). "console" (default) only logs the message — nothing leaves the
+    # server — so dev/staging never emails real customers by accident. "smtp" needs SMTP_HOST (+ credentials).
+    # Operator address for billing incidents (amount mismatch, webhook signature burst, reconcile activations).
+    # Empty = the alert is only logged (ERROR). Sent through EMAIL_PROVIDER like every other billing email.
+    billing_alert_email: str = ""
+    email_provider: str = "console"
+    email_from: str = "SellerTalk24 <billing@sellertalk24.com>"
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_use_tls: bool = True
+    # Days a client keeps full service after its last paid period ends (or after signup, if it never
+    # subscribed). The bot works and the dashboard shows a red banner during grace.
+    grace_days: int = Field(default=3, ge=0, le=60)
+    # Master switch for the hard stop: when False (default) an EXPIRED client is only flagged on the
+    # dashboard and in logs — the bot is never restricted. Flip to True once existing clients have
+    # subscribed (or been marked billing_exempt), otherwise every client without a plan goes quiet.
+    sellertalk24_billing_enforce: bool = False
+    # Keep the old calendar-month conversation counter (billing_service.record_conversation_activity)
+    # running next to the new per-period counter for one release, and log both for comparison.
+    billing_legacy_counting: bool = True
     cloudinary_cloud_name: str = ""
     cloudinary_api_key: str = ""
     cloudinary_api_secret: str = ""
@@ -143,6 +187,27 @@ class Settings(BaseSettings):
     classify_cache_size: int = 2000  # Tier 2: normalized-phrase → intent LRU cache size
 
     model_config = SettingsConfigDict(env_file=ENV_FILE, env_file_encoding="utf-8")
+
+    @field_validator("sellertalk24_billing_mock", mode="before")
+    @classmethod
+    def blank_billing_mock_means_auto(cls, v):
+        """Treat an empty SELLERTALK24_BILLING_MOCK= line as unset (auto), not a parse error."""
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
+    @field_validator("razorpay_mode", mode="before")
+    @classmethod
+    def normalise_razorpay_mode(cls, v):
+        """Accept RAZORPAY_MODE in any case/spacing ("Live ", "TEST")."""
+        return v.strip().lower() if isinstance(v, str) else v
+
+    @property
+    def billing_mock_enabled(self) -> bool:
+        """True when billing must use the mock gateway: forced by the flag, else when keys are empty."""
+        if self.sellertalk24_billing_mock is not None:
+            return self.sellertalk24_billing_mock
+        return not (self.razorpay_key_id and self.razorpay_key_secret)
 
     @field_validator("database_url", mode="before")
     @classmethod

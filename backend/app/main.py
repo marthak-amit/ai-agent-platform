@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.log_redaction import configure_log_hygiene
-from app.routers import admin, analytics, auth, briefing, campaigns, catalogue, catalogue_public, channels, conversations, customers, followup, instagram, integrations, knowledge, leads, onboarding, orders, payment, payment_settings, payment_verification, photo_enhancement, plans, realtime, sandbox, team, usage, webhook, whatsapp_signup, widget
+from app.routers import admin, admin_billing, analytics, auth, billing, billing_health, briefing, campaigns, catalogue, catalogue_public, channels, conversations, customers, followup, instagram, integrations, knowledge, leads, onboarding, orders, payment, payment_settings, payment_verification, photo_enhancement, plans, realtime, sandbox, team, usage, webhook, whatsapp_signup, widget
 from app.scheduler import start_scheduler, stop_scheduler
 from app.services import channel_status, llm_health
 
@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Start background jobs on startup; shut them down cleanly on exit."""
     _startup_checks()
+    await _migration_head_check()
     await _schema_drift_check()
     await _check_whatsapp_token()
     await _check_instagram_token()
@@ -44,6 +45,18 @@ async def lifespan(app: FastAPI):
     start_scheduler()
     yield
     stop_scheduler()
+
+
+async def _migration_head_check() -> None:
+    """Log ERROR if `alembic current` != head (never blocks startup; see services/migration_check.py)."""
+    from app.db import _get_session_factory
+    from app.services import migration_check
+
+    try:
+        async with _get_session_factory()() as db:
+            await migration_check.check_migrations_at_head(db)
+    except Exception:
+        logger.exception("MIGRATION CHECK FAILED: could not open a database session")
 
 
 async def _schema_drift_check() -> None:
@@ -279,6 +292,9 @@ app.include_router(onboarding.router)
 app.include_router(catalogue.router)
 app.include_router(photo_enhancement.router)
 app.include_router(plans.router)
+app.include_router(billing.router)
+app.include_router(admin_billing.router)
+app.include_router(billing_health.router)
 app.include_router(usage.router)
 app.include_router(conversations.router)
 app.include_router(leads.router)

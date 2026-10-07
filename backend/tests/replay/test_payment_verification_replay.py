@@ -774,3 +774,71 @@ async def test_unfetchable_qr_still_delivers_the_screenshot_instruction(replay_h
     assert sent["images"] == []
     assert "not publicly fetchable" in caplog.text
     assert conv.id
+
+
+# ── 11. order under review must not lock the conversation ────────────────────
+
+async def test_order_under_review_does_not_lock_conversation_in_payment_replies(
+    replay_http, replay_session, monkeypatch
+):
+    """After the screenshot, 'Hey' and a new product SKU get normal answers — never payment templates; order untouched."""
+    from app.models.conversation import Conversation
+    from app.models.order import Order
+    from app.models.product import Product
+
+    sent = stub_media_and_capture_sends(monkeypatch)
+    client, product, user, phone, pnid = await _seed(replay_session, "0011")
+    conv, order = await _pending_order(replay_session, client, product, phone)
+    replay_session.add(Product(
+        client_id=client.id, name="Kurti Rani", sku="KU76326", price=799.0, stock=5, is_active=True,
+    ))
+    await replay_session.commit()
+    await send_image(replay_http, phone, phone_number_id=pnid)
+    assert (await _fresh(replay_session, Order, order.id)).status == "payment_submitted"
+
+    from app.models.message import Message
+
+    async def _bot_replies() -> list[str]:
+        """Assistant messages persisted so far (covers text and button replies)."""
+        rows = await _all(replay_session, Message, Message.conversation_id == conv.id,
+                          Message.direction == "outbound", order=Message.id)
+        return [m.content for m in rows]
+
+    all_replies: list[str] = []
+    for text in ("Hey", "KU76326"):
+        before = len(await _bot_replies())
+        resp = await send_message(replay_http, phone, text, phone_number_id=pnid)
+        assert resp.status_code == 200, resp.text
+        reply = "\n".join((await _bot_replies())[before:])
+        assert reply, f"no reply to {text!r}"
+        assert "Pay to UPI ID" not in reply and "verifying it" not in reply and "verification" not in reply, reply
+        assert order.order_number not in reply, reply
+        all_replies.append(reply)
+
+    assert "Kurti Rani" in all_replies[1], "SKU message must show the requested product"
+    conv = await _fresh(replay_session, Conversation, conv.id)
+    assert conv.current_stage != "payment"
+    assert (await _fresh(replay_session, Order, order.id)).status == "payment_submitted"
+
+
+async def test_unpaid_order_new_sku_offers_switch_instead_of_payment_reminder(replay_http, replay_session, monkeypatch):
+    """While an order awaits payment, a different SKU / product name asks 'switch?' — it is not met with the UPI instruction."""
+    from app.models.message import Message
+    from app.models.order import Order
+    from app.models.product import Product
+
+    stub_media_and_capture_sends(monkeypatch)
+    client, product, user, phone, pnid = await _seed(replay_session, "0012")
+    conv, order = await _pending_order(replay_session, client, product, phone)
+    replay_session.add(Product(
+        client_id=client.id, name="Kurti Rani", sku="KU76326", price=799.0, stock=5, is_active=True,
+    ))
+    await replay_session.commit()
+
+    resp = await send_message(replay_http, phone, "KU76326", phone_number_id=pnid)
+    assert resp.status_code == 200, resp.text
+    rows = await _all(replay_session, Message, Message.conversation_id == conv.id,
+                      Message.direction == "outbound", order=Message.id)
+    reply = rows[-1].content
+    assert "Switch to Kurti Rani" in reply and "Pay to UPI ID" not in reply, reply
+    assert (await _fresh(replay_session, Order, order.id)).status == "pending_payment", "nothing changes until 'yes'"

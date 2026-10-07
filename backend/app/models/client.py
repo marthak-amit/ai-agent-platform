@@ -84,6 +84,11 @@ class Client(Base):
     # True = enforcement keeps using the snapshot terms indefinitely instead
     # of refreshing from the live plan on cycle rollover.
     plan_grandfathered: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # SellerTalk24 billing: True = never restricted by subscription state (house account, legacy/free
+    # clients). Set for client_id=1 by migration 0063; everything else is billed.
+    billing_exempt: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
     # "YYYY-MM" of the last conv-limit 80% nudge sent, so it fires once per cycle.
     conv_limit_warned_period: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 

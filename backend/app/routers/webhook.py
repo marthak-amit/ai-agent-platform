@@ -142,7 +142,8 @@ async def _get_client_by_phone_number_id(db: AsyncSession, phone_number_id: str 
     There is deliberately NO fallback: an absent, unknown or inactive
     phone_number_id returns None and the caller drops the event. Routing an
     unmapped number to "the first active client" would hand one tenant's
-    customers (and their messages) to another tenant.
+    customers (and their messages) to another tenant. A phone_number_id mapped
+    to more than one active client is ambiguous and is also dropped.
 
     Args:
         db:              Active async DB session.
@@ -153,23 +154,11 @@ async def _get_client_by_phone_number_id(db: AsyncSession, phone_number_id: str 
         The matching active Client, or None when nothing maps to this id.
     """
     from app.models.client import Client
+    from app.services.tenant_routing import find_active_client_by_channel_id
 
-    if not phone_number_id:
-        logger.warning("WhatsApp webhook without a phone_number_id — dropped (no tenant mapping).")
-        return None
-
-    result = await db.execute(
-        select(Client).where(
-            Client.whatsapp_phone_number_id == phone_number_id,
-            Client.is_active == True,  # noqa: E712
-        ).limit(1)
+    return await find_active_client_by_channel_id(
+        db, Client.whatsapp_phone_number_id, phone_number_id, label="phone_number_id"
     )
-    client = result.scalar_one_or_none()
-    if client is None:
-        logger.warning(
-            "No active client mapped to phone_number_id=%s — webhook dropped.", phone_number_id
-        )
-    return client
 
 
 # NOTE: _get_system_prompt, _record_usage, _get_catalogue_context, and

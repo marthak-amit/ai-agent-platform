@@ -3,15 +3,13 @@ Razorpay payment router.
 
 Handles:
 - POST /payments/qr          : create a UPI QR code for a customer
-- POST /payments/webhook      : handle Razorpay payment success/failure events
 - GET  /payments/{id}/invoice : download invoice PDF for a paid payment
 """
 
-import json
 import logging
 import os
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -19,8 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.models.payment import Payment
-from app.services import invoice_service, outbound, razorpay_service
-from app.services.send_gate import MessageKind
+from app.services import invoice_service, razorpay_service
 
 # Invoices are saved locally under backend/invoices/ and served via a URL.
 _INVOICES_DIR = os.path.join(
@@ -30,19 +27,6 @@ os.makedirs(_INVOICES_DIR, exist_ok=True)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/payments", tags=["payments"])
-
-
-async def _find_pending_order(db: AsyncSession, phone_number: str):
-    """Return the newest awaiting-payment Order for this customer phone, or None."""
-    from app.models.order import Order
-
-    result = await db.execute(
-        select(Order).where(
-            Order.customer_phone == phone_number,
-            Order.status == "payment_pending",
-        ).order_by(Order.created_at.desc()).limit(1)
-    )
-    return result.scalar_one_or_none()
 
 
 async def _owner_for_order(db: AsyncSession, order):
@@ -121,235 +105,6 @@ async def create_payment_qr(
         "short_url": qr_data.get("short_url"),
         "amount": body.amount,
     }
-
-
-@router.post("/webhook", status_code=status.HTTP_200_OK)
-async def razorpay_webhook(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-) -> dict:
-    """
-    Handle incoming Razorpay payment webhooks.
-
-    Verifies X-Razorpay-Signature and marks the matching payment as paid.
-
-    Args:
-        request: Raw request (signature validation requires raw bytes).
-        db:      Injected async DB session.
-
-    Returns:
-        {"status": "ok"} on success.
-
-    Raises:
-        HTTPException 401: If signature validation fails.
-    """
-    raw_body = await request.body()
-    signature = request.headers.get("X-Razorpay-Signature", "")
-
-    if not razorpay_service.verify_webhook_signature(raw_body, signature):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid Razorpay signature.",
-        )
-
-    try:
-        event = json.loads(raw_body)
-        event_type = event.get("event", "")
-        payment_entity = event.get("payload", {}).get("payment", {}).get("entity", {})
-        qr_code_id = payment_entity.get("acquirer_data", {}).get("upi_transaction_id")
-        razorpay_payment_id = payment_entity.get("id")
-
-        if event_type == "payment.captured":
-            result = await db.execute(
-                select(Payment).where(Payment.qr_code_id == qr_code_id)
-            )
-            payment = result.scalar_one_or_none()
-            if payment:
-                payment.status = "paid"
-                payment.razorpay_payment_id = razorpay_payment_id
-                await db.commit()
-                logger.info("Payment %s marked as paid.", qr_code_id)
-
-                # ── Mark linked order as paid ──────────────────────────────
-                linked_order = None
-                try:
-                    linked_order = await _find_pending_order(db, payment.phone_number)
-                    if linked_order:
-                        from datetime import datetime, timezone
-                        linked_order.status = "paid"
-                        linked_order.payment_status = "paid"
-                        linked_order.razorpay_payment_id = razorpay_payment_id
-                        linked_order.paid_at = datetime.now(timezone.utc)
-                        await db.commit()
-                        logger.info("Order %s marked paid via Razorpay.", linked_order.order_number)
-                except Exception as exc:
-                    logger.warning("Could not mark linked order as paid: %s", exc)
-
-                owner = await _owner_for_order(db, linked_order)
-                if owner is None:
-                    logger.warning(
-                        "Payment %s captured but no tenant could be resolved from a linked order — "
-                        "customer/owner notifications and invoice skipped.",
-                        qr_code_id,
-                    )
-                    return {"status": "ok"}
-
-                # ── Notify customer ────────────────────────────────────────
-                try:
-                    amount_inr = payment.amount / 100
-                    await outbound.send_text(
-                        payment.phone_number,
-                        (
-                            f"Payment received! ✅\n"
-                            f"₹{amount_inr:.0f} confirmed. Your order is being packed "
-                            f"and will be dispatched shortly. 🛍️\n\n"
-                            f"Thank you for shopping with us! 🙏"
-                        ),
-                        kind=MessageKind.UTILITY_TEMPLATE,
-                        db=db,
-                        client_id=owner.id if owner else None,
-                        phone_number_id=owner.whatsapp_phone_number_id if owner else None,
-                        access_token=owner.whatsapp_access_token if owner else None,
-                    )
-                except Exception as exc:
-                    logger.warning("Customer payment confirmation WhatsApp failed: %s", exc)
-
-                # ── Notify owner ───────────────────────────────────────────
-                try:
-                    if owner and owner.phone:
-                        amount_inr = payment.amount / 100
-                        order_ref = linked_order.order_number if linked_order else (qr_code_id or "?")
-                        await outbound.send_owner_text(
-                            owner.phone,
-                            (
-                                f"💰 Payment received!\n"
-                                f"━━━━━━━━━━━━━━━\n"
-                                f"Order: {order_ref}\n"
-                                f"Amount: ₹{amount_inr:.0f}\n"
-                                f"From: {payment.phone_number}\n"
-                                f"Razorpay ID: {razorpay_payment_id or 'N/A'}\n"
-                                f"━━━━━━━━━━━━━━━\n"
-                                f"Please pack and dispatch. 📦"
-                            ),
-                        )
-                except Exception as exc:
-                    logger.warning("Owner payment alert failed: %s", exc)
-
-                # ── Generate GST invoice ───────────────────────────────────
-                try:
-                    amount_inr = payment.amount / 100
-                    products_for_invoice = [
-                        {
-                            "name": payment.description or "Product",
-                            "qty": 1,
-                            "price": amount_inr / 1.05,  # back-calculate pre-GST price
-                            "hsn": owner.hsn_code if owner else "5007",
-                        }
-                    ]
-
-                    pdf_bytes = invoice_service.generate_gst_invoice(
-                        order_id=razorpay_payment_id or qr_code_id or str(payment.id),
-                        business_name=owner.business_name if owner else "Riya Sarees",
-                        business_gst=owner.gst_number if (owner and owner.gst_number) else "N/A",
-                        business_address=owner.business_address if (owner and owner.business_address) else "",
-                        customer_name=payment.customer_name or payment.phone_number,
-                        customer_phone=payment.phone_number,
-                        customer_address=payment.customer_address or "",
-                        products=products_for_invoice,
-                        payment_method="UPI",
-                    )
-
-                    filename = f"invoice_{payment.id}.pdf"
-                    filepath = os.path.join(_INVOICES_DIR, filename)
-                    with open(filepath, "wb") as f:
-                        f.write(pdf_bytes)
-
-                    invoice_url = f"/invoices/{filename}"
-                    payment.invoice_url = invoice_url
-                    await db.commit()
-
-                    await outbound.send_text(
-                        payment.phone_number,
-                        (
-                            f"Your GST invoice is ready 🧾\n"
-                            f"Download: {invoice_url}\n"
-                            f"Order ID: {razorpay_payment_id or qr_code_id}"
-                        ),
-                        kind=MessageKind.UTILITY_TEMPLATE,
-                        db=db,
-                        client_id=owner.id if owner else None,
-                        phone_number_id=owner.whatsapp_phone_number_id if owner else None,
-                        access_token=owner.whatsapp_access_token if owner else None,
-                    )
-                    logger.info("Invoice generated and sent for payment %s.", payment.id)
-                except Exception as exc:
-                    logger.error("Invoice generation error for payment %s: %s", payment.id, exc)
-
-        elif event_type == "payment.failed":
-            result = await db.execute(
-                select(Payment).where(Payment.qr_code_id == qr_code_id)
-            )
-            payment = result.scalar_one_or_none()
-            if payment:
-                payment.status = "failed"
-                payment.razorpay_payment_id = razorpay_payment_id
-                await db.commit()
-                logger.warning(
-                    "Payment %s failed. Razorpay ID: %s. Customer: %s.",
-                    qr_code_id,
-                    razorpay_payment_id,
-                    payment.phone_number,
-                )
-
-                owner = await _owner_for_order(
-                    db, await _find_pending_order(db, payment.phone_number)
-                )
-                if owner is None:
-                    logger.warning(
-                        "Payment %s failed but no tenant could be resolved from a linked order — "
-                        "notifications skipped.",
-                        qr_code_id,
-                    )
-                    return {"status": "ok"}
-
-                # Notify customer
-                try:
-                    amount_inr = payment.amount // 100
-                    await outbound.send_text(
-                        payment.phone_number,
-                        (
-                            f"Hi! Your payment of ₹{amount_inr} could not be processed. "
-                            f"Please try again or contact us for assistance."
-                        ),
-                        kind=MessageKind.UTILITY_TEMPLATE,
-                        db=db,
-                        client_id=owner.id if owner else None,
-                        phone_number_id=owner.whatsapp_phone_number_id if owner else None,
-                        access_token=owner.whatsapp_access_token if owner else None,
-                    )
-                except Exception as exc:
-                    logger.error(
-                        "Could not send payment-failed WhatsApp to %s: %s",
-                        payment.phone_number, exc,
-                    )
-
-                # Notify business owner
-                try:
-                    if owner and owner.whatsapp_number:
-                        await outbound.send_owner_text(
-                            owner.whatsapp_number,
-                            (
-                                f"Payment failed: ₹{amount_inr} from {payment.phone_number}. "
-                                f"Razorpay ID: {razorpay_payment_id or 'unknown'}."
-                            ),
-                        )
-                except Exception as exc:
-                    logger.error("Could not send payment-failed owner alert: %s", exc)
-
-    except Exception as exc:
-        logger.error("Error processing Razorpay webhook: %s", exc)
-
-    return {"status": "ok"}
 
 
 @router.get("/{payment_id}/invoice", status_code=status.HTTP_200_OK)

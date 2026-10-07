@@ -13,7 +13,10 @@ export default function Login() {
   const { signIn } = useAuth();
   const navigate = useNavigate();
 
-  const [mode, setMode] = useState<Mode>("login");
+  // The marketing site links here with ?mode=register so "Get started" opens the create-account form.
+  const [mode, setMode] = useState<Mode>(() =>
+    new URLSearchParams(window.location.search).get("mode") === "register" ? "register" : "login",
+  );
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [businessName, setBusinessName] = useState("");

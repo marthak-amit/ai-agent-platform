@@ -42,14 +42,17 @@ export default function Terms() {
           <div>
             <h2 className="text-xl font-semibold text-gray-900">3. Subscription &amp; billing</h2>
             <p className="mt-3">
-              Plans are billed on a recurring basis (monthly or yearly, as selected) at the price shown on
-              our{" "}
-              <a href="/#pricing" className="text-brand-primaryDark underline">
+              Plans are prepaid for a 30-day period at the price shown on our{" "}
+              <a href="/pricing" className="text-brand-primaryDark underline">
                 Pricing page
               </a>{" "}
-              at the time of purchase. [TODO: fill payment provider/billing mechanics — e.g. Razorpay
-              subscription, auto-renewal, invoicing cadence.] Plan changes or upgrades are currently
-              activated manually by our team during onboarding. We charge no markup or hidden fee on top of
+              at the time of purchase, plus GST where applicable. Payments are processed by Razorpay (UPI,
+              cards, netbanking and wallets). Plans do not renew automatically: you renew from your
+              dashboard before the period ends. Upgrading mid-period gives credit for the unused portion
+              of your current plan; a move to a smaller plan takes effect after the current period ends.
+              If you exceed your plan's conversation limit your service continues, and we may ask you to
+              upgrade. [TODO: legal review of the billing terms above — grace period, expiry behaviour,
+              invoicing, price-change notice.] We charge no markup or hidden fee on top of
               Meta's own messaging costs; any Meta conversation-based charges are separate and billed by
               Meta or passed through at cost, with 0% markup from SellerTalk24.
             </p>

@@ -18,6 +18,7 @@ the caller to run the old keyword detectors instead.
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import logging
@@ -392,7 +393,79 @@ def closest_alternatives(all_products: list, query: str, f, k: int = 3) -> list:
     return sorted(pool, key=_key)[:k]
 
 
-async def _list_reply(rc, lang: str, header_keys: list[str], products: list, *, route: str, footer: bool = True):
+_PHOTO_WORDS = ("image", "images", "photo", "photos", "picture", "pictures", "foto", "fotos")
+_MAX_PHOTOS = 3
+
+
+def wants_photo(decision: RouterDecision | None, user_text: str) -> bool:
+    """
+    True when the customer asked to SEE pictures.
+
+    The model's `want_photo` flag is trusted, but the check is also done deterministically (the legacy
+    image-request regex plus a typo-tolerant match on 5+ letter words: "imagea", "photoo") so a
+    mis-transcribed "images" can never silently turn into a repeat of the previous text card.
+    """
+    if decision is not None and decision.args.want_photo:
+        return True
+    if op._is_image_request(user_text or ""):
+        return True
+    return any(
+        len(tok) >= 5 and difflib.get_close_matches(tok, _PHOTO_WORDS, n=1, cutoff=0.85)
+        for tok in re.findall(r"[a-z]+", (user_text or "").lower())
+    )
+
+
+async def _photo_images(rc, products: list, *, captions: bool) -> list[tuple[str, str | None]]:
+    """(url, caption) pairs for the products that have a usable image (watermarked at send time), max 3."""
+    images: list[tuple[str, str | None]] = []
+    for p in products:
+        url = getattr(p, "image_url", None)
+        if not op._is_valid_image_url(url):
+            continue
+        try:
+            url = await op.storage_service.get_watermarked_image_url(rc.client.id, p.sku or "", url) or url
+        except Exception as exc:  # noqa: BLE001 — fall back to the stored image
+            logger.error("router watermark error sku=%s: %s", p.sku, exc)
+        images.append((url, _product_line(p) if captions else None))
+        if len(images) >= _MAX_PHOTOS:
+            break
+    return images
+
+
+def _product_card(lang: str, product) -> str:
+    """'Name [SKU] — ₹price. Available colors… sizes…' from the product's in-stock variant rows."""
+    opts = intent_router.in_stock_options(product)
+    options_line = ""
+    if opts["colors"]:
+        options_line += _t(lang, "rt_opt_colors", options=", ".join(opts["colors"]))
+    if opts["sizes"]:
+        options_line += _t(lang, "rt_opt_sizes", options=", ".join(opts["sizes"]))
+    return _t(lang, "rt_card", name=product.name, sku=product.sku, price=format_price(product.price or 0), options_line=options_line)
+
+
+async def _photo_reply(rc, lang: str, product):
+    """One product's photo + card; says so (instead of repeating the card) when no photo is on file."""
+    images = await _photo_images(rc, [product], captions=False)
+    card = _product_card(lang, product)
+    text = card if images else f"{_t(lang, 'rt_no_photo', product=product.name)}\n\n{card}"
+    if rc.stage in intent_router.ORDER_ACTIVE_STAGES:
+        pinned_name = getattr(rc.pinned_product, "name", None) or product.name
+        text = f"{text}\n\n{_t(lang, 'rt_order_open_note', product=pinned_name)}"
+    else:
+        text = f"{text}\n\n{_t(lang, 'rt_order_cta')}"
+        try:
+            await conversation_service.set_last_shown_sku(rc.db, rc.conv.id, product.sku)
+            rc.conv.last_shown_sku = product.sku
+        except Exception as exc:  # noqa: BLE001
+            logger.error("router last_shown_sku error: %s", exc)
+    result = op.PipelineResult(text=text, pre_images=images or None)
+    return await rc.reply(text, "show_product_photo", lang, result=result)
+
+
+async def _list_reply(
+    rc, lang: str, header_keys: list[str], products: list, *, route: str, footer: bool = True,
+    images: list | None = None,
+):
     """Numbered product list + an open pick-menu (outside an order) + the pipeline's button/list rules."""
     lines = []
     for key in header_keys:
@@ -403,7 +476,8 @@ async def _list_reply(rc, lang: str, header_keys: list[str], products: list, *, 
     if mid_order:
         pinned = rc.pinned_product
         lines += ["", _t(lang, "rt_order_open_note", product=getattr(pinned, "name", None) or "")]
-        text, result = "\n".join(lines), None
+        text = "\n".join(lines)
+        result = op.PipelineResult(text=text) if images else None
     else:
         if footer:
             lines += ["", _t(lang, "rt_search_footer")]
@@ -412,6 +486,8 @@ async def _list_reply(rc, lang: str, header_keys: list[str], products: list, *, 
         rc.conv.pending_choice_skus = json.dumps(skus)
         text = "\n".join(lines)
         result = await _send_with_buttons(rc.db, rc.conv, rc.client, rc.stage, text, None, None, {})
+    if images and result is not None:
+        result.pre_images = images
     return await rc.reply(text, route, lang, result=result)
 
 
@@ -422,11 +498,16 @@ async def handle_search_catalog(rc, decision: RouterDecision):
     query = args.query or ""
     hits = search_products(rc.all_products, query, args.filters)
     mid_order = rc.stage in intent_router.ORDER_ACTIVE_STAGES
+    photo = wants_photo(decision, rc.user_text)
+    if len(hits) == 1 and photo:
+        return await _photo_reply(rc, lang, hits[0])
     if len(hits) == 1 and not mid_order:
         # One clear product → the normal product card (image, variants, "order?") via the exact-SKU path.
         return RouterOutcomeHandled.passthrough(rc, canonical_product_text(hits[0], rc.all_products))
     if hits:
-        return await _list_reply(rc, lang, ["rt_search_header"], hits[:_MAX_LIST], route="search")
+        shown = hits[:_MAX_LIST]
+        images = await _photo_images(rc, shown, captions=True) if photo else None
+        return await _list_reply(rc, lang, ["rt_search_header"], shown, route="search", images=images)
     alternatives = closest_alternatives(rc.all_products, query, args.filters)
     if not alternatives:
         reply = f"{_t(lang, 'rt_not_found')}\n{_t(lang, 'rt_browse_more', catalogue_url=_catalogue_url(rc.client))}"
@@ -486,6 +567,9 @@ async def handle_show_product(rc, decision: RouterDecision):
         return await handle_clarify(rc, decision)
     answer = _variant_answer(lang, product, decision.args.filters)
     mid_order = rc.stage in intent_router.ORDER_ACTIVE_STAGES
+    photo = wants_photo(decision, rc.user_text)
+    if photo and answer is None:
+        return await _photo_reply(rc, lang, product)
     if answer is not None:
         if mid_order and product.sku == rc.conv.pending_product_sku:
             answer = f"{answer}\n\n{_t(lang, 'rt_order_open_note', product=product.name)}"
@@ -495,15 +579,11 @@ async def handle_show_product(rc, decision: RouterDecision):
                 rc.conv.last_shown_sku = product.sku
             except Exception as exc:  # noqa: BLE001
                 logger.error("router last_shown_sku error: %s", exc)
-        return await rc.reply(answer, "show_product_variant", lang)
+        images = await _photo_images(rc, [product], captions=False) if photo else []
+        result = op.PipelineResult(text=answer, pre_images=images) if images else None
+        return await rc.reply(answer, "show_product_variant", lang, result=result)
     if mid_order:
-        opts = intent_router.in_stock_options(product)
-        options_line = ""
-        if opts["colors"]:
-            options_line += _t(lang, "rt_opt_colors", options=", ".join(opts["colors"]))
-        if opts["sizes"]:
-            options_line += _t(lang, "rt_opt_sizes", options=", ".join(opts["sizes"]))
-        card = _t(lang, "rt_card", name=product.name, sku=product.sku, price=format_price(product.price or 0), options_line=options_line)
+        card = _product_card(lang, product)
         return await rc.reply(
             f"{card}\n\n{_t(lang, 'rt_order_open_note', product=getattr(rc.pinned_product, 'name', '') or product.name)}",
             "show_product_card", lang,
@@ -964,6 +1044,8 @@ def _log_line(conv_id, trace: RouterTrace, version: str) -> None:
 def _args_for_log(decision: RouterDecision) -> dict:
     """Non-empty args of a decision, for the log line."""
     raw = decision.args.model_dump(exclude_none=True)
+    if not raw.get("want_photo"):
+        raw.pop("want_photo", None)
     if raw.get("query"):
         raw["query"] = intent_router.redact(raw["query"], 60)
     if not decision.args.filters or decision.args.filters.is_empty():
@@ -1049,6 +1131,15 @@ async def run_router_front_door(
         return _done(outcome)
 
     decision, notes = intent_router.sanitize_decision(call.decision, ctx)
+    if (
+        pinned is not None and wants_photo(decision, user_text)
+        and decision.action in (RouterAction.SMALLTALK, RouterAction.GENERAL_ANSWER, RouterAction.FAQ, RouterAction.GREETING)
+    ):
+        # "images" / "photo dikhao" with a product in context is never small talk: show that product's photo.
+        decision.action = RouterAction.SHOW_PRODUCT
+        decision.args.sku, decision.args.want_photo = pinned.sku, True
+        decision.confidence = max(decision.confidence, 0.9)
+        notes.append("photo_request->show_product")
     trace.action, trace.confidence, trace.args = decision.action.value, decision.confidence, _args_for_log(decision)
     if notes:
         trace.args = {**trace.args, "repaired": notes}

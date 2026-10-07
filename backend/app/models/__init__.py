@@ -22,6 +22,21 @@ from app.models.order import Order
 from app.models.order_audit_log import OrderAuditLog
 from app.models.order_line_item import OrderLineItem
 from app.models.payment_proof import PaymentProof
+from app.models.sellertalk24_billing import (
+    BillingAdminLog,
+    BillingAlert,
+    BillingPlan,
+    BillingJobRun,
+    BillingOpsEvent,
+    ClientSubscription,
+    ConversationUsageLog,
+    CreditNote,
+    CreditNoteCounter,
+    Invoice,
+    InvoiceCounter,
+    PaymentEvent,
+    PaymentOrder,
+)
 from app.models.stock_reservation import StockReservation
 from app.models.payment import Payment
 from app.models.product import Product
@@ -35,6 +50,9 @@ from app.models.usage_log import UsageLog
 from app.models.user import User
 
 __all__ = [
+    "BillingAdminLog", "BillingAlert", "BillingPlan", "ClientSubscription", "ConversationUsageLog",
+    "BillingJobRun", "BillingOpsEvent", "CreditNote", "CreditNoteCounter",
+    "Invoice", "InvoiceCounter", "PaymentEvent", "PaymentOrder",
     "Campaign", "CampaignRecipient", "Client", "ClientMonthlyUsage", "Conversation", "CostLogEntry",
     "Customer", "FollowUp", "IgCommentReply", "KnowledgeBase", "LLMUsage", "Lead", "Message", "MessageTemplate", "Order", "OrderAuditLog", "OrderLineItem", "PaymentProof", "StockReservation",
     "Payment", "PhotoGenerationLog", "Plan", "Product", "ProductVariant", "RestockNotification", "StockLog",

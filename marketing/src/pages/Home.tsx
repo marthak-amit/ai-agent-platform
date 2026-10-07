@@ -7,11 +7,11 @@ import ChatMockup from "../components/ChatMockup";
 import FeatureCard from "../components/FeatureCard";
 import FAQItem from "../components/FAQItem";
 import PricingCard from "../components/PricingCard";
-import BillingToggle, { type BillingCycle } from "../components/BillingToggle";
 import Reveal from "../components/motion/Reveal";
 import { StaggerGroup, StaggerItem } from "../components/motion/StaggerGroup";
 import { DASHBOARD_SIGNUP_URL } from "../config";
-import { steps, featureGroups, monthlyPlans, yearlyPlans, faqs } from "../content/site";
+import { steps, featureGroups, plans, faqs } from "../content/site";
+import { GST_LINE } from "../content/plans";
 
 const organizationJsonLd = {
   "@context": "https://schema.org",
@@ -24,8 +24,6 @@ const organizationJsonLd = {
 };
 
 export default function Home() {
-  const [cycle, setCycle] = useState<BillingCycle>("monthly");
-  const plans = cycle === "monthly" ? monthlyPlans : yearlyPlans;
   const [openQuestion, setOpenQuestion] = useState<string | null>(null);
   const reduceMotion = useReducedMotion();
 
@@ -289,14 +287,11 @@ export default function Home() {
           <h2 className="mt-2 text-3xl font-bold tracking-tight text-gray-900">Simple, transparent pricing</h2>
         </Reveal>
         <Reveal as="p" className="mx-auto mt-3 max-w-xl text-center text-sm text-gray-600" delay={0.05}>
-          Plans are activated by our team during onboarding. See the{" "}
+          {GST_LINE}. Pay online and go live instantly. See the{" "}
           <Link to="/pricing" className="font-semibold text-brand-primaryDark underline">
             full pricing page
           </Link>{" "}
           for plan comparisons.
-        </Reveal>
-        <Reveal as="div" className="mt-6" delay={0.1}>
-          <BillingToggle value={cycle} onChange={setCycle} />
         </Reveal>
         <StaggerGroup className="mt-8 grid gap-6 sm:grid-cols-3">
           {plans.map((plan) => (
@@ -308,6 +303,7 @@ export default function Home() {
 
         <div className="mt-6 rounded-2xl border border-gray-200 bg-gray-50 p-8 text-center">
           <h3 className="text-xl font-semibold text-gray-900">Enterprise</h3>
+          <p className="mt-1 text-2xl font-bold text-gray-900">Contact us</p>
           <p className="mt-2 text-gray-600">Custom message volume, dedicated onboarding, and priority support.</p>
           <CTAButton to="/demo" className="mt-6">
             Let's talk
@@ -315,7 +311,7 @@ export default function Home() {
         </div>
 
         <p className="mt-6 text-center text-sm text-gray-500">
-          Billing is currently set up manually by our team — plan upgrades are not yet self-serve.
+          Plans are prepaid for 30 days and renewed manually — no auto-debit.
         </p>
       </section>
 
@@ -339,6 +335,7 @@ export default function Home() {
                 <FAQItem
                   question={faq.question}
                   answer={faq.answer}
+                link={faq.link}
                   open={openQuestion === faq.question}
                   onToggle={() =>
                     setOpenQuestion((current) => (current === faq.question ? null : faq.question))

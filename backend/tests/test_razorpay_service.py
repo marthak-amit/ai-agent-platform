@@ -2,17 +2,8 @@
 Tests for app/services/razorpay_service.py.
 """
 
-import hashlib
-import hmac
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
-import pytest
-
-
-def _make_razorpay_sig(body: bytes, secret: str = "test-rzp-secret") -> str:
-    """Compute a valid Razorpay HMAC-SHA256 signature."""
-    return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
 async def test_create_qr_code_returns_data(mock_settings):
@@ -39,21 +30,3 @@ async def test_create_qr_code_returns_data(mock_settings):
     call_kwargs = mock_client.post.call_args[1]
     assert call_kwargs["auth"] == ("test-rzp-key", "test-rzp-secret")
     assert call_kwargs["json"]["payment_amount"] == 50000
-
-
-def test_verify_webhook_signature_valid(mock_settings):
-    """verify_webhook_signature returns True for correct HMAC."""
-    from app.services.razorpay_service import verify_webhook_signature
-
-    body = b'{"event":"payment.captured"}'
-    sig = _make_razorpay_sig(body)
-    assert verify_webhook_signature(body, sig) is True
-
-
-def test_verify_webhook_signature_invalid(mock_settings):
-    """verify_webhook_signature returns False for tampered body."""
-    from app.services.razorpay_service import verify_webhook_signature
-
-    body = b'{"event":"payment.captured"}'
-    sig = _make_razorpay_sig(b'{"event":"other"}')
-    assert verify_webhook_signature(body, sig) is False

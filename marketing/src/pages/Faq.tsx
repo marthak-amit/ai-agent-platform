@@ -28,7 +28,7 @@ export default function Faq() {
     <>
       <SEO
         title="FAQ — WhatsApp & Instagram AI Sales Agent Questions | SellerTalk24"
-        description="Answers to common questions about SellerTalk24: supported channels, WhatsApp onboarding, languages, payment methods, data security, and how plans get activated."
+        description="Answers to common questions about SellerTalk24: supported channels, WhatsApp onboarding, languages, payment methods, data security, billing, conversation limits, and refunds."
         path="/faq"
         jsonLd={faqJsonLd}
       />
@@ -54,6 +54,7 @@ export default function Faq() {
               <FAQItem
                 question={faq.question}
                 answer={faq.answer}
+                link={faq.link}
                 open={openQuestion === faq.question}
                 onToggle={() =>
                   setOpenQuestion((current) => (current === faq.question ? null : faq.question))

@@ -4,7 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { api, getTeam, inviteTeamMember, updateProfile, updateTeamMember } from "../api/client";
 import Layout from "../components/Layout";
 import { useAuth } from "../context/AuthContext";
-import { User, Bot, Globe, CheckCircle2, Store, Copy, ExternalLink, FileDown, Palette, Award, FlaskConical, X, ChevronRight, CreditCard, AlertTriangle, UsersRound } from "lucide-react";
+import { User, Bot, Globe, CheckCircle2, Store, Copy, ExternalLink, FileDown, Palette, Award, FlaskConical, X, ChevronRight, CreditCard, AlertTriangle, UsersRound, Receipt } from "lucide-react";
 import QRCode from "qrcode";
 import { SandboxUI } from "./Sandbox";
 import type { PermissionKey, TeamMember } from "../types";
@@ -30,14 +30,16 @@ const PERMISSION_OPTIONS: { key: PermissionKey; label: string }[] = [
 const MANAGER_PRESET: PermissionKey[] = PERMISSION_OPTIONS.map((p) => p.key);
 const STAFF_PRESET: PermissionKey[] = ["order_view", "manual_reply", "mark_packed", "manual_utility_send"];
 
-type Tab = "profile" | "agent" | "language" | "catalogue" | "payment" | "compare" | "team";
+type Tab = "profile" | "agent" | "language" | "catalogue" | "payment" | "compare" | "team" | "billing";
 
-const ALL_TABS: { key: Tab; label: string; icon: typeof User; ownerOnly?: boolean }[] = [
+// `to`: the entry opens another page instead of switching the in-page tab.
+const ALL_TABS: { key: Tab; label: string; icon: typeof User; ownerOnly?: boolean; to?: string }[] = [
   { key: "profile", label: "Profile", icon: User },
   { key: "agent", label: "Agent Config", icon: Bot },
   { key: "catalogue", label: "Catalogue", icon: Store },
   { key: "payment", label: "Payment", icon: CreditCard },
   { key: "team", label: "Team", icon: UsersRound, ownerOnly: true },
+  { key: "billing", label: "Billing", icon: Receipt, ownerOnly: true, to: "/billing" },
   { key: "language", label: "Language", icon: Globe },
   { key: "compare", label: "Why Us", icon: Award },
 ];
@@ -354,6 +356,19 @@ export default function Settings() {
             {TABS.map((tab) => {
               const Icon = tab.icon;
               const active = activeTab === tab.key;
+              if (tab.to) {
+                return (
+                  <Link
+                    key={tab.key}
+                    to={tab.to}
+                    className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-left transition-all duration-150 text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+                  >
+                    <Icon size={16} className="text-gray-400" />
+                    {tab.label}
+                    <ChevronRight size={14} className="ml-auto text-gray-300" />
+                  </Link>
+                );
+              }
               return (
                 <button
                   key={tab.key}

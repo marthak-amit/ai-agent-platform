@@ -526,3 +526,33 @@ def test_template_language_prefers_script_then_router_language():
     assert router_actions.template_language(d("gu"), "kem cho", conv) == "gujarati_roman"
     assert router_actions.template_language(d("en"), "मेरा ऑर्डर कहाँ है", conv) == "hindi_devanagari"
     assert router_actions.template_language(d("hinglish"), "order kaha hai", conv) == "hinglish"
+
+
+# ── catalogue link short-circuit (runs before the router) ───────────────────
+
+async def test_catalogue_link_short_circuit_answers_before_router(monkeypatch):
+    """'Catalogue please' gets the shop link with no LLM/router; other text falls through (None)."""
+    from app.services import conversation_service, order_pipeline
+
+    saved: list[tuple[str, str]] = []
+
+    async def _save(db, conv_id, role, text, wamid=None):
+        """Capture saved messages."""
+        saved.append((role, text))
+
+    async def _noop(*a, **k):
+        """No-op stage/usage hook."""
+
+    monkeypatch.setattr(conversation_service, "save_message", _save)
+    monkeypatch.setattr(conversation_service, "update_stage", _noop)
+    client = SimpleNamespace(catalogue_slug="riya", business_name="Riya Sarees")
+    conv = SimpleNamespace(id=1, last_customer_language="english")
+    msg = SimpleNamespace(type="text")
+
+    res = await order_pipeline.run_catalogue_link_short_circuit(
+        None, conv, client, msg, "Catalogue please", "w1", "greeting", _noop)
+    assert res is not None and "/riya" in res.text
+    assert [r for r, _ in saved] == ["user", "assistant"]
+
+    assert await order_pipeline.run_catalogue_link_short_circuit(
+        None, conv, client, msg, "green saree under 1000", "w2", "greeting", _noop) is None

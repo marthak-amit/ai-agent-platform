@@ -25,6 +25,7 @@ from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 logger = logging.getLogger(__name__)
 
@@ -553,6 +554,32 @@ async def _expire_unpaid_orders_job() -> None:
         logger.info("Payment-expiry job cancelled %d unpaid order(s).", cancelled)
 
 
+async def _billing_maintenance_job() -> None:
+    """
+    Scheduled job (every 15 min): expire lapsed plan periods, activate queued renewals, raise expiry /
+    grace alerts. Guarded by a Postgres advisory lock so only one instance runs each tick.
+    """
+    from app.services.billing import maintenance
+
+    try:
+        await maintenance.run_maintenance_job()
+    except Exception:
+        logger.exception("billing_maintenance job failed")
+
+
+async def _billing_reconcile_job() -> None:
+    """
+    Scheduled job (every 15 min): activate payment orders that were paid at Razorpay but never confirmed here,
+    expire abandoned ones. Guarded by a Postgres advisory lock so only one instance runs each tick.
+    """
+    from app.services.billing import reconcile
+
+    try:
+        await reconcile.run_reconcile_job()
+    except Exception:
+        logger.exception("billing_reconcile job failed")
+
+
 def start_scheduler() -> None:
     """Register all jobs and start the scheduler. Called once on app startup."""
     scheduler.add_job(
@@ -596,6 +623,22 @@ def start_scheduler() -> None:
         CronTrigger(minute="*/30"),
         id="expire_unpaid_orders",
         replace_existing=True,
+    )
+    scheduler.add_job(
+        _billing_maintenance_job,
+        IntervalTrigger(minutes=15),
+        id="billing_maintenance",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        _billing_reconcile_job,
+        IntervalTrigger(minutes=15),
+        id="billing_reconcile",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
     scheduler.start()
     logger.info(
