@@ -390,3 +390,26 @@ def test_client_ip_uses_rightmost_forwarded_hop(mock_settings):
     assert client_ip(_request("not-an-ip")) == "10.0.0.1"
     mock_settings.admin_trust_proxy_headers = False
     assert client_ip(_request("203.0.113.9")) == "10.0.0.1"
+
+
+# ── regressions: sign-in must never 500 on bad stored data / un-migrated DB ──
+
+async def test_authenticate_malformed_hash_is_just_a_wrong_password(mock_settings):
+    """A manually inserted row with a non-bcrypt 'hash' yields invalid_credentials, not a crash."""
+    admin = _admin(hashed_password="admin123")
+    with pytest.raises(AdminAuthError) as exc:
+        await admin_auth_service.authenticate(_db_returning(admin), email=admin.email, password="admin123", otp=None, ip="ip-bad-hash")
+    assert exc.value.code == "invalid_credentials"
+    assert admin.failed_login_count == 1
+
+
+def test_login_returns_actionable_503_when_admin_tables_are_missing(client, mock_db):
+    """If migration 0066 hasn't been applied the API says so (503 admin_not_initialised) instead of a bare 500."""
+    from sqlalchemy.exc import ProgrammingError
+
+    mock_db.rollback = AsyncMock()
+    boom = ProgrammingError("select ...", {}, Exception('relation "admin_users" does not exist'))
+    with patch("app.services.admin_auth_service.authenticate", new=AsyncMock(side_effect=boom)):
+        resp = client.post("/admin/auth/login", json={"email": "admin@test.com", "password": "admin123"})
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["code"] == "admin_not_initialised" and "alembic upgrade head" in resp.json()["detail"]["message"]

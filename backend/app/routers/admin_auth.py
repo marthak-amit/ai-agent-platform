@@ -19,6 +19,7 @@ import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -83,6 +84,18 @@ async def login(body: AdminLoginRequest, request: Request, db: AsyncSession = De
     email = admin_auth_service.normalize_email(body.email)
     try:
         admin, _ = await admin_auth_service.authenticate(db, email=email, password=body.password, otp=body.otp, ip=ip)
+    except ProgrammingError as exc:
+        # The usual cause is a database that hasn't had migration 0066 applied; say so instead of a bare 500.
+        logger.exception("Admin sign-in failed with a database error")
+        await db.rollback()
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            {
+                "code": "admin_not_initialised",
+                "message": "The admin tables are missing in this database. Run `alembic upgrade head`, then create an "
+                "operator with `python scripts/create_admin.py`.",
+            },
+        ) from exc
     except AdminAuthError as exc:
         # Persist lockout counters set during the failed attempt, then audit in a separate session.
         await db.commit()

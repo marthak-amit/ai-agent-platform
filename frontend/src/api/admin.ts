@@ -88,6 +88,7 @@ export function problemFrom(err: unknown): ApiProblem {
     return { code: "validation", message: `${first.loc?.slice(-1)[0] ?? "field"}: ${first.msg ?? "invalid"}`, status };
   }
   if (!e.response) return { code: "network", message: "Can't reach the server.", status: 0 };
+  if (status >= 500) return { code: "server", message: `The server hit an error (${status}). Check the backend logs.`, status };
   return { code: "error", message: `Request failed (${status}).`, status };
 }
 

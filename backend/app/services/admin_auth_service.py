@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import logging
 import secrets
 import struct
 import time
@@ -35,6 +36,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models.admin_user import ADMIN_ROLES, AdminUser
 from app.services import auth_service
+
+logger = logging.getLogger(__name__)
 
 ALGORITHM = "HS256"
 AUDIENCE = "admin"
@@ -57,6 +60,15 @@ class AdminAuthError(Exception):
         self.code = code
         self.message = message
         self.http_status = http_status
+
+
+def _password_ok(plain: str, hashed: str) -> bool:
+    """bcrypt check that treats a malformed stored hash (e.g. a manually inserted row) as a mismatch, not a crash."""
+    try:
+        return auth_service.verify_password(plain, hashed)
+    except ValueError:
+        logger.warning("Admin account has a malformed password hash; treating as wrong password.")
+        return False
 
 
 def _now() -> datetime:
@@ -264,13 +276,13 @@ async def authenticate(
     now = _now()
 
     if admin is None:
-        auth_service.verify_password(password, _DUMMY_HASH)
+        _password_ok(password, _DUMMY_HASH)
         raise AdminAuthError("invalid_credentials", "Invalid email or password.")
 
     if admin.locked_until is not None and admin.locked_until > now:
         raise AdminAuthError("account_locked", "Account temporarily locked after repeated failures. Try again later.", 423)
 
-    password_ok = auth_service.verify_password(password, admin.hashed_password)
+    password_ok = _password_ok(password, admin.hashed_password)
     if not password_ok or not admin.is_active:
         if not password_ok:
             admin.failed_login_count += 1
