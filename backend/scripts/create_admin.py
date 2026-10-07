@@ -6,6 +6,7 @@ Run from backend/ with DATABASE_URL set (env or backend/.env):
     python scripts/create_admin.py --email you@company.com --name "Your Name" --role superadmin
 
 The password is read with a hidden prompt (never pass it on the command line, it would land in shell history).
+Use --list to show the operators that already exist (no passwords are ever shown).
 Use --reset to set a new password for an existing operator (also clears lockout and revokes their sessions).
 The new account must change its password at first sign-in.
 """
@@ -25,6 +26,18 @@ from sqlalchemy import select  # noqa: E402
 from app.db import _get_session_factory  # noqa: E402
 from app.models.admin_user import ADMIN_ROLES, AdminUser  # noqa: E402
 from app.services import admin_auth_service, auth_service  # noqa: E402
+
+
+async def _list() -> int:
+    """Print every operator (email, role, state) so you can check an account exists before signing in."""
+    async with _get_session_factory()() as db:
+        rows = (await db.execute(select(AdminUser).order_by(AdminUser.id))).scalars().all()
+    if not rows:
+        print("No operators yet. Create one with: python scripts/create_admin.py --email you@co.com --role superadmin")
+    for a in rows:
+        flags = [("active" if a.is_active else "DISABLED")] + (["2FA"] if a.totp_enabled else []) + (["must change password"] if a.must_change_password else [])
+        print(f"#{a.id}  {a.email}  {a.role}  [{', '.join(flags)}]")
+    return 0
 
 
 async def _run(args: argparse.Namespace, password: str) -> int:
@@ -58,11 +71,16 @@ async def _run(args: argparse.Namespace, password: str) -> int:
 def main() -> int:
     """Parse arguments, prompt for the password, and run."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--email", required=True)
+    parser.add_argument("--email")
+    parser.add_argument("--list", action="store_true", help="list existing operators and exit")
     parser.add_argument("--name", default="")
     parser.add_argument("--role", default="superadmin", choices=ADMIN_ROLES)
     parser.add_argument("--reset", action="store_true", help="reset the password of an existing operator")
     args = parser.parse_args()
+    if args.list:
+        return asyncio.run(_list())
+    if not args.email:
+        parser.error("--email is required (or use --list)")
 
     password = getpass.getpass("Password (min 12 chars, letters + digits): ")
     if password != getpass.getpass("Repeat password: "):
