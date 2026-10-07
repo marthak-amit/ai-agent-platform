@@ -4,6 +4,7 @@ Import all ORM models here so Alembic's env.py finds them via Base.metadata.
 Order matters: import tables with no FKs first.
 """
 
+from app.models.admin_user import AdminAuditLog, AdminUser
 from app.models.plan import Plan
 from app.models.campaign import Campaign
 from app.models.campaign_recipient import CampaignRecipient
@@ -50,6 +51,7 @@ from app.models.usage_log import UsageLog
 from app.models.user import User
 
 __all__ = [
+    "AdminAuditLog", "AdminUser",
     "BillingAdminLog", "BillingAlert", "BillingPlan", "ClientSubscription", "ConversationUsageLog",
     "BillingJobRun", "BillingOpsEvent", "CreditNote", "CreditNoteCounter",
     "Invoice", "InvoiceCounter", "PaymentEvent", "PaymentOrder",

@@ -17,7 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.client import Client
 from app.models.plan import Plan
 from app.models.usage_log import UsageLog
-from app.services import plan_cache
+from app.services import admin_audit, plan_cache
+from app.services.admin_audit import AdminPrincipal
 
 
 # ── Client listing ─────────────────────────────────────────────────────────────
@@ -125,7 +126,9 @@ async def get_platform_stats(db: AsyncSession) -> dict:
 
 # ── Suspend / activate ────────────────────────────────────────────────────────
 
-async def set_client_active(db: AsyncSession, client_id: int, active: bool) -> Client:
+async def set_client_active(
+    db: AsyncSession, client_id: int, active: bool, audit: "tuple[AdminPrincipal, str] | None" = None
+) -> Client:
     """
     Set a client's is_active flag.
 
@@ -133,6 +136,7 @@ async def set_client_active(db: AsyncSession, client_id: int, active: bool) -> C
         db:        Active async DB session.
         client_id: Target client primary key.
         active:    True to activate, False to suspend.
+        audit:     Optional (principal, reason); when given, an admin_audit_log row is committed with the change.
 
     Returns:
         Updated Client instance.
@@ -144,7 +148,14 @@ async def set_client_active(db: AsyncSession, client_id: int, active: bool) -> C
     client = result.scalar_one_or_none()
     if client is None:
         raise ValueError(f"Client {client_id} not found.")
+    was_active = client.is_active
     client.is_active = active
+    if audit is not None:
+        principal, reason = audit
+        admin_audit.record(
+            db, principal, "client.activate" if active else "client.suspend", target_type="client",
+            target_id=client_id, client_id=client_id, reason=reason, detail={"was_active": was_active},
+        )
     await db.commit()
     await db.refresh(client)
     return client
@@ -207,7 +218,9 @@ async def get_revenue_breakdown(db: AsyncSession) -> dict:
 
 # ── Plan admin management ─────────────────────────────────────────────────────
 
-async def update_plan(db: AsyncSession, plan_id: str, updates: dict[str, Any]) -> Plan:
+async def update_plan(
+    db: AsyncSession, plan_id: str, updates: dict[str, Any], audit: "AdminPrincipal | None" = None
+) -> Plan:
     """
     Apply a partial update to a plan row and invalidate the plan cache.
 
@@ -233,8 +246,13 @@ async def update_plan(db: AsyncSession, plan_id: str, updates: dict[str, Any]) -
     if plan is None:
         raise ValueError(f"Plan '{plan_id}' not found.")
 
+    before = {field: getattr(plan, field) for field in updates}
     for field, value in updates.items():
         setattr(plan, field, value)
+    if audit is not None:
+        admin_audit.record(
+            db, audit, "plan.update", target_type="plan", target_id=plan_id, detail={"before": before, "after": updates}
+        )
 
     await db.commit()
     await db.refresh(plan)

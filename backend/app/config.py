@@ -100,6 +100,15 @@ class Settings(BaseSettings):
     frontend_url: str = "http://localhost:5173"
     secret_key: str = "change-me-in-production"
     admin_secret_key: str = "change-me-admin-secret"
+    # Admin panel (/admin): operator JWT lifetime, lockout policy, and whether the legacy shared
+    # X-Admin-Key header still authenticates (break-glass / scripts). The key is ignored outside
+    # development while it is still the default value, regardless of this flag.
+    admin_token_expire_minutes: int = 480
+    admin_max_failed_logins: int = 5
+    admin_lockout_minutes: int = 15
+    admin_api_key_enabled: bool = True
+    admin_trust_proxy_headers: bool = True  # use the right-most X-Forwarded-For hop as the caller IP (Railway)
+    admin_totp_issuer: str = "SellerTalk24 Admin"
     # Public base URL of the hosted catalogue/shop pages, used in every
     # customer-facing "browse more" / catalogue link. CATALOGUE_BASE_URL is the
     # legacy env var name and is still honoured if PUBLIC_SHOP_BASE_URL is unset.

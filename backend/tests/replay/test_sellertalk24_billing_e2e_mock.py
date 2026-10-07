@@ -754,7 +754,7 @@ async def test_refund_revokes_then_grace_then_fallback_then_admin_regrant_restor
     sent = stub_media_and_capture_sends(monkeypatch)
     admin_key = "e2e-admin-key"
     base = get_settings()
-    monkeypatch.setattr("app.routers.admin.get_settings", lambda: base.model_copy(update=dict(admin_secret_key=admin_key)))
+    monkeypatch.setattr("app.routers.admin_deps.get_settings", lambda: base.model_copy(update=dict(admin_secret_key=admin_key)))
     admin = {"X-Admin-Key": admin_key, "X-Admin-User": "amit@sellertalk24.com"}
     db, http = env.db, env.http
     t = await new_tenant(env)

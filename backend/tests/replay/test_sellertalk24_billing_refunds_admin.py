@@ -72,7 +72,7 @@ def mailbox(monkeypatch) -> Recorder:
     rec = Recorder()
     monkeypatch.setattr(email_service, "get_email_provider", lambda settings=None: rec)
     base = get_settings()
-    monkeypatch.setattr("app.routers.admin.get_settings", lambda: base.model_copy(update=dict(admin_secret_key=ADMIN_KEY)))
+    monkeypatch.setattr("app.routers.admin_deps.get_settings", lambda: base.model_copy(update=dict(admin_secret_key=ADMIN_KEY)))
     seller = base.model_copy(update=dict(
         seller_gstin="24AAAAA0000A1Z5", seller_address="Ahmedabad, Gujarat", seller_state_code="24",
         invoice_prefix="ST24", gst_rate_bps=1800,
