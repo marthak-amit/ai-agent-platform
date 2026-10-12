@@ -389,7 +389,8 @@ async def test_show_product_without_filters_uses_the_deterministic_card_and_pins
 
     reply = await say(replay_http, captured, phone, pnid, "kurti ka rate batao")
 
-    assert "Printed Kurti [KU30001] — ₹450" in reply and "Would you like to order?" in reply
+    # the customer wrote Roman Hindi, so the deterministic offer line mirrors it
+    assert "Printed Kurti [KU30001] — ₹450" in reply and "Kya aap order karna chahenge?" in reply
     assert AI_SENTINEL not in reply
     conv = await get_conv(replay_session, (await messages(replay_session, 1))[0].conversation_id)
     assert conv.pending_product_sku == "KU30001"

@@ -127,8 +127,11 @@ async def test_generate_followup_message_uses_gemini(mock_db):
 
 @pytest.mark.asyncio
 async def test_generate_followup_message_falls_back_on_gemini_error(mock_db):
-    """When Gemini raises, the default Hindi message is returned."""
-    from app.services.followup_service import generate_followup_message, _DEFAULT_MESSAGE
+    """When Gemini raises, the default message (in the customer's language) is returned."""
+    from app.services.followup_service import generate_followup_message
+    from app.services.language_templates import get_template
+
+    _DEFAULT_MESSAGE = get_template("english", "followup_default")
 
     lead = _make_lead()
     mock_msg = MagicMock()
@@ -150,7 +153,10 @@ async def test_generate_followup_message_falls_back_on_gemini_error(mock_db):
 @pytest.mark.asyncio
 async def test_generate_followup_message_default_when_no_history(mock_db):
     """Empty conversation history returns the default message without calling Gemini."""
-    from app.services.followup_service import generate_followup_message, _DEFAULT_MESSAGE
+    from app.services.followup_service import generate_followup_message
+    from app.services.language_templates import get_template
+
+    _DEFAULT_MESSAGE = get_template("english", "followup_default")
 
     lead = _make_lead()
 
@@ -170,7 +176,10 @@ async def test_generate_followup_message_default_when_no_history(mock_db):
 @pytest.mark.asyncio
 async def test_generate_followup_message_default_when_no_conversation_id(mock_db):
     """Lead with no conversation_id returns the default message immediately."""
-    from app.services.followup_service import generate_followup_message, _DEFAULT_MESSAGE
+    from app.services.followup_service import generate_followup_message
+    from app.services.language_templates import get_template
+
+    _DEFAULT_MESSAGE = get_template("english", "followup_default")
 
     lead = _make_lead(conversation_id=None)
     lead.conversation_id = None

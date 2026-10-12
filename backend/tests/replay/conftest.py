@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
 
 _ADMIN_SYNC_URL = "postgresql://bytes-amit@localhost/ai_agent_dev"
-_REPLAY_DB = "replay_ci_test"
+_REPLAY_DB = os.environ.get("REPLAY_DB", "replay_ci_test")   # a second name lets two test runs share one Postgres
 _REPLAY_ASYNCPG_URL = f"postgresql+asyncpg://bytes-amit@localhost/{_REPLAY_DB}"
 _REPLAY_SYNC_URL = f"postgresql://bytes-amit@localhost/{_REPLAY_DB}"
 

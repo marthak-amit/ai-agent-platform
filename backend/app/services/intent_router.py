@@ -29,7 +29,7 @@ from sqlalchemy import desc, or_, select
 
 from app.config import get_settings
 from app.schemas.router import RouterAction, RouterDecision
-from app.services import catalogue_service, conversation_flow, llm_client, llm_health
+from app.services import catalogue_service, command_words, conversation_flow, llm_client, llm_health
 from app.services.delivery_service import order_delivery_days, order_eta_window, to_ist_date
 
 logger = logging.getLogger("app.services.intent_router")
@@ -133,7 +133,9 @@ def redact(text: str, limit: int = 160) -> str:
 
 def normalize_option(text: str) -> str:
     """Lower-case, strip punctuation/extra spaces: the form option comparisons use."""
-    return " ".join(re.sub(r"[^\w\s]", " ", (text or "").lower()).split())
+    from app.services import indic_vocab
+
+    return " ".join(indic_vocab.tokenize(text))
 
 
 def _active_variants(product) -> list:
@@ -430,7 +432,9 @@ async def fast_path_reason(
             return "slot_option"
         if next_slot in _QUANTITY_SLOTS and is_int:
             return "slot_quantity"
-        if next_slot == "payment_method" and norm in _PAYMENT_WORDS:
+        if next_slot == "payment_method" and (
+            norm in _PAYMENT_WORDS or command_words.matches_whole("pay_cod", text) or command_words.matches_whole("pay_upi", text)
+        ):
             return "slot_payment"
         if next_slot == "mobile_number" and re.fullmatch(r"\+?\d[\d\s-]{8,13}", text):
             return "slot_phone"

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.conversation import Conversation
 from app.models.lead import Lead
+from app.services.db_helpers import add_or_get
 from app.services.intent_service import classify_lead
 
 logger = logging.getLogger(__name__)
@@ -76,16 +77,16 @@ async def tag_lead(
         lead_query = lead_query.where(Lead.client_id == client_id)
     result = await db.execute(lead_query)
     lead = result.scalar_one_or_none()
+    created = False
     if lead is None:
-        lead = Lead(
+        lead, created = await add_or_get(db, Lead(
             phone_number=phone_number,
             conversation_id=conversation_id,
             status=status,
             client_id=client_id,
             channel=channel,
-        )
-        db.add(lead)
-    else:
+        ), lead_query)
+    if not created:
         lead.status = status
         lead.conversation_id = conversation_id
 

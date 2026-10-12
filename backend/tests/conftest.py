@@ -45,6 +45,22 @@ def _router_v2_off_by_default(monkeypatch):
     get_settings.cache_clear()
 
 
+class _NullSavepoint:
+    """Async context manager standing in for AsyncSession.begin_nested() on mocked sessions."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+def with_savepoint(db):
+    """Give a mocked AsyncSession a working begin_nested() (add_or_get inserts inside a SAVEPOINT); returns db."""
+    db.begin_nested = MagicMock(return_value=_NullSavepoint())
+    return db
+
+
 def make_test_plans() -> list:
     """Build the 3 seeded Plan ORM rows in-memory, matching migration 0053's seed data."""
     from app.models.plan import Plan

@@ -45,23 +45,23 @@ def _make_db(existing_log: UsageLog | None = None, monthly_sum: int = 0) -> Asyn
 # ── usage_service.record_message ─────────────────────────────────────────────
 
 async def test_record_message_creates_new_log():
-    """First message of the day creates a UsageLog with count=1."""
+    """First message of the day upserts today's row (ON CONFLICT DO NOTHING) and counts 1 — no racy insert."""
     client = _make_client()
     db = AsyncMock()
-    no_log = MagicMock()
-    no_log.scalar_one_or_none.return_value = None
-    db.execute = AsyncMock(return_value=no_log)
+    fresh = UsageLog(id=1, client_id=1, date=date.today(), message_count=0)   # what the upsert + SELECT FOR UPDATE return
+    result = MagicMock()
+    result.scalar_one.return_value = fresh
+    db.execute = AsyncMock(return_value=result)
     db.commit = AsyncMock()
     db.refresh = AsyncMock(side_effect=lambda obj: None)
     db.add = MagicMock()
 
     log = await usage_service.record_message(db, client)
 
-    db.add.assert_called_once()
+    db.add.assert_not_called()
     db.commit.assert_called_once()
-    added = db.add.call_args[0][0]
-    assert added.message_count == 1
-    assert added.client_id == 1
+    assert db.execute.await_count == 2        # the upsert, then the locked read
+    assert log.message_count == 1 and log.client_id == 1
 
 
 async def test_record_message_increments_existing_log():
@@ -71,6 +71,7 @@ async def test_record_message_increments_existing_log():
     db = AsyncMock()
     result = MagicMock()
     result.scalar_one_or_none.return_value = existing
+    result.scalar_one.return_value = existing
     db.execute = AsyncMock(return_value=result)
     db.commit = AsyncMock()
     db.refresh = AsyncMock(side_effect=lambda obj: None)
@@ -90,6 +91,7 @@ async def test_record_message_sends_80_percent_warning():
     db = AsyncMock()
     result = MagicMock()
     result.scalar_one_or_none.return_value = existing
+    result.scalar_one.return_value = existing
     db.execute = AsyncMock(return_value=result)
     db.commit = AsyncMock()
 
@@ -120,6 +122,7 @@ async def test_record_message_does_not_resend_80_warning():
     db = AsyncMock()
     result = MagicMock()
     result.scalar_one_or_none.return_value = existing
+    result.scalar_one.return_value = existing
     db.execute = AsyncMock(return_value=result)
     db.commit = AsyncMock()
     db.refresh = AsyncMock(side_effect=lambda obj: None)
@@ -141,6 +144,7 @@ async def test_record_message_no_warning_when_no_whatsapp_number():
     db = AsyncMock()
     result = MagicMock()
     result.scalar_one_or_none.return_value = existing
+    result.scalar_one.return_value = existing
     db.execute = AsyncMock(return_value=result)
     db.commit = AsyncMock()
     db.refresh = AsyncMock(side_effect=lambda obj: None)
@@ -162,6 +166,7 @@ async def test_record_message_logs_at_100_percent():
     db = AsyncMock()
     result = MagicMock()
     result.scalar_one_or_none.return_value = existing
+    result.scalar_one.return_value = existing
     db.execute = AsyncMock(return_value=result)
     db.commit = AsyncMock()
     db.refresh = AsyncMock(side_effect=lambda obj: None)

@@ -13,6 +13,7 @@ import logging
 from datetime import date
 
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.client import Client
@@ -41,9 +42,16 @@ async def record_message(db: AsyncSession, client: Client) -> UsageLog:
     limit = client.daily_message_limit or 100
     threshold_80 = int(limit * 0.8)
 
-    # SELECT FOR UPDATE locks the row for the duration of this transaction so
-    # two concurrent webhook hits for the same client never both read the same
-    # count, increment in Python, and write back the same value (lost update).
+    # Make sure today's row exists WITHOUT racing: the old select-then-insert let two simultaneous first
+    # messages of the day both try to INSERT, one hit uq_usage_client_date and its webhook request crashed
+    # (Meta then retried it). ON CONFLICT DO NOTHING is safe for any number of concurrent callers.
+    await db.execute(
+        pg_insert(UsageLog).values(client_id=client.id, date=today, message_count=0).on_conflict_do_nothing(
+            index_elements=["client_id", "date"]
+        )
+    )
+    # SELECT FOR UPDATE locks the row for the duration of this transaction so two concurrent webhook hits
+    # for the same client never both read the same count and write back the same value (lost update).
     result = await db.execute(
         select(UsageLog)
         .where(
@@ -51,15 +59,11 @@ async def record_message(db: AsyncSession, client: Client) -> UsageLog:
             UsageLog.date == today,
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
-    log = result.scalar_one_or_none()
-    old_count = log.message_count if log else 0
-
-    if log is None:
-        log = UsageLog(client_id=client.id, date=today, message_count=1)
-        db.add(log)
-    else:
-        log.message_count += 1
+    log = result.scalar_one()
+    old_count = log.message_count or 0
+    log.message_count = old_count + 1
 
     await db.commit()
     await db.refresh(log)

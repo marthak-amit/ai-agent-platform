@@ -15,6 +15,7 @@ Public API:
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -36,16 +37,59 @@ PROMPT_INJECTION_PATTERNS = [
     "disregard",
 ]
 
+# Complaint / anger words that always hand the customer to a human (English + Hinglish, matched as whole words).
 ESCALATION_TRIGGERS = [
     # Angry / frustrated
     "angry", "frustrated", "useless", "terrible",
     "worst", "scam", "fraud", "cheating",
     "bakwaas", "bekar", "dhoka", "pagal",
-    # Complaint / refund / legal
-    "refund", "return", "complaint", "damaged",
-    "wrong product", "cancel order",
-    "manager", "owner se baat", "report",
+    # Complaint / legal
+    "complaint", "damaged",
+    "wrong product",
+    "manager", "owner se baat",
 ]
+
+# Words that signal a complaint only when stated, not when asked: "what is your return policy?" is an FAQ
+# (and used to silence the bot for the whole conversation), "I want a refund" is a complaint.
+SOFT_ESCALATION_TRIGGERS = ["refund", "return", "cancel order", "report"]
+
+# The same complaint / fraud / damage / refund words in the other scripts the shop's customers write
+# (substring match — these scripts have no ASCII word boundaries). Native-script shoppers used to get no
+# handoff at all on this keyword path.
+ESCALATION_TRIGGERS_NATIVE = [
+    "शिकायत", "धोखा", "धोका", "फ्रॉड", "फर्जी", "खराब", "टूटा", "रिफंड", "बेकार", "घटिया", "मालिक से बात",
+    "ફરિયાદ", "ઠગાઈ", "છેતરપિંડી", "ફ્રોડ", "ખરાબ", "તૂટેલ", "રિફંડ", "બકવાસ", "માલિક સાથે વાત",
+    "तक्रार", "फसवणूक", "तुटलेला", "परतावा", "मालकाशी बोल",
+    "অভিযোগ", "প্রতারণা", "রিফান্ড", "খারাপ", "மோசடி", "புகார்", "பணத்தை திரும்ப", "మోసం", "ఫిర్యాదు", "రీఫండ్",
+    "ವಂಚನೆ", "ದೂರು", "ರಿಫಂಡ್", "വഞ്ചന", "പരാതി", "റീഫണ്ട്", "ਧੋਖਾ", "ਸ਼ਿਕਾਇਤ", "ਖਰਾਬ", "ਰਿਫੰਡ", "ଠକେଇ", "ଅଭିଯୋଗ",
+    "شکایت", "دھوکہ", "فراڈ", "خراب", "ریفنڈ",
+]
+
+_QUESTION_STARTERS = (
+    "what", "how", "when", "where", "which", "who", "can", "could", "do", "does", "is", "are", "will", "kya", "kaise",
+    "kab", "kitne", "su", "shu", "kem",
+)
+
+
+def _is_question(msg: str) -> bool:
+    """True for a question ('?' / '؟' or a leading question word)."""
+    stripped = msg.strip()
+    first = stripped.split()[0] if stripped.split() else ""
+    tokens = set(re.findall(r"[a-z]+", stripped))
+    return "?" in stripped or "؟" in stripped or first in _QUESTION_STARTERS or bool(tokens & {"kya", "policy", "kaise", "kab"})
+
+
+def _has_word(msg: str, word: str) -> bool:
+    """Whole-word / whole-phrase match for ASCII triggers (so 'return' does not fire inside 'returning')."""
+    return re.search(rf"(?<![a-z]){re.escape(word)}(?![a-z])", msg) is not None
+
+
+def count_escalation_triggers(msg: str) -> int:
+    """Number of complaint triggers in an already lower-cased message (soft ones only count for statements)."""
+    hard = sum(1 for t in ESCALATION_TRIGGERS if _has_word(msg, t)) + sum(1 for t in ESCALATION_TRIGGERS_NATIVE if t in msg)
+    if hard or _is_question(msg):
+        return hard
+    return sum(1 for t in SOFT_ESCALATION_TRIGGERS if _has_word(msg, t))
 
 
 async def check_escalation_needed(
@@ -77,7 +121,7 @@ async def check_escalation_needed(
 
     # ── 1. Prompt injection ────────────────────────────────────────────────────
     for pattern in PROMPT_INJECTION_PATTERNS:
-        if pattern in msg:
+        if _has_word(msg, pattern):
             logger.warning(
                 "Prompt injection attempt on conversation %d: %r",
                 conversation_id,
@@ -87,14 +131,11 @@ async def check_escalation_needed(
                 "escalate": True,
                 "reason": "prompt_injection",
                 "notify_owner": False,
-                "response": (
-                    "I can only help with {business} products and orders. "
-                    "How can I assist you?"
-                ),
+                "response": None,   # the caller renders the localised `injection_refusal` template
             }
 
     # ── 2. Anger / complaint ───────────────────────────────────────────────────
-    trigger_count = sum(1 for t in ESCALATION_TRIGGERS if t in msg)
+    trigger_count = count_escalation_triggers(msg)
     if trigger_count >= 1:
         return {
             "escalate": True,
@@ -172,9 +213,10 @@ async def handle_escalation(
     if reason == "prompt_injection":
         logger.warning("Prompt injection from %s", customer_phone)
         business = getattr(client, "business_name", "this business") if client else "this business"
-        return (
-            f"I can only help with {business} products and orders. "
-            "How can I assist you?"
+        from app.services.language_templates import get_template
+
+        return get_template(
+            getattr(conversation, "last_customer_language", None) or "english", "injection_refusal", business=business,
         )
 
     # Customer upset / repeated question — notify owner, let AI respond

@@ -24,7 +24,8 @@ async def test_transcribe_voice_note_success(mock_settings):
     mock_client.audio.transcriptions.create.assert_called_once()
     call_kwargs = mock_client.audio.transcriptions.create.call_args.kwargs
     assert call_kwargs["model"] == "whisper-large-v3-turbo"
-    assert call_kwargs["language"] == "hi"
+    # The spoken language is auto-detected: a forced "hi" turned Gujarati/Marathi/Tamil notes into garbled Hindi.
+    assert "language" not in call_kwargs
     assert call_kwargs["file"][1] == b"fake_audio"
     assert call_kwargs["file"][2] == "audio/ogg"
 

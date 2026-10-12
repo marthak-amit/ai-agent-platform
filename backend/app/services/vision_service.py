@@ -87,7 +87,9 @@ async def download_instagram_media(image_url: str, access_token: str | None = No
         return resp.content
 
 
-async def analyze_product_image(image_source: bytes | str, catalogue_context: str) -> str | None:
+async def analyze_product_image(
+    image_source: bytes | str, catalogue_context: str, language: str | None = None,
+) -> str | None:
     """
     Send image to Groq's vision model and return a Hindi/Hinglish reply.
 
@@ -98,6 +100,8 @@ async def analyze_product_image(image_source: bytes | str, catalogue_context: st
     Args:
         image_source:      Raw bytes of the image, or a URL string.
         catalogue_context: Formatted product catalogue string from catalogue_service.
+        language:          Customer's language code (language_service); the reply is written in it. None keeps
+                           the historical Hindi/Hinglish default.
 
     Returns:
         Natural-language reply string in Hindi/Hinglish, or None if the Groq
@@ -109,6 +113,15 @@ async def analyze_product_image(image_source: bytes | str, catalogue_context: st
         llm_health.warn_vision_disabled_once()
         return None
     vision_model = settings.llm_model_vision
+    if language:
+        from app.services import language_service
+
+        reply_language = (
+            f"{language_service.LANGUAGES[language_service.normalize_language(language)][0]}, in the customer's own "
+            "script (pure language — no English words except product names and SKUs)"
+        )
+    else:
+        reply_language = "Hindi/Hinglish"
     if isinstance(image_source, str):
         image_content = {
             "type": "image_url",
@@ -144,7 +157,7 @@ async def analyze_product_image(image_source: bytes | str, catalogue_context: st
                                 "  [MATCHED_SKU:NONE]       ← if no confident single match\n"
                                 "This line is parsed by the system and NOT shown to the customer.\n\n"
                                 "⚠️ STOCK PRIVACY: Do NOT mention stock quantities or piece counts in your reply.\n\n"
-                                "Then reply in Hindi/Hinglish naturally:\n\n"
+                                f"Then reply in {reply_language} naturally (the examples below show the shape only — translate them):\n\n"
                                 "IF a confident match is found:\n"
                                 "  \"Ye to lagta hai humara [Product Name] hai — ₹[Price] mein "
                                 "available hai. Order karna chahenge?\"\n\n"

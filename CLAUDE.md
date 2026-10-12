@@ -125,6 +125,40 @@ ROUTER_V2_CLIENT_IDS=1   # optional: ids the LLM router is on for (see "LLM Inte
 - `META_APP_ID`/`META_OAUTH_REDIRECT_URI` back the self-serve Instagram OAuth connect flow (`app/routers/integrations.py`).
 - `META_WHATSAPP_CONFIG_ID` is the WhatsApp **Embedded Signup** Configuration ID (Meta App Dashboard → WhatsApp → Embedded Signup → Configurations) that powers the self-serve "Connect WhatsApp" button (`app/routers/whatsapp_signup.py`). Unset = that button is disabled and clients fall back to manually pasting Phone Number ID / Access Token. Getting a client fully live also requires them to appear as a Meta test user or the app to have passed Review for `whatsapp_business_management`/`whatsapp_business_messaging` — see Meta Business Settings → Roles → Test Users during development.
 
+## Language Mirroring (reply in the customer's language and script)
+
+The customer is answered in the language AND script they wrote — pure Gujarati script in → pure Gujarati script out
+(`શું તમે ચણિયા-ચોળી પણ વેચી રહ્યા છો?` → `હા, અમે ચણિયા ચોળી વેચીએ છીએ`), Hinglish in → Hinglish out, Tamil in → Tamil out.
+
+- **Detection** — `app/services/language_service.py`. `detect(text, previous)` → `Detection(lang, confident)`; script first (Gujarati, Devanagari
+  → Hindi *or* Marathi, Bengali, Tamil, Telugu, Kannada, Malayalam, Gurmukhi, Odia, Arabic → Urdu), then Roman-script keywords
+  (Hindi / Gujarati / Marathi), then English. A message with no signal (name, address, `ok`, `2`, `COD`, emoji) is *not confident*
+  and keeps the previous language. `normalize_language()` folds legacy values (`hinglish`) and unknown codes (→ `english`).
+  Codes: `english hindi_roman hindi_devanagari gujarati_roman gujarati_script marathi marathi_roman bengali tamil telugu kannada
+  malayalam punjabi odia urdu`.
+- **Sync per turn** — `order_pipeline.sync_conversation_language()` runs first in `_handle_inbound_message_core`, so every template
+  of the turn (including early-return guards) reads the CURRENT message's language from `conv.last_customer_language`. While a
+  name/address is being collected only a different *script* switches language (a Roman street name must not).
+- **Replies** — five languages have hand-written templates (`language_templates.TEMPLATES`: English, Hindi Roman/Devanagari,
+  Gujarati Roman/script). The LLM reply path gets `build_language_rule(lang)` (pure language, same script, no English words).
+- **Last-mile guarantee** — `reply_localizer.py`, applied in `handle_inbound_message` (and in `channel_sender` for system/bot
+  messages). A reply in the wrong script, an English leftover inside a native-script reply, or an English reply to a Hinglish
+  customer is translated through the LLM (`purpose="translate"`); every digit, price, SKU, URL and brand word must survive and
+  the result must be in the right script, otherwise the original text is sent. Catalogue names the seller wrote in English and
+  the customer's own typed words are allowed (`allowed_words_from`). Button labels of fixed actions are translated; product /
+  colour / size buttons keep the catalogue spelling because the tap is matched back against it. The saved history keeps the
+  engine's own text (the stage machine recognises "the agent just asked X" from it).
+- **Understanding replies** — the keyword (non-LLM) flow reads `command_words.py` (yes / no / cancel / continue / switch /
+  same / different / change / order-status / COD / UPI / greeting / thanks in all 15 languages) and `indic_vocab.py` (script-safe
+  `tokenize`, native product words → English catalogue words, colour aliases). Never use `re` `\w` on customer text: it deletes Indic
+  vowel signs — use `indic_vocab.tokenize` / `command_words.normalize`.
+- **Voice notes** are transcribed *before* the pipeline (`_transcribe_voice_note_early`, Whisper language auto-detect) and then behave
+  like typed text; the reply is prefixed with `_what was heard_`.
+- **Adding a language**: add it to `language_service.LANGUAGES` + script ranges, words to `command_words` / `indic_vocab`, and (optionally)
+  a template dict — without one the localizer translates the English text.
+- **Simulator** — `backend/tests/sim/` plays thousands of multilingual customers through the real app (see its README):
+  `python -m tests.sim.run_sim --n 5000 --concurrency 10`. Run it after touching the pipeline, templates or language code.
+
 ## Manual UPI Payment Verification
 
 We never collect money: the customer pays the seller's UPI directly and sends a screenshot in chat; the seller approves/rejects it in the dashboard. **LLM = understand only, engine = act only** — every payment reply is a deterministic EN/HI/GU template (`pay_*` keys in `app/services/language_templates.py`).

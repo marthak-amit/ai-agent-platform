@@ -431,7 +431,9 @@ async def test_generate_reply_all_429_returns_busy_fallback(monkeypatch):
 def test_rephrase_template_exists_in_every_language(lang):
     """The deterministic 'could you rephrase' reply exists for all template languages."""
     text = get_template(lang, "llm_unavailable_rephrase")
-    assert text and "order status" in text
+    assert text
+    if lang in ("english", "hindi_roman", "gujarati_roman"):   # native-script sets are deliberately English-free
+        assert "order status" in text.lower()
 
 
 async def test_analyze_product_image_disabled_returns_none(mock_settings, monkeypatch):

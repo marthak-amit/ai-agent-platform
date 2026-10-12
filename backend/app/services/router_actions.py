@@ -34,6 +34,7 @@ from app.services import (
     catalogue_service, conversation_control, conversation_flow, conversation_service, customer_service,
     intent_router, knowledge_service, llm_health, payment_verification_service,
 )
+from app.services import language_service as _lang_svc
 from app.services import order_pipeline as op
 from app.services.delivery_service import order_eta_window, to_ist_date
 from app.services.language_templates import format_price, get_template
@@ -61,8 +62,9 @@ _MAX_LIST = 5
 
 # General-answer guard: the model must not state facts the engine owns.
 _UNSAFE_HINT_RE = re.compile(
-    r"\d|₹|\brs\b|\brupee|\bsku\b|\b(dispatch\w*|shipp\w*|deliver\w*|paid|payment|refund\w*|stock|available|"
-    r"discount\w*|offer\w*|free|guarantee\w*|promise\w*|order\w*|cod|upi|price\w*|cost\w*)\b",
+    r"\d|₹|कीमत|दाम|डिलीवरी|ऑर्डर|भुगतान|पेमेंट|मुफ़्त|मुफ्त|छूट|स्टॉक|उपलब्ध|किंमत|मोफत|"
+    r"કિંમત|ભાવ|ડિલિવરી|ઓર્ડર|ચુકવણી|પેમેન્ટ|મફત|ડિસ્કાઉન્ટ|સ્ટોક|ઉપલબ્ધ|\brs\b|\brupee|\bsku\b|\b(dispatch\w*|shipp\w*|deliver\w*|paid|payment|refund\w*|stock|available|"
+    r"mufat|muft|kimat|keemat|daam|chhoot|discount\w*|offer\w*|free|guarantee\w*|promise\w*|order\w*|cod|upi|price\w*|cost\w*)\b",
     re.IGNORECASE,
 )
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?।])\s+")
@@ -81,20 +83,21 @@ class RouterOutcome:
 
 # ── language ─────────────────────────────────────────────────────────────────
 
-_LANG_FROM_ROUTER = {"en": "english", "hi": "hindi_roman", "gu": "gujarati_roman", "hinglish": "hinglish"}
-
-
 def template_language(decision: RouterDecision | None, user_text: str, conv) -> str:
     """
-    Template language key for the reply: script wins (Devanagari/Gujarati), else the router's
-    language, else the conversation's last language.
+    Language key for the reply: the conversation language, which the pipeline synced from this very
+    message before routing (script / keyword detection — the customer's own words win). The router's
+    guess is only used for a first, signal-less message ("ok", "2") when nothing is stored yet.
     """
-    detected = op._lang_svc.detect_language(user_text, previous_language=getattr(conv, "last_customer_language", None) or "english")
-    if detected in ("hindi_devanagari", "gujarati_script"):
-        return detected
-    if decision is not None:
-        return _LANG_FROM_ROUTER.get(decision.language, "english")
-    return (getattr(conv, "last_customer_language", None) or "english").lower()
+    stored = op._lang_svc.normalize_language(getattr(conv, "last_customer_language", None))
+    detection = op._lang_svc.detect(user_text, previous_language=stored)
+    if detection.confident:
+        return detection.lang
+    # No signal in the text itself: trust the router's reading of a Roman-script Hindi/Gujarati message
+    # only while nothing better is known (stored language still the English default).
+    if decision is not None and stored == "english":
+        return {"hi": "hindi_roman", "hinglish": "hindi_roman", "gu": "gujarati_roman"}.get(decision.language, stored)
+    return stored
 
 
 def _t(lang: str, key: str, **kw) -> str:
@@ -109,9 +112,16 @@ def _days_text(lang: str, lo: int, hi: int) -> str:
     return _t(lang, "rt_days_range", lo=lo, hi=hi)
 
 
-def _fmt_date(d) -> str:
-    """'12 Oct' (English month abbreviations read fine in every supported language)."""
-    return f"{d:%d %b}"
+_MONTHS = {
+    "hindi_devanagari": "जनवरी फ़रवरी मार्च अप्रैल मई जून जुलाई अगस्त सितंबर अक्टूबर नवंबर दिसंबर".split(),
+    "gujarati_script": "જાન્યુઆરી ફેબ્રુઆરી માર્ચ એપ્રિલ મે જૂન જુલાઈ ઑગસ્ટ સપ્ટેમ્બર ઑક્ટોબર નવેમ્બર ડિસેમ્બર".split(),
+}
+
+
+def _fmt_date(d, lang: str = "english") -> str:
+    """'12 Oct' — month names in the customer's own script where we have them (other languages: English abbreviation)."""
+    months = _MONTHS.get(lang)
+    return f"{d:%d} {months[d.month - 1]}" if months else f"{d:%d %b}"
 
 
 def _catalogue_url(client) -> str:
@@ -220,13 +230,13 @@ async def render_order_status(db, order, client, focus: str, lang: str) -> str:
             return _t(lang, "rt_cancelled_line")
         if status == "delivered":
             when = to_ist_date(order.delivered_at)
-            return _t(lang, "rt_delivered_on", date=_fmt_date(when)) if when else _t(lang, "rt_status_delivered")
+            return _t(lang, "rt_delivered_on", date=_fmt_date(when, lang)) if when else _t(lang, "rt_status_delivered")
         days = _days_text(lang, *eta["days"])
         if eta["state"] == "awaiting":
             return _t(lang, "rt_eta_awaiting", days=days)
         if eta["state"] == "overdue":
             return _t(lang, "rt_eta_overdue", days=days)
-        return _t(lang, "rt_eta_window", date_from=_fmt_date(eta["from"]), date_to=_fmt_date(eta["to"]))
+        return _t(lang, "rt_eta_window", date_from=_fmt_date(eta["from"], lang), date_to=_fmt_date(eta["to"], lang))
 
     def _tracking_line() -> str:
         """Courier/tracking line for dispatched orders (empty when the seller hasn't entered it)."""
@@ -246,10 +256,10 @@ async def render_order_status(db, order, client, focus: str, lang: str) -> str:
         if status == "payment_submitted":
             return _t(lang, "pay_proof_received")
         if order.paid_at:
-            return _t(lang, "rt_pay_received", date=_fmt_date(to_ist_date(order.paid_at)))
+            return _t(lang, "rt_pay_received", date=_fmt_date(to_ist_date(order.paid_at), lang))
         if is_cod:
             return _t(lang, "rt_pay_cod", amount=total)
-        return _t(lang, "rt_pay_received", date=_fmt_date(to_ist_date(order.created_at)))
+        return _t(lang, "rt_pay_received", date=_fmt_date(to_ist_date(order.created_at), lang))
 
     if focus == "items":
         return _t(lang, "rt_items_head", order_number=order.order_number, items=op._format_order_items(order), total=total)
@@ -932,6 +942,13 @@ async def handle_free_text(rc, decision: RouterDecision):
     lang = template_language(decision, rc.user_text, rc.conv)
     await _clear_menu(rc.db, rc.conv)
     safe = guard_reply_hint(decision.reply_hint, rc.ctx.candidate_products)
+    # The hint must be in the customer's own language and script; the claim guard above only knows
+    # English / Hindi / Gujarati / Marathi words, so any other language gets the (localised) template.
+    if safe and not (
+        _lang_svc.reply_matches_language(safe, lang) and _lang_svc.has_claim_guard(lang)
+    ):
+        logger.info("router: reply_hint dropped (language/script mismatch, lang=%s conv=%s)", lang, rc.conv.id)
+        safe = None
     if safe:
         return await rc.reply(safe, f"{decision.action.value}_hint", lang, path="LLM", model=get_settings().llm_model_classifier)
     if decision.reply_hint:
@@ -942,6 +959,10 @@ async def handle_free_text(rc, decision: RouterDecision):
 async def handle_clarify(rc, decision: RouterDecision | None):
     """Low confidence: 'Did you mean A or B?' (top 2 catalogue candidates) or 'what are you looking for?' — never echoes the text."""
     lang = template_language(decision, rc.user_text, rc.conv)
+    if rc.next_slot and rc.stage in intent_router.ORDER_SLOT_STAGES:
+        # Mid-order and the customer's reply made no sense: say so and ask the SAME question again —
+        # "what are you looking for?" would read as if the order had been forgotten.
+        return await _reask(rc, lang, "rt_clarify_slot", "clarify_slot")
     cands = [p for p in rc.ctx.candidate_products if intent_router.product_in_stock(p)][:2]
     if len(cands) == 2:
         reply = _t(lang, "rt_clarify_two", a=_product_line(cands[0]), b=_product_line(cands[1]))

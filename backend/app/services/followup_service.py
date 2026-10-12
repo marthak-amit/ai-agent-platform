@@ -24,17 +24,15 @@ from app.models.conversation import Conversation
 from app.models.follow_up import FollowUp
 from app.models.lead import Lead
 from app.models.message import Message
-from app.services import conversation_service, gemini_service, messaging_window, outbound
+from app.services import conversation_service, gemini_service, language_service, messaging_window, outbound, reply_localizer
+from app.services.language_templates import get_template
 from app.services.send_gate import MessageKind
 
 logger = logging.getLogger(__name__)
 
-# Re-engagement template used when Gemini is unavailable or has no context.
-_DEFAULT_MESSAGE = (
-    "Namaste! 🙏 Aapne hamare products mein interest dikhaya tha. "
-    "Aapka order complete karna baaki hai — kya aapko koi help chahiye? "
-    "Hum yahan hain! 😊"
-)
+# Re-engagement text used when the LLM is unavailable or has no context lives in language_templates
+# (`followup_default`, one per template language; other languages go through reply_localizer).
+
 
 # Eligibility windows
 _LAST_MSG_HOURS = 24   # lead must have been silent for at least this long
@@ -108,7 +106,7 @@ async def generate_followup_message(db: AsyncSession, lead: Lead) -> str:
 
     Loads the lead's conversation history and asks Gemini to write a brief,
     warm follow-up in Hindi/Hinglish that references their specific interest.
-    Falls back to _DEFAULT_MESSAGE if the conversation is empty or Gemini fails.
+    Falls back to the `followup_default` template if the conversation is empty or Gemini fails.
 
     Args:
         db:   Active async DB session.
@@ -117,35 +115,47 @@ async def generate_followup_message(db: AsyncSession, lead: Lead) -> str:
     Returns:
         Plain text WhatsApp message to send to the customer.
     """
+    lang = "english"
+    if lead.conversation_id is not None:
+        conv_row = await db.get(Conversation, lead.conversation_id)
+        lang = language_service.normalize_language(getattr(conv_row, "last_customer_language", None))
+    default = await reply_localizer.localize(
+        get_template(lang, "followup_default"), lang, client_id=getattr(lead, "client_id", None),
+        conversation_id=lead.conversation_id,
+    )
     if lead.conversation_id is None:
-        return _DEFAULT_MESSAGE
+        return default
 
     history = await conversation_service.get_history(db, lead.conversation_id)
     if not history:
-        return _DEFAULT_MESSAGE
+        return default
 
     history_dicts = [{"role": m.role, "content": m.content} for m in history]
 
     prompt = (
         "You are a helpful AI for an Indian business on WhatsApp. "
         "Based on this conversation, write a single brief, friendly re-engagement message "
-        "in Hindi/Hinglish to a customer who showed interest but has not completed their purchase. "
+        "to a customer who showed interest but has not completed their purchase. "
+        "Write it in the SAME language and script the customer has been using in this conversation. "
         "Keep it under 2 sentences. Be warm and helpful — not pushy or spammy. "
         "Reference their specific interest if it is clear from the conversation. "
-        "End with an open question like 'Kya main aapki help kar sakta hoon?'"
+        "End with a short open question asking if they need any help."
     )
 
     try:
-        return await gemini_service.generate_reply(
-            prompt, history=history_dicts, purpose="followup",
+        reply = await gemini_service.generate_reply(
+            prompt, history=history_dicts, purpose="followup", language=lang,
             client_id=getattr(lead, "client_id", None), conversation_id=lead.conversation_id,
+        )
+        return await reply_localizer.localize(
+            reply, lang, client_id=getattr(lead, "client_id", None), conversation_id=lead.conversation_id,
         )
     except Exception as exc:
         logger.warning(
             "Gemini follow-up generation failed for lead %d: %s. Using default message.",
             lead.id, exc,
         )
-        return _DEFAULT_MESSAGE
+        return default
 
 
 async def send_followups(db: AsyncSession) -> dict:

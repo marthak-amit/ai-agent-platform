@@ -242,6 +242,44 @@ async def send_image(client, sender: str, *, media_id: str = "media.proof.1",
     return await client.post("/webhook", content=body, headers=headers)
 
 
+def wa_audio_payload(
+    sender: str,
+    *,
+    media_id: str = "media.voice.1",
+    wamid: str | None = None,
+    phone_number_id: str = WA_PHONE_NUMBER_ID,
+) -> tuple[bytes, dict]:
+    """Build a WhatsApp voice-note (audio) webhook payload; returns (body_bytes, headers)."""
+    wamid = wamid or f"wamid.aud.{sender}.{time.time_ns()}"
+    payload = {
+        "object": "whatsapp_business_account",
+        "entry": [{
+            "id": "ENTRY_ID",
+            "changes": [{
+                "field": "messages",
+                "value": {
+                    "messaging_product": "whatsapp",
+                    "metadata": {"display_phone_number": "0", "phone_number_id": phone_number_id},
+                    "contacts": [{"profile": {"name": "Test User"}, "wa_id": sender}],
+                    "messages": [{
+                        "from": sender, "id": wamid, "timestamp": str(int(time.time())), "type": "audio",
+                        "audio": {"id": media_id, "mime_type": "audio/ogg; codecs=opus"},
+                    }],
+                },
+            }],
+        }],
+    }
+    body = json.dumps(payload).encode()
+    return body, {"X-Hub-Signature-256": _sign(body), "Content-Type": "application/json"}
+
+
+async def send_audio(client, sender: str, *, media_id: str = "media.voice.1", wamid: str | None = None,
+                     phone_number_id: str = WA_PHONE_NUMBER_ID):
+    """POST a WhatsApp voice note through the replay HTTP client."""
+    body, headers = wa_audio_payload(sender, media_id=media_id, wamid=wamid, phone_number_id=phone_number_id)
+    return await client.post("/webhook", content=body, headers=headers)
+
+
 def stub_media_and_capture_sends(monkeypatch) -> dict:
     """
     Make inbound media + outbound sends deterministic for payment-proof replays.

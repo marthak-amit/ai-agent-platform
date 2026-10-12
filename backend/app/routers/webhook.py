@@ -390,6 +390,10 @@ async def receive_message(
             elif _btn_id == "offer_no":
                 # E2: single-product offer "No" button — keep browsing.
                 user_text = "no"
+            elif _btn_id in ("upi", "cod", "bank_transfer"):
+                # Payment-method buttons: the id is the answer; the title is translated per customer
+                # language, so it must never be parsed as the customer's text.
+                user_text = {"upi": "UPI", "cod": "COD", "bank_transfer": "bank transfer"}[_btn_id]
             elif catalogue_service.SKU_PATTERN.fullmatch(_btn_id.upper()):
                 # E2: multi-option choice button — id IS the SKU, so resolve it
                 # directly (the existing pending_choice_skus SKU-substring match
@@ -434,9 +438,11 @@ async def receive_message(
         # message.audio is not None` — no ack for a malformed audio payload.
         if message.type == "audio" and message.audio is not None:
             try:
+                # Emoji-only on purpose: the customer's language is not known yet (the voice note is not
+                # transcribed), and a fixed Hinglish line was shown to Gujarati / Tamil / English speakers.
                 await outbound.send_text(
                     sender_phone,
-                    "🎤 Voice note suna. Ek second...",
+                    "🎤⏳",
                     kind=MessageKind.PIPELINE_REPLY,
                     db=db,
                 )

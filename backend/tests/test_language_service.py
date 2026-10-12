@@ -95,7 +95,7 @@ def test_detect_empty_string():
     ("hindi_devanagari",  "Devanagari"),
     ("hindi_roman",       "Hinglish"),
     ("gujarati_script",   "Gujarati script"),
-    ("gujarati_roman",    "Gujarati-English mix"),
+    ("gujarati_roman",    "Gujarati written in Roman letters"),
     ("hinglish",          "Hinglish"),
 ])
 def test_get_language_instruction_contains_key_phrase(lang: str, expected_fragment: str):
@@ -106,10 +106,10 @@ def test_get_language_instruction_contains_key_phrase(lang: str, expected_fragme
     )
 
 
-def test_get_language_instruction_unknown_lang_returns_hinglish():
-    """An unknown language code falls through to the Hinglish default."""
+def test_get_language_instruction_unknown_lang_returns_english():
+    """An unknown language code is treated as English (same fallback the templates use)."""
     result = get_language_instruction("klingon")
-    assert "Hinglish" in result
+    assert "ENGLISH" in result
 
 
 # ── build_language_rule ───────────────────────────────────────────────────────
@@ -137,3 +137,85 @@ def test_build_language_rule_gujarati_script():
     """Gujarati script rule must mention Gujarati."""
     rule = build_language_rule("gujarati_script")
     assert "GUJARATI" in rule
+
+
+# ── multilingual detection (any script) ───────────────────────────────────────
+
+from app.services.language_service import (  # noqa: E402
+    detect,
+    expected_script,
+    is_ambiguous,
+    normalize_language,
+    script_counts,
+)
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("શું તમે ચણિયા-ચોળી પણ વેચી રહ્યા છો?", "gujarati_script"),
+    ("હા", "gujarati_script"),
+    ("આ સાડી નો price શું છે", "gujarati_script"),
+    ("इस साड़ी की कीमत क्या है", "hindi_devanagari"),
+    ("तुमच्याकडे साडी आहे का?", "marathi"),
+    ("मला साडी पाहिजे", "marathi"),
+    ("এই শাড়ির দাম কত?", "bengali"),
+    ("இந்த புடவை விலை என்ன?", "tamil"),
+    ("ఈ చీర ధర ఎంత?", "telugu"),
+    ("ನಿಮ್ಮ ಬಳಿ ಸೀರೆ ಇದೆಯೇ", "kannada"),
+    ("നിങ്ങളുടെ പക്കൽ സാരി ഉണ്ടോ", "malayalam"),
+    ("ਇਹ ਸਾੜੀ ਕਿੰਨੇ ਦੀ ਹੈ", "punjabi"),
+    ("ଏହି ଶାଢ଼ୀର ଦାମ କେତେ", "odia"),
+    ("یہ ساڑھی کتنے کی ہے", "urdu"),
+    ("chaniya choli che?", "gujarati_roman"),
+    ("aa saree no price shu che", "gujarati_roman"),
+    ("tumchyakade saree ahe ka", "marathi_roman"),
+    ("mujhe saree chahiye", "hindi_roman"),
+    ("do you have red saree", "english"),
+])
+def test_detect_language_any_script(text, expected):
+    """Every supported script / Roman variant is recognised, punctuation included."""
+    assert detect_language(text) == expected
+
+
+@pytest.mark.parametrize("text", ["Rajesh Patel", "Ahmedabad, Navrangpura 380009", "COD", "2", "ok", "hi", "kurti", "😊"])
+def test_no_signal_message_keeps_previous_language(text):
+    """Names, addresses, digits, 'ok' and bare greetings never flip an established language."""
+    assert detect_language(text, previous_language="gujarati_script") == "gujarati_script"
+    assert detect(text, "gujarati_script").confident is False
+
+
+def test_script_beats_previous_language():
+    """A clearly written message switches language even when the previous turn differed."""
+    assert detect_language("ભાવ શું છે?", previous_language="english") == "gujarati_script"
+    assert detect_language("what is the price", previous_language="gujarati_script") == "english"
+
+
+def test_normalize_language_and_expected_script():
+    """Legacy spellings fold into known codes and scripts are looked up per language."""
+    assert normalize_language("hinglish") == "hindi_roman"
+    assert normalize_language("gu") == "gujarati_script"
+    assert normalize_language("klingon") == "english"
+    assert expected_script("gujarati_script") == "gujarati"
+    assert expected_script("hindi_roman") is None
+
+
+def test_script_counts_ignores_digits_and_emoji():
+    """Only letters count toward a script; matras count with their script."""
+    counts = script_counts("ચણિયા 123 😊 saree")
+    assert counts["gujarati"] >= 4 and counts["latin"] == 5
+
+
+def test_is_ambiguous_flags_short_replies():
+    """'yes' / 'COD' / digits carry no language signal."""
+    assert is_ambiguous("COD") and is_ambiguous(" 2 ") and not is_ambiguous("kem cho")
+
+
+def test_roman_language_mismatch_flags_wrong_language_latin_replies():
+    """An English reply to a Hinglish customer (and vice versa) is flagged; short product lines never are."""
+    from app.services.language_service import roman_language_mismatch as mismatch
+
+    assert mismatch("Our team will assist you shortly. Please reply yes to use this address", "hindi_roman")
+    assert mismatch("Haan ji, hamare paas yeh available hai. Kaunsa color chahiye aapko?", "english")
+    assert not mismatch("Haan ji, hamare paas yeh available hai. Kaunsa color chahiye aapko?", "hindi_roman")
+    assert not mismatch("Yes, we have this available in blue and pink. Which colour would you like?", "english")
+    assert not mismatch("Printed Kurti [KU30001] — ₹450 Cotton Kurta", "hindi_roman")
+    assert not mismatch("Our team will assist you shortly. Please reply yes", "gujarati_script")   # script languages: other check

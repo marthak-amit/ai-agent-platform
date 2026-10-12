@@ -14,7 +14,7 @@ import unicodedata as _ud
 
 from collections import OrderedDict
 
-from app.services import llm_client, llm_health
+from app.services import command_words, indic_vocab, llm_client, llm_health
 
 logger = logging.getLogger(__name__)
 
@@ -299,8 +299,8 @@ _CONFIRMATION_YES = frozenset({
     # Devanagari (Hindi) affirmatives — detect_stage splits on whitespace then intersects
     "हाँ", "हां", "ठीक",
     # Gujarati script affirmatives
-    "હા", "બરાબર", "કરો",
-})
+    "હા", "બરાબર",
+}) | command_words.WORDS["yes"]
 _CONFIRMATION_NO = frozenset({
     "no", "nahi", "nope", "cancel", "change", "badal", "nhi",
     "different", "wrong", "incorrect",
@@ -310,7 +310,7 @@ _CONFIRMATION_NO = frozenset({
     "नहीं", "ना", "मत",
     # Gujarati script negatives
     "ના", "નહીં", "નહિ", "રદ",
-})
+}) | command_words.WORDS["no"] | command_words.WORDS["cancel"]
 # "2" when cross-sell is shown means "add cross-sell product" — webhook.py intercepts
 # this before detect_stage runs. If no cross-sell was shown, 2 maps to Cancel above.
 
@@ -334,6 +334,28 @@ _BROWSING_STAGES: frozenset[str] = frozenset({
     "objection_handling", "offer_making",
 })
 
+def _template_cues(*keys: str) -> tuple[str, ...]:
+    """
+    Lower-cased literal fragments of the given template keys in EVERY template language.
+
+    The stage machine recognises "the agent just asked X" from the text of the last assistant message. Hand-
+    written cue lists only knew English / Roman Hindi / Roman Gujarati, so in Devanagari or Gujarati-script
+    conversations the question was never recognised ("yes" after the offer did not start the order).
+    Deriving cues from the templates themselves keeps them in step with what the bot really sends.
+    """
+    from app.services.language_templates import TEMPLATES
+
+    cues: set[str] = set()
+    for templates in TEMPLATES.values():
+        for key in keys:
+            template = templates.get(key, "")
+            for chunk in re.split(r"\{[^}]*\}|\([^)]*\)", template):
+                chunk = " ".join(chunk.lower().split()).strip(" ?.,:;-—–!🙂✅📦")
+                if len(chunk) >= 9:
+                    cues.add(chunk)
+    return tuple(sorted(cues))
+
+
 # Keywords in the AI's LAST message meaning it just offered to take an order
 # for a specific product (Mode A offer hook).
 _ORDER_OFFER_CUES: tuple[str, ...] = (
@@ -342,7 +364,7 @@ _ORDER_OFFER_CUES: tuple[str, ...] = (
     "order dena chahenge", "book karna", "khareedna chahte", "lena chahenge",
     "abhi order", "order karoge", "order dein", "lenge?", "order lena?",
     "order karein?", "khareedenge?",
-)
+) + _template_cues("would_you_like_to_order_generic", "would_you_like_to_order_named", "would_you_like_to_order_switch", "pinned_availability")
 
 # Customer words that explicitly affirm purchase intent
 _PURCHASE_AFFIRMATION: frozenset[str] = frozenset({
@@ -350,12 +372,12 @@ _PURCHASE_AFFIRMATION: frozenset[str] = frozenset({
     "bilkul", "zaroor", "done", "proceed", "place", "book",
     "order", "chahiye", "le lo", "le lena", "lena hai", "kar do",
     "kardo", "confirm", "bhejo", "lena", "dedo", "de do",
-})
+}) | command_words.WORDS["yes"]
 
 # Customer words that decline the order offer (stay browsing, don't escalate to objection_handling)
 _DECLINE_ORDER: frozenset[str] = frozenset({
     "no", "nahi", "nope", "nhi", "not", "mat",
-})
+}) | command_words.WORDS["no"]
 
 # Keywords in a customer message that request the catalogue / shop link
 CATALOGUE_KEYWORDS: tuple[str, ...] = (
@@ -425,7 +447,10 @@ _ORDER_FOLLOWUP_CUES = (
     "upi ya cod", "upi or cod", "ya cod", "ke cod", "cash on delivery",
     "payment kaisa", "payment kai rite", "how would you like to pay",
     "order summary", "confirm karein", "confirm?", "sab sahi hai",
-)
+) + _template_cues(
+    "ask_quantity", "ask_name", "ask_address", "ask_mobile", "ask_payment_method", "ask_payment_upi_cod",
+    "ask_variant_mode", "ask_cart_breakdown",
+) + ("✅ ઓર્ડર સારાંશ", "✅ ऑर्डर सारांश", "ઓર્ડર સારાંશ", "ऑर्डर सारांश")
 
 # Keywords in the AI's last message indicating it just asked for QUANTITY.
 # Quantity is ONLY extracted when the agent explicitly requested it.
@@ -433,7 +458,7 @@ _QUANTITY_ASK_CUES = (
     "how many", "kitne piece", "kitne pieces", "ketla piece", "ketla pieces",
     "quantity", "kitne chahiye", "how many pieces", "kitna chahiye",
     "kitne loge", "ketla joiye",
-)
+) + _template_cues("ask_quantity")
 
 # Keywords in the AI's last message indicating it just asked for NAME+ADDRESS
 # together in a single question (e.g. "May I have your name and delivery address?").
@@ -497,7 +522,7 @@ _SLOT_AFFIRMATIVES: frozenset[str] = frozenset({
     "haan", "ha", "han", "ha",
     "ok", "okay", "sahi", "theek",
     "bilkul", "zaroor", "sure", "fine", "correct",
-})
+}) | command_words.WORDS["yes"]
 
 # Words meaning "I want to change / use a different address".
 # When detected in response to a saved-address confirm, the slot is NOT filled
@@ -505,21 +530,21 @@ _SLOT_AFFIRMATIVES: frozenset[str] = frozenset({
 _SAVED_ADDRESS_NEGATIONS: frozenset[str] = frozenset({
     "change", "no", "nahi", "nope", "edit", "badal", "nhi",
     "different", "new", "alag", "nayi",
-})
+}) | command_words.WORDS["change"] | command_words.WORDS["different"]
 
 
 # Shared deterministic (Tier 0, no LLM) vocabulary for classifying a reply to
 # the saved-address confirm prompt ("{name}, deliver to: {address}? (yes/change)").
-_NEGATION_WORDS: frozenset[str] = frozenset({"not", "don't", "dont", "no", "nahi", "mat"})
+_NEGATION_WORDS: frozenset[str] = frozenset({"not", "don't", "dont", "no", "nahi", "mat"}) | command_words.WORDS["no"]
 _NEGATION_PHRASES: tuple[str, ...] = ("do not", "no need")
 
 _ADDRESS_CONFIRM_TOKENS: frozenset[str] = frozenset({
     "yes", "y", "ok", "okay", "k", "haan", "han", "ha",
     "confirm", "correct", "same", "right", "theek", "sahi",
-})
+}) | command_words.WORDS["yes"]
 _ADDRESS_CHANGE_TOKENS: frozenset[str] = frozenset({
     "change", "edit", "new", "different", "update", "badlo", "badal", "naya",
-})
+}) | command_words.WORDS["change"]
 
 
 def is_negated(text: str) -> bool:
@@ -550,8 +575,7 @@ def classify_address_confirmation(text: str) -> str:
         never run address validation on it.
     """
     lower = text.lower().strip()
-    words = re.findall(r"[a-zA-Z']+", lower)
-    word_set = set(words)
+    word_set = set(indic_vocab.tokenize(lower)) | set(re.findall(r"[a-zA-Z']+", lower))
 
     has_change = bool(word_set & _ADDRESS_CHANGE_TOKENS)
     has_confirm = bool(word_set & _ADDRESS_CONFIRM_TOKENS)
@@ -687,7 +711,7 @@ async def classify_user_intent(
         "રદ કરો", "रद्द", "cancel karo", "nahi chahiye", "nahi karna",
     )
     _text_lower = user_text.lower().strip()
-    if any(kw in _text_lower for kw in _CANCEL_KW):
+    if any(kw in _text_lower for kw in _CANCEL_KW) or command_words.is_cancel(user_text):
         return {"intent": "CANCEL", "entities": {}}
 
     # Fast SKU path — a SKU token is never a valid answer to most order slots.
@@ -1032,14 +1056,23 @@ def detect_stage(
     # Everything else keeps the customer in this stage to re-confirm.
     if stored_stage == "awaiting_final_confirmation":
         msg_lower = latest_message.lower().strip()
-        words = set(msg_lower.split())
-        if words & _CONFIRMATION_YES:
-            return "completed"
-        if words & _CONFIRMATION_NO:
+        words = set(command_words.normalize(msg_lower).split())
+        # "no"/"cancel" wins over a "yes" word in the same message ("રદ કરો", "nahi, ok").
+        if command_words.is_no(latest_message) or (words & _CONFIRMATION_NO and not command_words.is_yes(latest_message)):
             # Slot resets happen in webhook.py after stage detection.
             return "order_collection"
+        if words & _CONFIRMATION_YES or command_words.is_yes(latest_message):
+            return "completed"
         # Customer said something else (off-topic, question) — stay put.
         return "awaiting_final_confirmation"
+
+    # An order is already being collected: every reply is an answer to a slot question, whatever words
+    # it contains. Without this, "UPI" typed at the "Payment? UPI / COD" question (or "paid"/"qty"/"size")
+    # was keyword-matched into the payment stage — the answer was treated as a side question and the
+    # customer got the same reply forever. (_is_order_followup below only recognises the wording of a
+    # few languages, so it cannot be the only guard.)
+    if stored_stage == "order_collection":
+        return "order_collection"
 
     # ── Mode A → Mode B transition ────────────────────────────────────────────
     # Only cross into order_collection when a product was already shown
@@ -1051,7 +1084,9 @@ def detect_stage(
         _offered = _last_ai_offered_order(conversation_history)
 
         # Affirmation after order offer → enter order_collection
-        if _offered and (words_set & _PURCHASE_AFFIRMATION):
+        if _offered and command_words.is_no(latest_message):
+            return "product_inquiry"
+        if _offered and (words_set & _PURCHASE_AFFIRMATION or command_words.is_yes(latest_message)):
             return "order_collection"
 
         # Decline after order offer → stay in browsing (not objection_handling)
@@ -1118,6 +1153,27 @@ def detect_stage(
 # which "different for each" collection uses a single free-text breakdown
 # reply instead of asking one item at a time. v1 default, not tuned.
 _CART_BATCH_THRESHOLD = 10
+
+
+def _colors_named(text: str, available_colors: list[str], *, whole_word: bool = False) -> list[str]:
+    """
+    Available colours the message names — by their catalogue spelling ("Pink") or by any native/Roman
+    alias of the same colour ("ગુલાબી", "gulabi", "गुलाबी wala"). Catalogue spelling wins; order follows
+    `available_colors`.
+    """
+    lower = text.lower()
+    out: list[str] = []
+    named = indic_vocab.canonical_color(text)
+    for color in available_colors:
+        if whole_word:
+            hit = bool(re.search(r"\b" + re.escape(color.lower()) + r"\b", lower))
+        else:
+            hit = color.lower() in lower
+        if not hit and named and indic_vocab.canonical_color(color) == named:
+            hit = True
+        if hit:
+            out.append(color)
+    return out
 
 
 def _opportunistic_qty_fallback(
@@ -1384,30 +1440,29 @@ def extract_order_field(
 
     # ── COLOUR ────────────────────────────────────────────────────────────────
     if next_slot == "color":
-        for color in vi.get("available_colors", []):
-            if color.lower() in text_lower:
-                # Section 2 multi-slot: scan the SAME message for size and
-                # quantity too ("red and XL size, 2 pieces") so they aren't
-                # dropped and the customer isn't re-asked for a value already
-                # given — apply directly to the in-memory conversation object;
-                # it persists with the next commit in this request, same as
-                # any other ORM mutation.
-                _consumed: tuple[str, ...] = ()
-                if vi.get("needs_size"):
-                    canonical_size = _extract_size_token(text, vi.get("available_sizes", []))
-                    if canonical_size and not getattr(conversation, "selected_size", None):
-                        conversation.selected_size = canonical_size
-                        logger.info(
-                            "Multi-slot: size=%r captured alongside color=%r in one message",
-                            canonical_size, color,
-                        )
-                    if canonical_size:
-                        # A numeric size ("40") must not be re-read as quantity.
-                        _consumed = (canonical_size,)
-                _maybe_capture_quantity(
-                    conversation, text, available_stock, consumed_tokens=_consumed
-                )
-                return ("selected_color", color)
+        for color in _colors_named(text, vi.get("available_colors", [])):
+            # Section 2 multi-slot: scan the SAME message for size and
+            # quantity too ("red and XL size, 2 pieces") so they aren't
+            # dropped and the customer isn't re-asked for a value already
+            # given — apply directly to the in-memory conversation object;
+            # it persists with the next commit in this request, same as
+            # any other ORM mutation.
+            _consumed: tuple[str, ...] = ()
+            if vi.get("needs_size"):
+                canonical_size = _extract_size_token(text, vi.get("available_sizes", []))
+                if canonical_size and not getattr(conversation, "selected_size", None):
+                    conversation.selected_size = canonical_size
+                    logger.info(
+                        "Multi-slot: size=%r captured alongside color=%r in one message",
+                        canonical_size, color,
+                    )
+                if canonical_size:
+                    # A numeric size ("40") must not be re-read as quantity.
+                    _consumed = (canonical_size,)
+            _maybe_capture_quantity(
+                conversation, text, available_stock, consumed_tokens=_consumed
+            )
+            return ("selected_color", color)
         # Bug fix 2: an unprompted bare quantity ("100 pic leva che") sent
         # while the color question is pending used to be silently discarded
         # here. Capture it opportunistically instead of losing it.
@@ -1418,9 +1473,8 @@ def extract_order_field(
         # Fix B: if the user types a valid color name while being asked for size,
         # treat it as a color switch — overwrite selected_color so the next slot
         # re-ask uses the new color's in-stock sizes (Fix A).
-        for color in vi.get("available_colors", []):
-            if re.search(r"\b" + re.escape(color.lower()) + r"\b", text_lower):
-                return ("selected_color", color)
+        for color in _colors_named(text, vi.get("available_colors", []), whole_word=True):
+            return ("selected_color", color)
         size_map = {s.lower(): s for s in vi.get("available_sizes", [])}
         for token in words:
             canonical = size_map.get(token.lower())
@@ -1454,11 +1508,13 @@ def extract_order_field(
     # cart_items stays untouched); "different" starts the cart-building loop.
     if next_slot == "variant_mode":
         _norm = text_lower.strip()
-        if _norm in ("same", "1", "same for all", "ek j", "same rakho", "बराबर", "same hi"):
+        if _norm in ("same", "1", "same for all", "ek j", "same rakho", "बराबर", "same hi") or (
+            command_words.matches("same", text) and not command_words.matches("different", text)
+        ):
             return ("cart_variant_mode", "same")
         if _norm in (
             "different", "2", "different for each", "alag alag", "juda juda", "different karo",
-        ):
+        ) or command_words.matches("different", text):
             return ("cart_variant_mode", "different")
         return None
 
@@ -1561,10 +1617,12 @@ def extract_order_field(
             _classification = classify_address_confirmation(text)
             if _classification == "confirm":
                 return ("delivery_address", saved_address)
-            # "change" or "unclear" — neither is a valid address. Return None
-            # so the caller re-prompts (asks for a new address, or re-shows
-            # the yes/change prompt) instead of falling through to
-            # is_valid_address() below.
+            # A returning customer who simply TYPES the new address (instead of the word "change") must
+            # not be told "reply yes or change" forever: a message that is a valid address on its own is
+            # the new address.
+            if _classification == "unclear" and not _SKU_ONLY_PATTERN.match(text.strip()) and is_valid_address(text):
+                return ("delivery_address", clean_address(text))
+            # "change" (or genuine garbage) — not an address. Return None so the caller re-prompts.
             return None
         # Customer explicitly asks to reuse the address on file, even when the
         # agent didn't just offer it (e.g. mid-rejection-loop: "use my old address").
@@ -1601,6 +1659,11 @@ def extract_order_field(
         if "COD" in upper or "CASH" in upper:
             return ("payment_method", "COD")
         if any(kw in upper for kw in ("UPI", "GPAY", "PAYTM", "PHONEPE", "PHONEPAY")):
+            return ("payment_method", "UPI")
+        # Any language / script ("कैश ऑन डिलीवरी", "કેશ ઓન ડિલિવરી", "ஆன்லைன்"). COD wins a tie, like above.
+        if command_words.matches("pay_cod", text):
+            return ("payment_method", "COD")
+        if command_words.matches("pay_upi", text):
             return ("payment_method", "UPI")
         # Confirm-style slot: when the agent offered a single implied payment method
         # (UPI-only prompt), an affirmative reply fills UPI — same pattern as

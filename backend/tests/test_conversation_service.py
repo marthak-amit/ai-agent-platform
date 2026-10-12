@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.conftest import with_savepoint
+
 from app.services import conversation_service
 
 
@@ -43,6 +45,7 @@ async def test_get_or_create_creates_new_conversation(db, mock_settings):
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = None
     db.execute.return_value = mock_result
+    with_savepoint(db)
 
     await conversation_service.get_or_create_conversation(db, "919999999999")
 

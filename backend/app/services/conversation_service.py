@@ -19,6 +19,7 @@ from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.lead import Lead
 from app.services import cost_log
+from app.services.db_helpers import add_or_get
 
 _ROLE_MAP = {
     "human": "user",
@@ -75,14 +76,13 @@ async def get_or_create_conversation(
     result = await db.execute(query)
     conv = result.scalar_one_or_none()
     if conv is None:
-        conv = Conversation(
+        conv, _created = await add_or_get(db, Conversation(
             phone_number=phone_number,
             channel=channel,
             is_sandbox=is_sandbox,
             client_id=client_id,
             source=source,
-        )
-        db.add(conv)
+        ), query)
         await db.commit()
         await db.refresh(conv)
     return conv

@@ -564,8 +564,16 @@ async def get_stock_history(
 # ── Keyword search ────────────────────────────────────────────────────────────
 
 def _tokenize(text: str) -> set[str]:
-    """Lower-case, strip punctuation, remove stop words."""
-    tokens = re.findall(r"[a-z0-9]+", text.lower())
+    """
+    Lower-case words of `text` in any script, minus stop words, plus the English product words that
+    native/Roman spellings stand for ("સાડી" → saree, "लहंगा" → lehenga) — so a Gujarati query finds an
+    English-named catalogue (and an English query finds a Gujarati-named product).
+    """
+    from app.services import indic_vocab
+
+    tokens = indic_vocab.tokenize(text)
+    for canonical in indic_vocab.expand_query(text):
+        tokens.extend(indic_vocab.tokenize(canonical))
     return {t for t in tokens if t not in _STOP_WORDS and len(t) > 1}
 
 
@@ -881,9 +889,9 @@ def _is_smalltalk_only(text: str) -> bool:
     """
     if not text:
         return True
-    stripped = re.sub(r"[^\w\s]", "", text.lower())
-    stripped = re.sub(r"\s+", " ", stripped).strip()
-    return stripped in _SMALLTALK_ONLY_PHRASES
+    from app.services import command_words, indic_vocab
+
+    return " ".join(indic_vocab.tokenize(text)) in _SMALLTALK_ONLY_PHRASES or command_words.is_smalltalk_only(text)
 
 
 def guard_product_reply(

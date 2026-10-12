@@ -9,6 +9,8 @@ point of this file.
 
 from __future__ import annotations
 
+import re
+
 
 def format_price(p: float | int) -> str:
     """Format a price as integer rupees with thousands separator: ₹2,450."""
@@ -16,6 +18,42 @@ def format_price(p: float | int) -> str:
 
 
 ENGLISH_TEMPLATES: dict[str, str] = {
+    "would_you_like_to_order_switch": "Would you like to order {name}? (Yes / No)",
+    "followup_default": "Hello! 🙏 You showed interest in our products. Your order is still pending — can we help you with anything? We're here! 😊",
+    "ostatus_new": "New",
+    "ostatus_pending_payment": "Pending payment",
+    "ostatus_payment_submitted": "Payment under verification",
+    "ostatus_confirmed": "Confirmed",
+    "ostatus_paid": "Paid",
+    "ostatus_processing": "Processing",
+    "ostatus_dispatched": "Dispatched",
+    "ostatus_delivered": "Delivered",
+    "ostatus_cancelled": "Cancelled",
+    "variant_slot_rejected": "Sorry, we don't have {value} in {slot}. Available {slot}: {opts}",
+    "variant_slot_rejected_noecho": "Sorry, that isn't one of the available {slot} options: {opts}",
+    "card_colors": "Available colors: {colors}",
+    "card_sizes": "Available sizes: {sizes}",
+    "card_intro": "Yes, we have this available:",
+    "afc_no_match": "Couldn't find '{text}' — reply 1️⃣/2️⃣/3️⃣, or send the product name/code you want instead.",
+    "switching_to": "Sure, switching to {product}. 👍",
+    "injection_refusal": "I can only help with {business} products and orders. How can I assist you?",
+    "off_topic_boundary": "I can only help with orders from {business}. Tap a product or type 'cancel' to start over.",
+    "attr_size": "size",
+    "attr_colour": "colour",
+    "attr_material": "material",
+    "saved_address_reprompt": "Please reply *yes* to use this address, or *change* to enter a new one.",
+    "team_will_assist": "Our team will assist you shortly. 👋",
+    "ask_new_address": "Sure — what's the new delivery address? Please send house/area, city and pincode.",
+    "rt_clarify_slot": "Sorry, I didn't quite get that.",
+    "catalogue_browse_more": "🛍️ Browse more: {url}",
+    "catalogue_cross_sell": "🛍️ You might also like {name} ({price}) — {url}",
+    "btn_pay_upi": "💳 Pay via UPI",
+    "btn_pay_cod": "🚚 Cash on Delivery",
+    "btn_pay_bank": "🏦 Bank Transfer",
+    "btn_confirm_pay": "Confirm & Pay",
+    "btn_cancel": "Cancel",
+    "btn_yes": "Yes",
+    "btn_no": "No",
     "rt_order_open_note": "Your order for {product} is still open — answer the last question to continue, or type 'cancel' to stop it.",
     "rt_card": "{name} [{sku}] — {price}.{options_line}",
     # ── ROUTER_V2 (LLM intent router) replies: deterministic, engine-written ──
@@ -132,8 +170,8 @@ ENGLISH_TEMPLATES: dict[str, str] = {
         "Reply PAID when done. ✅"
     ),
     "stock_exceeded": "We only have {stock} pieces available. Would you like {stock} pieces?",
+    "summary_upi_only_note": "We currently accept payments via UPI only.",
     "order_summary": (
-        "We currently accept payments via UPI only.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
         "📦 {product} × {qty} = {total}\n"
@@ -144,7 +182,6 @@ ENGLISH_TEMPLATES: dict[str, str] = {
         "━━━━━━━━━━━━━━━"
     ),
     "order_summary_variant": (
-        "We currently accept payments via UPI only.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
         "📦 {product} {variant} × {qty} = {total}\n"
@@ -155,7 +192,6 @@ ENGLISH_TEMPLATES: dict[str, str] = {
         "━━━━━━━━━━━━━━━"
     ),
     "order_summary_crosssell": (
-        "We currently accept payments via UPI only.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
         "📦 {product} × {qty} = {total}\n"
@@ -170,7 +206,6 @@ ENGLISH_TEMPLATES: dict[str, str] = {
         "3️⃣ Cancel"
     ),
     "order_summary_variant_crosssell": (
-        "We currently accept payments via UPI only.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
         "📦 {product} {variant} × {qty} = {total}\n"
@@ -185,7 +220,6 @@ ENGLISH_TEMPLATES: dict[str, str] = {
         "3️⃣ Cancel"
     ),
     "cart_order_summary": (
-        "We currently accept payments via UPI only.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
         "{items_block}\n"
@@ -292,6 +326,42 @@ ENGLISH_TEMPLATES: dict[str, str] = {
 }
 
 HINDI_TEMPLATES: dict[str, str] = {
+    "would_you_like_to_order_switch": "Kya aap {name} order karna chahenge? (Haan / Nahi)",
+    "followup_default": "Namaste! 🙏 Aapne hamare products mein interest dikhaya tha. Aapka order complete karna baaki hai — kya aapko koi help chahiye? Hum yahan hain! 😊",
+    "ostatus_new": "Naya",
+    "ostatus_pending_payment": "Payment baaki",
+    "ostatus_payment_submitted": "Payment verify ho raha hai",
+    "ostatus_confirmed": "Confirm",
+    "ostatus_paid": "Payment ho gaya",
+    "ostatus_processing": "Process ho raha hai",
+    "ostatus_dispatched": "Dispatch ho gaya",
+    "ostatus_delivered": "Deliver ho gaya",
+    "ostatus_cancelled": "Cancel",
+    "variant_slot_rejected": "Maafi, {value} {slot} mein available nahi hai. Available {slot}: {opts}",
+    "variant_slot_rejected_noecho": "Maafi, yeh available {slot} options mein nahi hai: {opts}",
+    "card_colors": "Available colors: {colors}",
+    "card_sizes": "Available sizes: {sizes}",
+    "card_intro": "Haan, yeh available hai:",
+    "afc_no_match": "'{text}' nahi mila — 1️⃣/2️⃣/3️⃣ reply karein, ya jo product chahiye uska naam/code bhejein.",
+    "switching_to": "Theek hai, {product} par switch kar rahe hain. 👍",
+    "injection_refusal": "Main sirf {business} ke products aur orders mein madad kar sakta hoon. Main aapki kya madad karoon?",
+    "off_topic_boundary": "Main sirf {business} ke orders mein madad kar sakta hoon. Koi product chunein ya shuru se karne ke liye 'cancel' likhein.",
+    "attr_size": "size",
+    "attr_colour": "color",
+    "attr_material": "material",
+    "saved_address_reprompt": "Is address par bhejne ke liye *haan* likhein, ya naya address dene ke liye *change* likhein.",
+    "team_will_assist": "Hamara team aapki madad karega. 👋",
+    "ask_new_address": "Zaroor — naya delivery address kya hai? Ghar/area, city aur pincode bhejein.",
+    "rt_clarify_slot": "Maaf kijiye, main samajh nahi paya.",
+    "catalogue_browse_more": "🛍️ Aur dekhein: {url}",
+    "catalogue_cross_sell": "🛍️ Aapko {name} ({price}) bhi pasand aa sakta hai — {url}",
+    "btn_pay_upi": "💳 UPI se pay karein",
+    "btn_pay_cod": "🚚 Cash on Delivery",
+    "btn_pay_bank": "🏦 Bank Transfer",
+    "btn_confirm_pay": "Confirm & Pay",
+    "btn_cancel": "Cancel",
+    "btn_yes": "Haan",
+    "btn_no": "Nahi",
     "rt_order_open_note": "{product} ka aapka order abhi khula hai — jaari rakhne ke liye aakhri sawaal ka jawab dein, ya rokne ke liye 'cancel' likhein.",
     "rt_card": "{name} [{sku}] — {price}.{options_line}",
     # ── ROUTER_V2 (LLM intent router) replies: deterministic, engine-written ──
@@ -407,8 +477,8 @@ HINDI_TEMPLATES: dict[str, str] = {
         "Payment ke baad PAID reply karein. ✅"
     ),
     "stock_exceeded": "Sirf {stock} pieces available hain. {stock} pieces ka order karein?",
+    "summary_upi_only_note": "Hum sirf UPI se payment accept karte hain.",
     "order_summary": (
-        "Hum sirf UPI se payment accept karte hain.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
         "📦 {product} × {qty} = {total}\n"
@@ -419,7 +489,6 @@ HINDI_TEMPLATES: dict[str, str] = {
         "━━━━━━━━━━━━━━━"
     ),
     "order_summary_variant": (
-        "Hum sirf UPI se payment accept karte hain.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
         "📦 {product} {variant} × {qty} = {total}\n"
@@ -430,7 +499,6 @@ HINDI_TEMPLATES: dict[str, str] = {
         "━━━━━━━━━━━━━━━"
     ),
     "order_summary_crosssell": (
-        "Hum sirf UPI se payment accept karte hain.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
         "📦 {product} × {qty} = {total}\n"
@@ -445,7 +513,6 @@ HINDI_TEMPLATES: dict[str, str] = {
         "3️⃣ Cancel"
     ),
     "order_summary_variant_crosssell": (
-        "Hum sirf UPI se payment accept karte hain.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
         "📦 {product} {variant} × {qty} = {total}\n"
@@ -460,7 +527,6 @@ HINDI_TEMPLATES: dict[str, str] = {
         "3️⃣ Cancel"
     ),
     "cart_order_summary": (
-        "Hum sirf UPI se payment accept karte hain.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
         "{items_block}\n"
@@ -568,6 +634,42 @@ HINDI_TEMPLATES: dict[str, str] = {
 }
 
 GUJARATI_TEMPLATES: dict[str, str] = {
+    "would_you_like_to_order_switch": "Shu tame {name} order karva mangso cho? (Haa / Na)",
+    "followup_default": "Namaste! 🙏 Tame amara products ma interest batavyo hato. Tamaro order complete karvano baki chhe — shu tamne koi madad joiye? Ame ahi chhie! 😊",
+    "ostatus_new": "Navo",
+    "ostatus_pending_payment": "Payment baki",
+    "ostatus_payment_submitted": "Payment verify thai rahyu chhe",
+    "ostatus_confirmed": "Confirm",
+    "ostatus_paid": "Payment thai gayu",
+    "ostatus_processing": "Process thai rahyu chhe",
+    "ostatus_dispatched": "Dispatch thai gayu",
+    "ostatus_delivered": "Deliver thai gayu",
+    "ostatus_cancelled": "Cancel",
+    "variant_slot_rejected": "Maaf karo, {slot} ma {value} available nathi. Available {slot}: {opts}",
+    "variant_slot_rejected_noecho": "Maaf karo, aa available {slot} options ma nathi: {opts}",
+    "card_colors": "Available colors: {colors}",
+    "card_sizes": "Available sizes: {sizes}",
+    "card_intro": "Ha, aa available chhe:",
+    "afc_no_match": "'{text}' malyu nahi — 1️⃣/2️⃣/3️⃣ lakho, athva je product joiye teno naam/code moklo.",
+    "switching_to": "Saru, {product} par switch kari rahya chhie. 👍",
+    "injection_refusal": "Hu fakt {business} na products ane orders ma madad kari shaku chhu. Hu tamari shu madad karu?",
+    "off_topic_boundary": "Hu fakt {business} na orders ma madad kari shaku chhu. Koi product pasand karo athva fari sharu karva 'cancel' lakho.",
+    "attr_size": "size",
+    "attr_colour": "color",
+    "attr_material": "material",
+    "saved_address_reprompt": "Aa address par moklva *ha* lakho, athva navu address aapva *change* lakho.",
+    "team_will_assist": "Amari team tamne madad karse. 👋",
+    "ask_new_address": "Jarur — navu delivery address shu chhe? Ghar/vistar, shahar ane pincode moklo.",
+    "rt_clarify_slot": "Maaf karjo, mane samjayu nahi.",
+    "catalogue_browse_more": "🛍️ Vadhu juo: {url}",
+    "catalogue_cross_sell": "🛍️ Tamne {name} ({price}) pan gamshe — {url}",
+    "btn_pay_upi": "💳 UPI thi pay karo",
+    "btn_pay_cod": "🚚 Cash on Delivery",
+    "btn_pay_bank": "🏦 Bank Transfer",
+    "btn_confirm_pay": "Confirm & Pay",
+    "btn_cancel": "Cancel",
+    "btn_yes": "Ha",
+    "btn_no": "Na",
     "rt_order_open_note": "{product} no tamaro order hajuy chalu chhe — chalu rakhva chhella sawal no jawab aapo, athva rokva 'cancel' lakho.",
     "rt_card": "{name} [{sku}] — {price}.{options_line}",
     # ── ROUTER_V2 (LLM intent router) replies: deterministic, engine-written ──
@@ -683,8 +785,8 @@ GUJARATI_TEMPLATES: dict[str, str] = {
         "Payment pachhi PAID reply karo. ✅"
     ),
     "stock_exceeded": "Sirf {stock} pieces available chhe. {stock} pieces levo chhe?",
+    "summary_upi_only_note": "Hum sirf UPI thi payment accept karie chhe.",
     "order_summary": (
-        "Hum sirf UPI thi payment accept karie chhe.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
         "📦 {product} × {qty} = {total}\n"
@@ -695,7 +797,6 @@ GUJARATI_TEMPLATES: dict[str, str] = {
         "━━━━━━━━━━━━━━━"
     ),
     "order_summary_variant": (
-        "Hum sirf UPI thi payment accept karie chhe.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
         "📦 {product} {variant} × {qty} = {total}\n"
@@ -706,7 +807,6 @@ GUJARATI_TEMPLATES: dict[str, str] = {
         "━━━━━━━━━━━━━━━"
     ),
     "order_summary_crosssell": (
-        "Hum sirf UPI thi payment accept karie chhe.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
         "📦 {product} × {qty} = {total}\n"
@@ -721,7 +821,6 @@ GUJARATI_TEMPLATES: dict[str, str] = {
         "3️⃣ Cancel"
     ),
     "order_summary_variant_crosssell": (
-        "Hum sirf UPI thi payment accept karie chhe.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
         "📦 {product} {variant} × {qty} = {total}\n"
@@ -736,7 +835,6 @@ GUJARATI_TEMPLATES: dict[str, str] = {
         "3️⃣ Cancel"
     ),
     "cart_order_summary": (
-        "Hum sirf UPI thi payment accept karie chhe.\n\n"
         "✅ Order Summary\n"
         "━━━━━━━━━━━━━━━\n"
         "{items_block}\n"
@@ -844,11 +942,47 @@ GUJARATI_TEMPLATES: dict[str, str] = {
 }
 
 HINDI_DEVANAGARI_TEMPLATES: dict[str, str] = {
-    "rt_order_open_note": "{product} का आपका ऑर्डर अभी खुला है — जारी रखने के लिए आख़िरी सवाल का जवाब दें, या रोकने के लिए 'cancel' लिखें।",
+    "would_you_like_to_order_switch": "क्या आप {name} ऑर्डर करना चाहेंगे? (हाँ / नहीं)",
+    "followup_default": "नमस्ते! 🙏 आपने हमारे प्रोडक्ट्स में रुचि दिखाई थी। आपका ऑर्डर पूरा करना बाकी है — क्या आपको कोई मदद चाहिए? हम यहाँ हैं! 😊",
+    "ostatus_new": "नया",
+    "ostatus_pending_payment": "भुगतान बाकी",
+    "ostatus_payment_submitted": "भुगतान की जाँच हो रही है",
+    "ostatus_confirmed": "कन्फर्म",
+    "ostatus_paid": "भुगतान हो गया",
+    "ostatus_processing": "प्रोसेस हो रहा है",
+    "ostatus_dispatched": "भेज दिया गया",
+    "ostatus_delivered": "डिलीवर हो गया",
+    "ostatus_cancelled": "रद्द",
+    "variant_slot_rejected": "माफी, {slot} में {value} उपलब्ध नहीं है। उपलब्ध {slot}: {opts}",
+    "variant_slot_rejected_noecho": "माफी, यह उपलब्ध {slot} विकल्पों में नहीं है: {opts}",
+    "card_colors": "उपलब्ध रंग: {colors}",
+    "card_sizes": "उपलब्ध साइज़: {sizes}",
+    "card_intro": "जी हाँ, यह उपलब्ध है:",
+    "afc_no_match": "'{text}' नहीं मिला — 1️⃣/2️⃣/3️⃣ लिखें, या जो प्रोडक्ट चाहिए उसका नाम/कोड भेजें।",
+    "switching_to": "ठीक है, {product} पर स्विच कर रहे हैं। 👍",
+    "injection_refusal": "मैं सिर्फ़ {business} के प्रोडक्ट्स और ऑर्डर में मदद कर सकता हूँ। मैं आपकी क्या मदद करूँ?",
+    "off_topic_boundary": "मैं सिर्फ़ {business} के ऑर्डर में मदद कर सकता हूँ। कोई प्रोडक्ट चुनें या दोबारा शुरू करने के लिए 'रद्द करें' लिखें।",
+    "attr_size": "साइज़",
+    "attr_colour": "रंग",
+    "attr_material": "मटेरियल",
+    "saved_address_reprompt": "इस पते पर भेजने के लिए *हाँ* लिखें, या नया पता देने के लिए *बदलें* लिखें।",
+    "team_will_assist": "हमारी टीम आपकी मदद करेगी। 👋",
+    "ask_new_address": "ज़रूर — नया डिलीवरी पता क्या है? घर/इलाका, शहर और पिनकोड भेजें।",
+    "rt_clarify_slot": "क्षमा करें, मैं समझ नहीं पाया।",
+    "catalogue_browse_more": "🛍️ और देखें: {url}",
+    "catalogue_cross_sell": "🛍️ आपको {name} ({price}) भी पसंद आ सकता है — {url}",
+    "btn_pay_upi": "💳 UPI से भुगतान",
+    "btn_pay_cod": "🚚 कैश ऑन डिलीवरी",
+    "btn_pay_bank": "🏦 बैंक ट्रांसफर",
+    "btn_confirm_pay": "कन्फर्म और भुगतान",
+    "btn_cancel": "रद्द करें",
+    "btn_yes": "हाँ",
+    "btn_no": "नहीं",
+    "rt_order_open_note": "{product} का आपका ऑर्डर अभी खुला है — जारी रखने के लिए आख़िरी सवाल का जवाब दें, या रोकने के लिए 'रद्द करें' लिखें।",
     "rt_card": "{name} [{sku}] — {price}।{options_line}",
     # ── ROUTER_V2 (LLM intent router) replies: deterministic, engine-written ──
     "rt_clarify_two": "क्या आपका मतलब {a} या {b} है? कृपया प्रोडक्ट का नाम या कोड भेजें।",
-    "rt_clarify_open": "क्षमा करें, मैं समझ नहीं पाया। आप क्या ढूँढ रहे हैं? प्रोडक्ट का नाम या कोड लिखें, या 'order status'।",
+    "rt_clarify_open": "क्षमा करें, मैं समझ नहीं पाया। आप क्या ढूँढ रहे हैं? प्रोडक्ट का नाम या कोड लिखें, या 'ऑर्डर स्टेटस'।",
     "rt_not_found": "क्षमा करें, अभी इसके लिए सटीक मैच नहीं मिला।",
     "rt_alternatives_header": "ये सबसे मिलते-जुलते विकल्प हैं:",
     "rt_search_header": "हमारे पास ये है 👇",
@@ -856,7 +990,7 @@ HINDI_DEVANAGARI_TEMPLATES: dict[str, str] = {
     "rt_browse_more": "पूरा कलेक्शन यहाँ देखें: {catalogue_url}",
     "rt_handoff": "हमारी टीम यहीं जल्द ही जवाब देगी।",
     "rt_handoff_offer": "इसका पक्का जवाब मेरे पास नहीं है। अगर आप चाहते हैं कि हमारी टीम मदद करे, तो 'किसी से बात करनी है' लिखें।",
-    "rt_general_fallback": "ज़रूर मदद करूँगा! प्रोडक्ट का नाम या कोड लिखें, या 'order status'।",
+    "rt_general_fallback": "ज़रूर मदद करूँगा! प्रोडक्ट का नाम या कोड लिखें, या 'ऑर्डर स्टेटस'।",
     "rt_status_new": "मिल गया",
     "rt_status_pending_payment": "पेमेंट का इंतज़ार",
     "rt_status_payment_submitted": "पेमेंट वेरिफ़ाई हो रहा है",
@@ -905,7 +1039,7 @@ HINDI_DEVANAGARI_TEMPLATES: dict[str, str] = {
     "rt_change_multi": "इस ऑर्डर में कई अलग आइटम हैं, जो यहाँ एडिट नहीं हो सकते। 'किसी से बात करनी है' लिखें, हमारी टीम मदद करेगी।",
     "rt_combo_oos": "{product} में {option} उपलब्ध नहीं है।{options_line}",
     "pay_unavailable": "धन्यवाद! इस ऑर्डर की पेमेंट डिटेल्स सेट हो रही हैं — विक्रेता जल्द ही यहाँ संदेश करेंगे।",
-    "llm_unavailable_rephrase": "क्षमा करें, क्या आप दोबारा लिख सकते हैं? या प्रोडक्ट कोड या 'order status' टाइप करें।",
+    "llm_unavailable_rephrase": "क्षमा करें, क्या आप दोबारा लिख सकते हैं? या प्रोडक्ट कोड या 'ऑर्डर स्टेटस' टाइप करें।",
     "billing_assistant_unavailable": "आपके संदेश के लिए धन्यवाद! हमारा स्टोर असिस्टेंट अभी कुछ समय के लिए उपलब्ध नहीं है। विक्रेता जल्द ही आपसे संपर्क करेंगे।",
     "pay_instruction": "🧾 ऑर्डर #{order_number}\n{items}\nकुल: {amount}\n\nUPI ID पर भुगतान करें: {upi_id}{payee_line}\n(GPay / PhonePe / Paytm / कोई भी UPI ऐप){extra}",
     "pay_send_screenshot": "भुगतान के बाद, कृपया पेमेंट का स्क्रीनशॉट यहाँ भेजें।",
@@ -918,7 +1052,7 @@ HINDI_DEVANAGARI_TEMPLATES: dict[str, str] = {
     "pay_cancelled": "आपका ऑर्डर #{order_number} रद्द कर दिया गया है।{reason_part}",
     "order_status_summary": "🧾 ऑर्डर #{order_number}\n{items}\nकुल: {total}\nस्टेटस: {status}",
     "order_status_pay_reminder": "⏳ पेमेंट बाकी है: कृपया {amount} UPI ID {upi_id} पर भेजें और पेमेंट का स्क्रीनशॉट यहाँ भेजें ताकि हम ऑर्डर कन्फर्म कर सकें।",
-    "order_status_id_not_found": "इस नंबर पर ऑर्डर #{order_number} नहीं मिला। कृपया ऑर्डर ID जाँचें, या अपना लेटेस्ट ऑर्डर देखने के लिए 'order status' भेजें।",
+    "order_status_id_not_found": "इस नंबर पर ऑर्डर #{order_number} नहीं मिला। कृपया ऑर्डर ID जाँचें, या अपना लेटेस्ट ऑर्डर देखने के लिए 'ऑर्डर स्टेटस' भेजें।",
     "greeting": "{business} में आपका स्वागत है! आज क्या देखना चाहेंगे?",
     "greeting_new": "{business} में आपका स्वागत है! 👋 हमारा कैटलॉग यहाँ देखें: {catalogue_url}\nआज क्या देखना चाहेंगे?",
     "greeting_returning": "वापस आए {name}! 👋 हमारा नया कलेक्शन यहाँ है: {catalogue_url}\nआज क्या देखना चाहेंगे?",
@@ -932,11 +1066,11 @@ HINDI_DEVANAGARI_TEMPLATES: dict[str, str] = {
     "ask_color": "कलर? {colors}",
     "ask_size": "साइज़? {sizes}",
     "ask_material": "मटेरियल? {materials}",
-    "ask_variant_mode": "ठीक है, {color_size}। सभी {n} एक जैसे चाहिए, या अलग-अलग? (Same/Different)",
+    "ask_variant_mode": "ठीक है, {color_size}। सभी {n} एक जैसे चाहिए, या अलग-अलग? (एक जैसे/अलग-अलग)",
     "ask_cart_item_color": "आइटम {item_num} — कौनसा कलर? उपलब्ध: {colors}",
     "ask_cart_item_size": "आइटम {item_num} — कौनसा साइज़? उपलब्ध: {sizes}",
     "ask_cart_item_qty": "{color_size} के कितने? ({remaining} बाकी हैं)",
-    "ask_cart_breakdown": "और बाकी {remaining} का ब्रेकडाउन बताओ — जैसे '30 blue M, 37 green S'",
+    "ask_cart_breakdown": "और बाकी {remaining} का ब्रेकडाउन बताओ — जैसे '30 नीला M, 37 हरा S'",
     "ask_cart_breakdown_confirm": "यह है {breakdown}, सही है?",
     "cart_breakdown_mismatch": "आपके ब्रेकडाउन का टोटल {sum} है, आपने {remaining} बताया था। कृपया दोबारा चेक करें।",
     "cart_breakdown_invalid_variant": "'{invalid}' हमारे पास नहीं है। मान्य कलर: {colors}। मान्य साइज़: {sizes}।",
@@ -945,7 +1079,7 @@ HINDI_DEVANAGARI_TEMPLATES: dict[str, str] = {
     "ask_payment_method": "आप UPI से देंगे{cod_option}?",
     "confirm_payment_upi": "पेमेंट: UPI ✅ कन्फर्म करें? (हाँ)",
     "ask_payment_upi_cod": "पेमेंट? UPI / COD",
-    "confirm_saved_address": "{address} पर डिलीवर करें? (हाँ/change)",
+    "confirm_saved_address": "{address} पर डिलीवर करें? (हाँ/बदलें)",
     "ask_payment": (
         "₹{amount} UPI से भेजें:\n"
         "UPI ID: {upi_id}\n"
@@ -959,8 +1093,8 @@ HINDI_DEVANAGARI_TEMPLATES: dict[str, str] = {
         "पेमेंट के बाद PAID रिप्लाई करें। ✅"
     ),
     "stock_exceeded": "सिर्फ {stock} पीस उपलब्ध हैं। {stock} पीस का ऑर्डर करें?",
+    "summary_upi_only_note": "हम सिर्फ UPI से पेमेंट स्वीकार करते हैं।",
     "order_summary": (
-        "हम सिर्फ UPI से पेमेंट स्वीकार करते हैं।\n\n"
         "✅ ऑर्डर सारांश\n"
         "━━━━━━━━━━━━━━━\n"
         "📦 {product} × {qty} = {total}\n"
@@ -971,7 +1105,6 @@ HINDI_DEVANAGARI_TEMPLATES: dict[str, str] = {
         "━━━━━━━━━━━━━━━"
     ),
     "order_summary_variant": (
-        "हम सिर्फ UPI से पेमेंट स्वीकार करते हैं।\n\n"
         "✅ ऑर्डर सारांश\n"
         "━━━━━━━━━━━━━━━\n"
         "📦 {product} {variant} × {qty} = {total}\n"
@@ -982,7 +1115,6 @@ HINDI_DEVANAGARI_TEMPLATES: dict[str, str] = {
         "━━━━━━━━━━━━━━━"
     ),
     "order_summary_crosssell": (
-        "हम सिर्फ UPI से पेमेंट स्वीकार करते हैं।\n\n"
         "✅ ऑर्डर सारांश\n"
         "━━━━━━━━━━━━━━━\n"
         "📦 {product} × {qty} = {total}\n"
@@ -992,12 +1124,11 @@ HINDI_DEVANAGARI_TEMPLATES: dict[str, str] = {
         "🚚 डिलीवरी {delivery_time} में\n"
         "━━━━━━━━━━━━━━━\n"
         "रिप्लाई करें:\n"
-        "1️⃣ Confirm & pay\n"
+        "1️⃣ कन्फर्म करें और भुगतान करें\n"
         "2️⃣ {cs_name} ({cs_price}) भी ऐड करें\n"
-        "3️⃣ Cancel"
+        "3️⃣ रद्द करें"
     ),
     "order_summary_variant_crosssell": (
-        "हम सिर्फ UPI से पेमेंट स्वीकार करते हैं।\n\n"
         "✅ ऑर्डर सारांश\n"
         "━━━━━━━━━━━━━━━\n"
         "📦 {product} {variant} × {qty} = {total}\n"
@@ -1007,25 +1138,24 @@ HINDI_DEVANAGARI_TEMPLATES: dict[str, str] = {
         "🚚 डिलीवरी {delivery_time} में\n"
         "━━━━━━━━━━━━━━━\n"
         "रिप्लाई करें:\n"
-        "1️⃣ Confirm & pay\n"
+        "1️⃣ कन्फर्म करें और भुगतान करें\n"
         "2️⃣ {cs_name} ({cs_price}) भी ऐड करें\n"
-        "3️⃣ Cancel"
+        "3️⃣ रद्द करें"
     ),
     "cart_order_summary": (
-        "हम सिर्फ UPI से पेमेंट स्वीकार करते हैं।\n\n"
         "✅ ऑर्डर सारांश\n"
         "━━━━━━━━━━━━━━━\n"
         "{items_block}\n"
-        "Total: {total}\n"
+        "कुल: {total}\n"
         "👤 {name}\n"
         "📍 {address}\n"
         "💳 {payment}\n"
         "🚚 डिलीवरी {delivery_time} में\n"
         "━━━━━━━━━━━━━━━\n"
         "रिप्लाई करें:\n"
-        "1️⃣ Confirm & pay\n"
+        "1️⃣ कन्फर्म करें और भुगतान करें\n"
         "2️⃣ एक और आइटम ऐड करें\n"
-        "3️⃣ Cancel"
+        "3️⃣ रद्द करें"
     ),
     "order_confirmed": "ऑर्डर कन्फर्म हो गया! ✅ {qty} × {product} = {total}। {delivery_time} में डिलीवरी।",
     "order_confirmed_cod": (
@@ -1045,7 +1175,7 @@ HINDI_DEVANAGARI_TEMPLATES: dict[str, str] = {
     "order_confirmed_cod_cart": (
         "🎉 आपका ऑर्डर प्लेस हो गया! ✅\n"
         "{items_block}\n"
-        "Total: {total}\n"
+        "कुल: {total}\n"
         "🚚 डिलीवरी {delivery_time} में\n\n"
         "शॉपिंग करने के लिए शुक्रिया! 😊\n"
         "{catalogue_line}"
@@ -1053,7 +1183,7 @@ HINDI_DEVANAGARI_TEMPLATES: dict[str, str] = {
     "order_confirmed_paid_cart": (
         "🎉 आपका ऑर्डर प्लेस हो गया! ✅\n"
         "{items_block}\n"
-        "Total: {total}\n"
+        "कुल: {total}\n"
         "🚚 डिलीवरी {delivery_time} में\n\n"
         "शॉपिंग करने के लिए शुक्रिया! 😊\n"
         "{catalogue_line}"
@@ -1062,13 +1192,13 @@ HINDI_DEVANAGARI_TEMPLATES: dict[str, str] = {
     "interrupt_switch": (
         "आपका एक ऑर्डर चल रहा है: {current_qty}x {current_product}{current_total_text}।\n"
         "{new_product} [{new_sku}] ₹{new_price} में है।\n"
-        "'continue' रिप्लाई करें अपना मौजूदा ऑर्डर पूरा करने के लिए, "
-        "या 'switch' करें {new_product} का नया ऑर्डर शुरू करने के लिए "
+        "'जारी रखें' लिखें अपना मौजूदा ऑर्डर पूरा करने के लिए, "
+        "या 'नया ऑर्डर' लिखें {new_product} का नया ऑर्डर शुरू करने के लिए "
         "(मौजूदा प्रगति डिलीट हो जाएगी)।"
     ),
     "switch_reask": (
         "{current_product} का ऑर्डर चल रहा है।\n"
-        "'continue' रिप्लाई करें पूरा करने के लिए, या 'switch' करें नया ऑर्डर करने के लिए।"
+        "'जारी रखें' लिखें पूरा करने के लिए, या 'नया ऑर्डर' लिखें नया ऑर्डर करने के लिए।"
     ),
     "cancel_ack": "कोई बात नहीं! और कुछ मदद चाहिए? हमारा कैटलॉग देखें।",
     "discount_policy": (
@@ -1084,7 +1214,7 @@ HINDI_DEVANAGARI_TEMPLATES: dict[str, str] = {
     "off_topic": "मैं सिर्फ {business} के प्रोडक्ट्स के बारे में मदद कर सकता हूँ।",
     "which_item": "मैं आपको {business} का सही प्रोडक्ट ढूंढने में मदद करूंगा! आपको कौनसा आइटम चाहिए?",
     "pinned_availability": "{name} [{sku}] — ₹{price} में उपलब्ध है।{color_part}{size_part}\n\nक्या आप ऑर्डर करना चाहेंगे? (हाँ / नहीं)",
-    "pinned_availability_guard": "{name} [{sku}] — ₹{price} में उपलब्ध है।{color_part}{size_part} ऑर्डर के लिए Yes, ब्राउज़िंग जारी रखने के लिए No रिप्लाई करें। क्या आप ऑर्डर करना चाहेंगे?",
+    "pinned_availability_guard": "{name} [{sku}] — ₹{price} में उपलब्ध है।{color_part}{size_part} ऑर्डर के लिए हाँ, ब्राउज़िंग जारी रखने के लिए नहीं लिखें। क्या आप ऑर्डर करना चाहेंगे?",
     "available_colors_suffix": " {colors} में उपलब्ध है।",
     "available_sizes_suffix": " साइज़: {sizes}।",
     "known_fact_delivery_time": "डिलीवरी में 3–7 बिज़नेस डेज़ लगते हैं।",
@@ -1120,11 +1250,47 @@ HINDI_DEVANAGARI_TEMPLATES: dict[str, str] = {
 }
 
 GUJARATI_SCRIPT_TEMPLATES: dict[str, str] = {
-    "rt_order_open_note": "{product} નો તમારો ઓર્ડર હજુ ચાલુ છે — ચાલુ રાખવા છેલ્લા સવાલનો જવાબ આપો, અથવા રોકવા 'cancel' લખો.",
+    "would_you_like_to_order_switch": "શું તમે {name} ઓર્ડર કરવા માંગો છો? (હા / ના)",
+    "followup_default": "નમસ્તે! 🙏 તમે અમારા પ્રોડક્ટ્સમાં રસ બતાવ્યો હતો. તમારો ઓર્ડર પૂરો કરવાનો બાકી છે — શું તમને કોઈ મદદ જોઈએ? અમે અહીં છીએ! 😊",
+    "ostatus_new": "નવો",
+    "ostatus_pending_payment": "ચુકવણી બાકી",
+    "ostatus_payment_submitted": "ચુકવણીની ચકાસણી ચાલુ છે",
+    "ostatus_confirmed": "કન્ફર્મ",
+    "ostatus_paid": "ચુકવણી થઈ ગઈ",
+    "ostatus_processing": "પ્રોસેસ થઈ રહ્યો છે",
+    "ostatus_dispatched": "રવાના કર્યો",
+    "ostatus_delivered": "ડિલિવર થયો",
+    "ostatus_cancelled": "રદ",
+    "variant_slot_rejected": "માફ કરશો, {slot} માં {value} ઉપલબ્ધ નથી. ઉપલબ્ધ {slot}: {opts}",
+    "variant_slot_rejected_noecho": "માફ કરશો, આ ઉપલબ્ધ {slot} વિકલ્પોમાં નથી: {opts}",
+    "card_colors": "ઉપલબ્ધ રંગ: {colors}",
+    "card_sizes": "ઉપલબ્ધ સાઈઝ: {sizes}",
+    "card_intro": "હા, આ ઉપલબ્ધ છે:",
+    "afc_no_match": "'{text}' મળ્યું નથી — 1️⃣/2️⃣/3️⃣ લખો, અથવા જે પ્રોડક્ટ જોઈએ તેનું નામ/કોડ મોકલો.",
+    "switching_to": "સારું, {product} પર સ્વિચ કરી રહ્યા છીએ. 👍",
+    "injection_refusal": "હું ફક્ત {business} ના પ્રોડક્ટ્સ અને ઓર્ડરમાં મદદ કરી શકું છું. હું તમારી શું મદદ કરું?",
+    "off_topic_boundary": "હું ફક્ત {business} ના ઓર્ડરમાં મદદ કરી શકું છું. કોઈ પ્રોડક્ટ પસંદ કરો અથવા ફરી શરૂ કરવા 'રદ કરો' લખો.",
+    "attr_size": "સાઈઝ",
+    "attr_colour": "રંગ",
+    "attr_material": "મટીરીયલ",
+    "saved_address_reprompt": "આ સરનામે મોકલવા *હા* લખો, અથવા નવું સરનામું આપવા *બદલો* લખો.",
+    "team_will_assist": "અમારી ટીમ તમને મદદ કરશે. 👋",
+    "ask_new_address": "જરૂર — નવું ડિલિવરી સરનામું શું છે? ઘર/વિસ્તાર, શહેર અને પિનકોડ મોકલો.",
+    "rt_clarify_slot": "માફ કરજો, મને સમજાયું નહીં.",
+    "catalogue_browse_more": "🛍️ વધુ જુઓ: {url}",
+    "catalogue_cross_sell": "🛍️ તમને {name} ({price}) પણ ગમશે — {url}",
+    "btn_pay_upi": "💳 UPI થી ચૂકવો",
+    "btn_pay_cod": "🚚 કેશ ઓન ડિલિવરી",
+    "btn_pay_bank": "🏦 બેંક ટ્રાન્સફર",
+    "btn_confirm_pay": "કન્ફર્મ અને ચુકવણી",
+    "btn_cancel": "રદ કરો",
+    "btn_yes": "હા",
+    "btn_no": "ના",
+    "rt_order_open_note": "{product} નો તમારો ઓર્ડર હજુ ચાલુ છે — ચાલુ રાખવા છેલ્લા સવાલનો જવાબ આપો, અથવા રોકવા 'રદ કરો' લખો.",
     "rt_card": "{name} [{sku}] — {price}.{options_line}",
     # ── ROUTER_V2 (LLM intent router) replies: deterministic, engine-written ──
     "rt_clarify_two": "શું તમારો મતલબ {a} કે {b} છે? કૃપા કરીને પ્રોડક્ટનું નામ અથવા કોડ મોકલો.",
-    "rt_clarify_open": "માફ કરજો, મને સમજાયું નહીં. તમે શું શોધી રહ્યા છો? પ્રોડક્ટનું નામ અથવા કોડ લખો, અથવા 'order status'.",
+    "rt_clarify_open": "માફ કરજો, મને સમજાયું નહીં. તમે શું શોધી રહ્યા છો? પ્રોડક્ટનું નામ અથવા કોડ લખો, અથવા 'ઓર્ડર સ્ટેટસ'.",
     "rt_not_found": "માફ કરજો, હમણાં આ માટે બરાબર મેળ મળ્યો નથી.",
     "rt_alternatives_header": "આ સૌથી મળતા આવતા વિકલ્પો છે:",
     "rt_search_header": "અમારી પાસે આ છે 👇",
@@ -1132,7 +1298,7 @@ GUJARATI_SCRIPT_TEMPLATES: dict[str, str] = {
     "rt_browse_more": "પૂરું કલેક્શન અહીં જુઓ: {catalogue_url}",
     "rt_handoff": "અમારી ટીમ અહીં જ થોડી વારમાં જવાબ આપશે.",
     "rt_handoff_offer": "આ વિશે મારી પાસે પાક્કો જવાબ નથી. જો તમે ઇચ્છો કે અમારી ટીમ મદદ કરે, તો 'કોઈ સાથે વાત કરવી છે' લખો.",
-    "rt_general_fallback": "જરૂર મદદ કરીશ! પ્રોડક્ટનું નામ અથવા કોડ લખો, અથવા 'order status'.",
+    "rt_general_fallback": "જરૂર મદદ કરીશ! પ્રોડક્ટનું નામ અથવા કોડ લખો, અથવા 'ઓર્ડર સ્ટેટસ'.",
     "rt_status_new": "મળી ગયો",
     "rt_status_pending_payment": "પેમેન્ટની રાહ",
     "rt_status_payment_submitted": "પેમેન્ટ વેરિફાય થઈ રહ્યું છે",
@@ -1181,7 +1347,7 @@ GUJARATI_SCRIPT_TEMPLATES: dict[str, str] = {
     "rt_change_multi": "આ ઓર્ડરમાં ઘણી અલગ આઇટમ છે, જે અહીં એડિટ થઈ શકતી નથી. 'કોઈ સાથે વાત કરવી છે' લખો, અમારી ટીમ મદદ કરશે.",
     "rt_combo_oos": "{product} માં {option} ઉપલબ્ધ નથી.{options_line}",
     "pay_unavailable": "આભાર! આ ઓર્ડરની પેમેન્ટ વિગતો સેટ થઈ રહી છે — વિક્રેતા જલ્દી અહીં મેસેજ કરશે.",
-    "llm_unavailable_rephrase": "માફ કરજો, શું તમે ફરીથી લખી શકો? અથવા પ્રોડક્ટ કોડ અથવા 'order status' લખો.",
+    "llm_unavailable_rephrase": "માફ કરજો, શું તમે ફરીથી લખી શકો? અથવા પ્રોડક્ટ કોડ અથવા 'ઓર્ડર સ્ટેટસ' લખો.",
     "billing_assistant_unavailable": "તમારા સંદેશ બદલ આભાર! અમારો સ્ટોર આસિસ્ટન્ટ હાલ થોડા સમય માટે ઉપલબ્ધ નથી. વિક્રેતા ટૂંક સમયમાં તમારો સંપર્ક કરશે.",
     "pay_instruction": "🧾 ઓર્ડર #{order_number}\n{items}\nકુલ: {amount}\n\nUPI ID પર ચુકવણી કરો: {upi_id}{payee_line}\n(GPay / PhonePe / Paytm / કોઈપણ UPI એપ){extra}",
     "pay_send_screenshot": "ચુકવણી કર્યા પછી, કૃપા કરીને પેમેન્ટનો સ્ક્રીનશૉટ અહીં મોકલો.",
@@ -1194,7 +1360,7 @@ GUJARATI_SCRIPT_TEMPLATES: dict[str, str] = {
     "pay_cancelled": "તમારો ઓર્ડર #{order_number} રદ કરવામાં આવ્યો છે.{reason_part}",
     "order_status_summary": "🧾 ઓર્ડર #{order_number}\n{items}\nકુલ: {total}\nસ્ટેટસ: {status}",
     "order_status_pay_reminder": "⏳ પેમેન્ટ બાકી છે: કૃપા કરીને {amount} UPI ID {upi_id} પર મોકલો અને પેમેન્ટનો સ્ક્રીનશૉટ અહીં મોકલો જેથી અમે ઓર્ડર કન્ફર્મ કરી શકીએ.",
-    "order_status_id_not_found": "આ નંબર પર ઓર્ડર #{order_number} મળ્યો નથી. કૃપા કરીને ઓર્ડર ID તપાસો, અથવા તમારો લેટેસ્ટ ઓર્ડર જોવા 'order status' મોકલો.",
+    "order_status_id_not_found": "આ નંબર પર ઓર્ડર #{order_number} મળ્યો નથી. કૃપા કરીને ઓર્ડર ID તપાસો, અથવા તમારો લેટેસ્ટ ઓર્ડર જોવા 'ઓર્ડર સ્ટેટસ' મોકલો.",
     "greeting": "{business} માં આપનું સ્વાગત છે! આજ શું જોઈવાનું છે?",
     "greeting_new": "{business} માં આપનું સ્વાગત છે! 👋 અમારું કેટલોગ જુઓ: {catalogue_url}\nઆજ શું જોઈવાનું છે?",
     "greeting_returning": "પાછા આવ્યા {name}! 👋 અમારું નવું કલેક્શન જુઓ: {catalogue_url}\nઆજ શું જોઈવાનું છે?",
@@ -1208,11 +1374,11 @@ GUJARATI_SCRIPT_TEMPLATES: dict[str, str] = {
     "ask_color": "કલર? {colors}",
     "ask_size": "સાઈઝ? {sizes}",
     "ask_material": "મટીરીયલ? {materials}",
-    "ask_variant_mode": "ભલું, {color_size}. બધા {n} સરખા જોઈએ, કે અલગ અલગ? (Same/Different)",
+    "ask_variant_mode": "ભલું, {color_size}. બધા {n} સરખા જોઈએ, કે અલગ અલગ? (સરખા/અલગ)",
     "ask_cart_item_color": "આઇટમ {item_num} — કયો કલર? ઉપલબ્ધ: {colors}",
     "ask_cart_item_size": "આઇટમ {item_num} — કઈ સાઈઝ? ઉપલબ્ધ: {sizes}",
     "ask_cart_item_qty": "{color_size} ના કેટલા? ({remaining} બાકી છે)",
-    "ask_cart_breakdown": "અને બાકી {remaining} નું બ્રેકડાઉન આપો — જેમ કે '30 blue M, 37 green S'",
+    "ask_cart_breakdown": "અને બાકી {remaining} નું બ્રેકડાઉન આપો — જેમ કે '30 વાદળી M, 37 લીલો S'",
     "ask_cart_breakdown_confirm": "આ છે {breakdown}, બરાબર છે?",
     "cart_breakdown_mismatch": "તમારા બ્રેકડાઉનનો ટોટલ {sum} છે, તમે {remaining} કહ્યું હતું. કૃપા કરી ફરી ચેક કરો.",
     "cart_breakdown_invalid_variant": "'{invalid}' અમારી પાસે નથી. માન્ય કલર: {colors}. માન્ય સાઈઝ: {sizes}.",
@@ -1221,7 +1387,7 @@ GUJARATI_SCRIPT_TEMPLATES: dict[str, str] = {
     "ask_payment_method": "કેમ ભરવું છે — UPI{cod_option}?",
     "confirm_payment_upi": "પેમેન્ટ: UPI ✅ કન્ફર્મ કરો? (હા)",
     "ask_payment_upi_cod": "પેમેન્ટ? UPI / COD",
-    "confirm_saved_address": "{address} પર ડિલિવર કરવું? (હા/change)",
+    "confirm_saved_address": "{address} પર ડિલિવર કરવું? (હા/બદલો)",
     "ask_payment": (
         "₹{amount} UPI થી મોકલો:\n"
         "UPI ID: {upi_id}\n"
@@ -1235,8 +1401,8 @@ GUJARATI_SCRIPT_TEMPLATES: dict[str, str] = {
         "પેમેન્ટ પછી PAID રિપ્લાય કરો. ✅"
     ),
     "stock_exceeded": "ફક્ત {stock} પીસ ઉપલબ્ધ છે. {stock} પીસ લેવા છે?",
+    "summary_upi_only_note": "અમે ફક્ત UPI થી પેમેન્ટ સ્વીકારીએ છીએ.",
     "order_summary": (
-        "અમે ફક્ત UPI થી પેમેન્ટ સ્વીકારીએ છીએ.\n\n"
         "✅ ઓર્ડર સારાંશ\n"
         "━━━━━━━━━━━━━━━\n"
         "📦 {product} × {qty} = {total}\n"
@@ -1247,7 +1413,6 @@ GUJARATI_SCRIPT_TEMPLATES: dict[str, str] = {
         "━━━━━━━━━━━━━━━"
     ),
     "order_summary_variant": (
-        "અમે ફક્ત UPI થી પેમેન્ટ સ્વીકારીએ છીએ.\n\n"
         "✅ ઓર્ડર સારાંશ\n"
         "━━━━━━━━━━━━━━━\n"
         "📦 {product} {variant} × {qty} = {total}\n"
@@ -1258,7 +1423,6 @@ GUJARATI_SCRIPT_TEMPLATES: dict[str, str] = {
         "━━━━━━━━━━━━━━━"
     ),
     "order_summary_crosssell": (
-        "અમે ફક્ત UPI થી પેમેન્ટ સ્વીકારીએ છીએ.\n\n"
         "✅ ઓર્ડર સારાંશ\n"
         "━━━━━━━━━━━━━━━\n"
         "📦 {product} × {qty} = {total}\n"
@@ -1268,12 +1432,11 @@ GUJARATI_SCRIPT_TEMPLATES: dict[str, str] = {
         "🚚 ડિલિવરી {delivery_time} માં\n"
         "━━━━━━━━━━━━━━━\n"
         "રિપ્લાય કરો:\n"
-        "1️⃣ Confirm & pay\n"
+        "1️⃣ કન્ફર્મ કરો અને ચુકવણી કરો\n"
         "2️⃣ {cs_name} ({cs_price}) પણ ઉમેરો\n"
-        "3️⃣ Cancel"
+        "3️⃣ રદ કરો"
     ),
     "order_summary_variant_crosssell": (
-        "અમે ફક્ત UPI થી પેમેન્ટ સ્વીકારીએ છીએ.\n\n"
         "✅ ઓર્ડર સારાંશ\n"
         "━━━━━━━━━━━━━━━\n"
         "📦 {product} {variant} × {qty} = {total}\n"
@@ -1283,25 +1446,24 @@ GUJARATI_SCRIPT_TEMPLATES: dict[str, str] = {
         "🚚 ડિલિવરી {delivery_time} માં\n"
         "━━━━━━━━━━━━━━━\n"
         "રિપ્લાય કરો:\n"
-        "1️⃣ Confirm & pay\n"
+        "1️⃣ કન્ફર્મ કરો અને ચુકવણી કરો\n"
         "2️⃣ {cs_name} ({cs_price}) પણ ઉમેરો\n"
-        "3️⃣ Cancel"
+        "3️⃣ રદ કરો"
     ),
     "cart_order_summary": (
-        "અમે ફક્ત UPI થી પેમેન્ટ સ્વીકારીએ છીએ.\n\n"
         "✅ ઓર્ડર સારાંશ\n"
         "━━━━━━━━━━━━━━━\n"
         "{items_block}\n"
-        "Total: {total}\n"
+        "કુલ: {total}\n"
         "👤 {name}\n"
         "📍 {address}\n"
         "💳 {payment}\n"
         "🚚 ડિલિવરી {delivery_time} માં\n"
         "━━━━━━━━━━━━━━━\n"
         "રિપ્લાય કરો:\n"
-        "1️⃣ Confirm & pay\n"
+        "1️⃣ કન્ફર્મ કરો અને ચુકવણી કરો\n"
         "2️⃣ બીજી આઇટમ ઉમેરો\n"
-        "3️⃣ Cancel"
+        "3️⃣ રદ કરો"
     ),
     "order_confirmed": "ઓર્ડર કન્ફર્મ થઈ ગયું! ✅ {qty} × {product} = {total}. {delivery_time} માં ડિલિવરી.",
     "order_confirmed_cod": (
@@ -1321,7 +1483,7 @@ GUJARATI_SCRIPT_TEMPLATES: dict[str, str] = {
     "order_confirmed_cod_cart": (
         "🎉 તમારો ઓર્ડર પ્લેસ થઈ ગયો! ✅\n"
         "{items_block}\n"
-        "Total: {total}\n"
+        "કુલ: {total}\n"
         "🚚 ડિલિવરી {delivery_time} માં\n\n"
         "શોપિંગ કરવા બદલ આભાર! 😊\n"
         "{catalogue_line}"
@@ -1329,7 +1491,7 @@ GUJARATI_SCRIPT_TEMPLATES: dict[str, str] = {
     "order_confirmed_paid_cart": (
         "🎉 તમારો ઓર્ડર પ્લેસ થઈ ગયો! ✅\n"
         "{items_block}\n"
-        "Total: {total}\n"
+        "કુલ: {total}\n"
         "🚚 ડિલિવરી {delivery_time} માં\n\n"
         "શોપિંગ કરવા બદલ આભાર! 😊\n"
         "{catalogue_line}"
@@ -1338,13 +1500,13 @@ GUJARATI_SCRIPT_TEMPLATES: dict[str, str] = {
     "interrupt_switch": (
         "તમારો એક ઓર્ડર ચાલી રહ્યો છે: {current_qty}x {current_product}{current_total_text}.\n"
         "{new_product} [{new_sku}] ₹{new_price} માં છે.\n"
-        "'continue' રિપ્લાય કરો તમારો હાલનો ઓર્ડર પૂરો કરવા, "
-        "અથવા 'switch' કરો {new_product} માટે નવો ઓર્ડર શરૂ કરવા "
+        "'ચાલુ રાખો' લખો તમારો હાલનો ઓર્ડર પૂરો કરવા, "
+        "અથવા 'નવો ઓર્ડર' લખો {new_product} માટે નવો ઓર્ડર શરૂ કરવા "
         "(હાલની પ્રગતિ ડિલીટ થશે)."
     ),
     "switch_reask": (
         "{current_product} નો ઓર્ડર ચાલી રહ્યો છે.\n"
-        "'continue' રિપ્લાય કરો પૂરો કરવા, અથવા 'switch' કરો નવો ઓર્ડર કરવા."
+        "'ચાલુ રાખો' લખો પૂરો કરવા, અથવા 'નવો ઓર્ડર' લખો નવો ઓર્ડર કરવા."
     ),
     "cancel_ack": "કોઈ વાત નહીં! બીજી કોઈ મદદ જોઈએ? અમારું કેટલોગ જોઈ શકો છો.",
     "discount_policy": (
@@ -1360,7 +1522,7 @@ GUJARATI_SCRIPT_TEMPLATES: dict[str, str] = {
     "off_topic": "હું ફક્ત {business} ના પ્રોડક્ટ્સ વિશે મદદ કરી શકું છું.",
     "which_item": "હું તમને {business} નું સાચું પ્રોડક્ટ શોધવા મદદ કરીશ! તમને કયું આઇટમ જોઈએ છે?",
     "pinned_availability": "{name} [{sku}] — ₹{price} માં ઉપલબ્ધ છે.{color_part}{size_part}\n\nશું તમે ઓર્ડર કરવા માંગો છો? (હા / ના)",
-    "pinned_availability_guard": "{name} [{sku}] — ₹{price} માં ઉપલબ્ધ છે.{color_part}{size_part} ઓર્ડર માટે Yes, બ્રાઉઝિંગ ચાલુ રાખવા No રિપ્લાય કરો. શું તમે ઓર્ડર કરવા માંગો છો?",
+    "pinned_availability_guard": "{name} [{sku}] — ₹{price} માં ઉપલબ્ધ છે.{color_part}{size_part} ઓર્ડર માટે હા, બ્રાઉઝિંગ ચાલુ રાખવા ના લખો. શું તમે ઓર્ડર કરવા માંગો છો?",
     "available_colors_suffix": " {colors} માં ઉપલબ્ધ.",
     "available_sizes_suffix": " સાઈઝ: {sizes}.",
     "known_fact_delivery_time": "ડિલિવરીમાં 3–7 બિઝનેસ ડેઝ લાગે છે.",
@@ -1405,6 +1567,22 @@ TEMPLATES: dict[str, dict[str, str]] = {
 }
 
 
+_BUSINESS_DAYS_RE = re.compile(r"^(\d+)(?:\s*[–-]\s*(\d+))? business days?$")
+
+
+def _localize_delivery_phrase(value: str, templates: dict[str, str]) -> str:
+    """'3–7 business days' / '1 business day' (built in English by get_delivery_time_str) → the template language."""
+    match = _BUSINESS_DAYS_RE.match(value.strip())
+    if not match:
+        return value
+    lo, hi = match.group(1), match.group(2)
+    if hi and hi != lo:
+        pattern = templates.get("rt_days_range")
+        return pattern.format(lo=lo, hi=hi) if pattern else value
+    pattern = templates.get("rt_days_fixed")
+    return pattern.format(n=lo) if pattern else value
+
+
 def get_template(lang: str, key: str, **kwargs: object) -> str:
     """
     Render a response template for the given language and action key.
@@ -1424,6 +1602,8 @@ def get_template(lang: str, key: str, **kwargs: object) -> str:
     template = templates.get(key) or ENGLISH_TEMPLATES.get(key, "")
     if not template:
         return ""
+    if templates is not ENGLISH_TEMPLATES:
+        kwargs = {k: _localize_delivery_phrase(v, templates) if isinstance(v, str) else v for k, v in kwargs.items()}
     try:
         return template.format(**kwargs)
     except KeyError:

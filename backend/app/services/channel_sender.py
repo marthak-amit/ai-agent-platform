@@ -115,6 +115,19 @@ async def send_to_conversation(
     if not text and not image_url:
         return SendOutcome(False, "SUPPRESSED")
 
+    if text and sender_type != "human":
+        # System/bot messages (payment approved / rejected / cancelled, reminders) are written from English-or-
+        # template text; make sure they reach the customer in the language they chat in. A human agent's own
+        # words are never touched.
+        from app.services import reply_localizer
+
+        try:
+            text = await reply_localizer.localize(
+                text, getattr(conv, "last_customer_language", None), client_id=client.id, conversation_id=conv.id,
+            )
+        except Exception as exc:  # noqa: BLE001 - never block a payment notice on translation
+            logger.warning("channel_sender: localisation skipped conv=%s: %s", conv.id, exc)
+
     common = dict(kind=kind, db=db, client_id=client.id, conversation_id=conv.id)
     try:
         if conv.channel == "whatsapp":

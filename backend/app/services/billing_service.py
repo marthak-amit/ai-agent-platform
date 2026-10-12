@@ -23,6 +23,7 @@ from app.models.client_monthly_usage import ClientMonthlyUsage
 from app.models.conversation import Conversation
 from app.models.photo_generation_log import PhotoGenerationLog
 from app.services import outbound, plan_cache
+from app.services.db_helpers import add_or_get
 
 logger = logging.getLogger(__name__)
 
@@ -114,10 +115,15 @@ async def record_conversation_activity(
     usage = result.scalar_one_or_none()
 
     if conversation.usage_counted_period != period:
+        created = False
         if usage is None:
-            usage = ClientMonthlyUsage(client_id=client.id, period=period, conv_count=1)
-            db.add(usage)
-        else:
+            usage, created = await add_or_get(
+                db, ClientMonthlyUsage(client_id=client.id, period=period, conv_count=1),
+                select(ClientMonthlyUsage).where(
+                    ClientMonthlyUsage.client_id == client.id, ClientMonthlyUsage.period == period,
+                ).with_for_update(),
+            )
+        if not created:
             usage.conv_count += 1
         conversation.usage_counted_period = period
         await db.commit()

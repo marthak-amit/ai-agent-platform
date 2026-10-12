@@ -92,3 +92,6 @@ backend/static/uploads/
 
 # Python version file
 .python-version
+
+# conversation simulator output
+backend/tests/sim/out/

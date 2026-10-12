@@ -32,8 +32,10 @@ from app.services import (
     catalogue_service,
     conversation_service,
     gemini_service,
+    language_service,
     lead_service,
     plan_service,
+    reply_localizer,
     usage_service,
 )
 
@@ -159,6 +161,15 @@ async def widget_message(
     history = await conversation_service.get_history(db, conv.id)
     history_dicts = [{"role": m.role, "content": m.content} for m in history]
 
+    # Reply in the language/script the visitor writes (a bare "yes" keeps the established language).
+    detection = language_service.detect(body.message, conv.last_customer_language)
+    language = detection.lang
+    if detection.confident and language != language_service.normalize_language(conv.last_customer_language):
+        try:
+            await conversation_service.update_language(db, conv.id, language)
+        except Exception as exc:
+            logger.error("Language update error on widget: %s", exc)
+
     products = await catalogue_service.list_products(db, client.id)
     relevant = catalogue_service.search_products(products, body.message)
     catalogue_context = (
@@ -171,9 +182,11 @@ async def widget_message(
             history=history_dicts,
             system_prompt=client.gemini_system_prompt,
             catalogue_context=catalogue_context,
+            language=language,
             client_id=client.id,
             conversation_id=conv.id,
         )
+        ai_reply = await reply_localizer.localize(ai_reply, language, client_id=client.id, conversation_id=conv.id)
     except Exception as exc:
         logger.error("Gemini error on widget message: %s", exc)
         raise HTTPException(

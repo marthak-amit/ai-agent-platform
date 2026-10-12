@@ -32,10 +32,10 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.services import billing_service, catalogue_service, conversation_flow, conversation_service, customer_service
 from app.services import cost_log, escalation_service, gemini_service, lead_service, order_service, order_state_machine
-from app.services import language_service as _lang_svc, usage_service, voice_service
+from app.services import command_words, language_service as _lang_svc, usage_service, voice_service
 from app.services import ocr_service, storage_service
 from app.services.delivery_service import get_delivery_time_str
-from app.services.language_templates import format_price, get_template
+from app.services.language_templates import TEMPLATES, format_price, get_template
 from app.services import payment_verification_service, stock_reservation_service
 from app.services.order_state_machine import RenderError
 
@@ -325,6 +325,32 @@ def _is_order_aside_question(text: str) -> bool:
     return any(kw in lower for kw in _ORDER_QUESTION_KEYWORDS)
 
 
+_PAYMENT_OPTION_WORDS = frozenset({
+    "upi", "cod", "cash", "cash on delivery", "online", "pay via upi", "gpay", "phonepe", "paytm", "bank transfer",
+})
+
+
+def _is_payment_option_answer(next_slot: "str | None", text: str) -> bool:
+    """
+    True when the customer is answering the open "Payment? UPI / COD" question with just the option.
+
+    "UPI" contains an aside-question keyword ("upi"/"payment") but here it is the slot answer — treating
+    it as a side question re-sent the UPI id forever and the order never advanced.
+    """
+    if next_slot != "payment_method":
+        return False
+    if " ".join((text or "").lower().replace("💳", " ").replace("🚚", " ").split()) in _PAYMENT_OPTION_WORDS:
+        return True
+    return command_words.matches_whole("pay_cod", text) or command_words.matches_whole("pay_upi", text)
+
+
+def _upi_only_banner(client, lang: str) -> str:
+    """'We accept UPI only' line for the order summary — only when the shop really has no COD."""
+    if client is None or getattr(client, "accepts_cod", False):
+        return ""
+    return get_template(lang, "summary_upi_only_note") + "\n\n"
+
+
 def _is_availability_question(text: str) -> bool:
     """True for 'is X available?' / 'do you have X?' style stock questions."""
     lower = text.lower().strip()
@@ -465,8 +491,8 @@ _CANCEL_INTENT_RE = re.compile(
 
 
 def is_cancel_intent(text: str) -> bool:
-    """True when *text* expresses intent to cancel/abandon the order ("I don't want this", "cancel", "never mind")."""
-    return bool(text) and bool(_CANCEL_INTENT_RE.search(text))
+    """True when *text* expresses intent to cancel/abandon the order ("I don't want this", "cancel", "રદ કરો")."""
+    return bool(text) and (bool(_CANCEL_INTENT_RE.search(text)) or command_words.is_cancel(text))
 
 
 async def _find_confident_product_match(db, client, user_text: str, exclude_sku: str | None):
@@ -914,7 +940,7 @@ def _build_slot_question(
                 f"Available colours in {_sel_size}: {_opts_str}. Which colour would you like?"
             )
 
-        return _gt(lang, "out_of_stock_combo", combo=_combo_str, last_attr=_last_attr)
+        return _gt(lang, "out_of_stock_combo", combo=_combo_str, last_attr=_gt(lang, f"attr_{_last_attr}") or _last_attr)
 
     if next_slot == "quantity":
         return _gt(lang, "ask_quantity")
@@ -927,9 +953,8 @@ def _build_slot_question(
             saved_addr = getattr(customer_profile, "address", None) if customer_profile else None
             if saved_addr:
                 _known_name = getattr(conv, "customer_name", None)
-                if _known_name:
-                    return f"{_known_name}, deliver to: {saved_addr}? (yes/change)"
-                return _gt(lang, "confirm_saved_address", address=saved_addr)
+                _saved_prompt = _gt(lang, "confirm_saved_address", address=saved_addr)
+                return f"{_known_name}, {_saved_prompt}" if _known_name else _saved_prompt
         return _gt(lang, "ask_address")
 
     if next_slot == "mobile_number":
@@ -1385,10 +1410,7 @@ async def run_switch_confirm_guard(
 
     _candidate_sku = getattr(conv, "interrupted_sku", None)
     _lang = getattr(conv, "last_customer_language", None) or "english"
-    _confirm_yes = user_text.strip().lower() in {
-        "yes", "haan", "ha", "han", "ok", "okay", "sure", "y", "yep", "yeah",
-        "bilkul", "हाँ", "ہاں",
-    }
+    _confirm_yes = command_words.is_yes(user_text)
     # Set only in the decline/unclear branch below when the reply turns out
     # to be a genuine new question rather than a decline.
     _sc_answer = ""
@@ -1606,10 +1628,7 @@ async def run_order_switch_confirm_guard(
 
     _candidate_sku = getattr(conv, "interrupted_sku", None)
     _lang = getattr(conv, "last_customer_language", None) or "english"
-    _confirm_yes = user_text.strip().lower() in {
-        "yes", "haan", "ha", "han", "ok", "okay", "sure", "y", "yep", "yeah",
-        "bilkul", "हाँ", "ہاں",
-    }
+    _confirm_yes = command_words.is_yes(user_text)
 
     _new_product = None
     if _confirm_yes and _candidate_sku and client:
@@ -1873,6 +1892,43 @@ def is_free_text_slot_answer(conv, user_text: str) -> bool:
     return False
 
 
+_SLOT_STAGES = frozenset({"order_collection", "awaiting_final_confirmation", "payment"})
+
+
+async def sync_conversation_language(db, conv, message, user_text: str) -> str:
+    """
+    Make conv.last_customer_language reflect THIS message before any reply is built.
+
+    Most templates read the stored language, and it used to be written only at the very end of the
+    main LLM path — so the first reply to a Gujarati/Tamil/... customer (and every early-return
+    template reply) came back in the previous turn's language. Taps, one-word answers, names and
+    addresses carry no language signal and keep the stored language. While the shop is still
+    collecting a name/address, only a different *script* switches language (Roman text there is
+    usually a proper noun or a street name).
+
+    Returns the language now in effect.
+    """
+    stored = _lang_svc.normalize_language(getattr(conv, "last_customer_language", None))
+    if getattr(message, "type", "text") == "interactive" or not (user_text or "").strip():
+        return stored
+    detection = _lang_svc.detect(user_text, previous_language=stored)
+    if not detection.confident or detection.lang == stored:
+        return stored
+    collecting_free_text = (
+        (conv.current_stage or "") in _SLOT_STAGES
+        and not (getattr(conv, "customer_name", None) and getattr(conv, "delivery_address", None))
+    )
+    if collecting_free_text and _lang_svc.expected_script(detection.lang) is None:
+        return stored
+    try:
+        await conversation_service.update_language(db, conv.id, detection.lang)
+        conv.last_customer_language = detection.lang
+    except Exception as exc:  # noqa: BLE001 - language sync must never block the reply
+        logger.error("language sync error: %s", exc)
+        return stored
+    return detection.lang
+
+
 def is_greeting_only(text: str) -> bool:
     """
     True when *text* is nothing but a bare greeting ("hi", "Hello!", "  hii ")
@@ -1881,9 +1937,9 @@ def is_greeting_only(text: str) -> bool:
     """
     if not text:
         return False
-    stripped = re.sub(r"[^\w\s]", "", text.lower())
-    stripped = re.sub(r"\s+", " ", stripped).strip()
-    return stripped in _GREETING_ONLY_PHRASES
+    from app.services import command_words, indic_vocab
+
+    return " ".join(indic_vocab.tokenize(text)) in _GREETING_ONLY_PHRASES or command_words.matches_whole("greeting", text)
 
 
 def has_reference_pronoun(text: str) -> bool:
@@ -2053,14 +2109,14 @@ def is_order_status_intent(text: str) -> bool:
     """True when *text* asks about an order's status ("where is my order", "order kaha hai", "ORD-2026-12")."""
     if not text:
         return False
-    return bool(_ORDER_ID_RE.search(text) or _ORDER_STATUS_RE.search(text))
+    return bool(_ORDER_ID_RE.search(text) or _ORDER_STATUS_RE.search(text) or command_words.matches("order_status", text))
 
 
 def _normalize_name(text: str) -> str:
     """Lower-case, drop apostrophes, turn other punctuation into spaces, collapse whitespace."""
-    text = re.sub(r"['’`]", "", (text or "").lower())
-    text = re.sub(r"[^\w\s]", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
+    from app.services import indic_vocab
+
+    return " ".join(indic_vocab.tokenize(re.sub(r"['’`]", "", (text or "").lower())))
 
 
 def _find_exact_name_match(products: list, user_text: str):
@@ -2165,7 +2221,7 @@ async def _build_order_status_reply(db, conv, client, sender_phone: str, user_te
         lang, "order_status_summary",
         order_number=order.order_number, items=_format_order_items(order),
         total=format_price(order.total_amount or 0),
-        status=_ORDER_STATUS_LABELS.get(status, status.replace("_", " ").title()),
+        status=get_template(lang, f"ostatus_{status}") or _ORDER_STATUS_LABELS.get(status, status.replace("_", " ").title()),
     )
     if status == "pending_payment":
         upi_id = getattr(client, "upi_id", None)
@@ -2919,7 +2975,7 @@ async def run_sku_and_name_pinning(
                 _PC_GENERIC_AFFIRMATIVES = {
                     "yes", "yeah", "yep", "yup", "ok", "okay", "sure",
                     "haan", "ha", "theek hai",
-                }
+                } | command_words.WORDS["yes"]
                 _pc_is_ambiguous_reply = (
                     not _stripped_pc
                     or _stripped_pc_lower in _PC_GENERIC_AFFIRMATIVES
@@ -3115,7 +3171,7 @@ async def run_sku_and_name_pinning(
         _BARE_AFFIRM_WORDS = frozenset({
             "yes", "haan", "ha", "han", "ok", "okay", "sure", "bilkul",
             "theek", "sahi", "zaroor", "yep", "yup", "y", "yeah",
-        })
+        }) | command_words.WORDS["yes"]
         _is_bare_affirm_post_completion = (
             user_text.lower().strip() in _BARE_AFFIRM_WORDS
         )
@@ -3175,8 +3231,8 @@ async def run_sku_and_name_pinning(
         and _interrupted_sku_pending
         and stored_stage not in ("order_collection", "awaiting_final_confirmation", "payment", "completed")
     ):
-        _CONFIRM_YES = frozenset({"yes", "haan", "ha", "han", "ok", "okay", "sure", "y", "yep", "yeah", "bilkul", "हाँ", "ہاں"})
-        _CONFIRM_NO = frozenset({"no", "nahi", "nope", "n", "nein", "na", "nah", "cancel"})
+        _CONFIRM_YES = frozenset({"yes", "haan", "ha", "han", "ok", "okay", "sure", "y", "yep", "yeah", "bilkul", "हाँ", "ہاں"}) | command_words.WORDS["yes"]
+        _CONFIRM_NO = frozenset({"no", "nahi", "nope", "n", "nein", "na", "nah", "cancel"}) | command_words.WORDS["no"] | command_words.WORDS["cancel"]
         _isku_txt = user_text.lower().strip()
         if _isku_txt in _CONFIRM_YES:
             _isku_prod = await catalogue_service.find_product_by_sku(db, client.id, _interrupted_sku_pending) if client else None
@@ -4292,12 +4348,22 @@ async def run_slot_state_machine(
             ):
                 _saved_addr_for_confirm = customer_profile.address
                 _ac_classification = conversation_flow.classify_address_confirmation(user_text)
-                if _ac_classification == "confirm":
+                _ac_typed_new_address = (
+                    _ac_classification == "unclear"
+                    and not conversation_flow._SKU_ONLY_PATTERN.match(user_text.strip())
+                    and conversation_flow.is_valid_address(user_text)
+                )
+                if _ac_classification == "confirm" or _ac_typed_new_address:
+                    # "confirm" keeps the saved address; a reply that is itself a full address (the customer
+                    # simply typed the new one instead of the word "change") becomes the delivery address.
+                    _ac_value = (
+                        conversation_flow.clean_address(user_text) if _ac_typed_new_address else _saved_addr_for_confirm
+                    )
                     try:
                         await conversation_service.update_order_field(
-                            db, conv.id, "delivery_address", _saved_addr_for_confirm
+                            db, conv.id, "delivery_address", _ac_value
                         )
-                        conv.delivery_address = _saved_addr_for_confirm
+                        conv.delivery_address = _ac_value
                     except Exception as _ac_exc:
                         logger.error("Address-confirm update error: %s", _ac_exc)
                     _address_confirmed_this_turn = True
@@ -4311,7 +4377,9 @@ async def run_slot_state_machine(
                     # Fall through — normal flow recomputes next_slot (payment /
                     # summary) below; do not return early.
                 elif _ac_classification == "change":
-                    _ac_ask = "Sure — what's the new delivery address? Please send house/area, city and pincode."
+                    _ac_ask = get_template(
+                        _lang_svc.normalize_language(getattr(conv, "last_customer_language", None)), "ask_new_address"
+                    )
                     try:
                         await conversation_service.update_order_field(db, conv.id, "delivery_address", None)
                         conv.delivery_address = None
@@ -4345,20 +4413,12 @@ async def run_slot_state_machine(
                         "Slot attempt (address-confirm unclear): conv=%s slot=delivery_address attempt=%d",
                         conv.id, _ac_new_attempts,
                     )
-                    _ac_lang_cap = getattr(conv, "last_customer_language", None) or language or "english"
+                    _ac_lang_cap = _lang_svc.normalize_language(getattr(conv, "last_customer_language", None) or language)
+                    _ac_hint = get_template(_ac_lang_cap, "saved_address_reprompt")
                     if _ac_new_attempts >= _SLOT_ATTEMPT_ESCALATE:
                         # Escalate exactly like the slot-cap path below (Improvement 1):
                         # stop re-prompting, hand off to a human.
-                        if _ac_lang_cap in ("hindi_roman", "hinglish"):
-                            _ac_reprompt = "Hamara team aapki madad karega. 👋\n\nPlease reply *yes* to use this address, or *change* to enter a new one."
-                        elif _ac_lang_cap == "hindi_devanagari":
-                            _ac_reprompt = "हमारी टीम आपकी मदद करेगी। 👋\n\nPlease reply *yes* to use this address, or *change* to enter a new one."
-                        elif _ac_lang_cap == "gujarati_roman":
-                            _ac_reprompt = "Amari team tamne madad karse. 👋\n\nPlease reply *yes* to use this address, or *change* to enter a new one."
-                        elif _ac_lang_cap == "gujarati_script":
-                            _ac_reprompt = "અમારી ટીમ તમને મદદ કરશે. 👋\n\nPlease reply *yes* to use this address, or *change* to enter a new one."
-                        else:
-                            _ac_reprompt = "Our team will assist you shortly. 👋\n\nPlease reply *yes* to use this address, or *change* to enter a new one."
+                        _ac_reprompt = f"{get_template(_ac_lang_cap, 'team_will_assist')}\n\n{_ac_hint}"
                         logger.warning(
                             "SLOT cap: conv=%s slot=delivery_address attempts=%d — no LLM, escalating to human (address-confirm gate).",
                             conv.id, _ac_new_attempts,
@@ -4376,7 +4436,7 @@ async def run_slot_state_machine(
                         except Exception as _ac_esc_exc:
                             logger.error("Address-confirm slot-cap escalation error: %s", _ac_esc_exc)
                     else:
-                        _ac_reprompt = "Please reply *yes* to use this address, or *change* to enter a new one."
+                        _ac_reprompt = _ac_hint
                         if _ac_new_attempts >= _SLOT_ATTEMPT_ESCAPE_HATCH:
                             _ac_reprompt += "\n\n(Reply 'cancel' to stop, or 'help' to reach our team.)"
                     try:
@@ -4489,7 +4549,10 @@ async def run_slot_state_machine(
             # Intercept side-questions (delivery charges, price of another product,
             # etc.) BEFORE intent classification so they are never treated as slot
             # answers and the current slot is re-asked after the one-line answer.
-            if message.type == "text" and _is_order_aside_question(user_text):
+            if (
+                message.type == "text" and _is_order_aside_question(user_text)
+                and not _is_payment_option_answer(_next_slot_pre, user_text)
+            ):
                 _aq_lang = getattr(conv, "last_customer_language", None) or language or "english"
                 _aq_prod_name = getattr(pinned_product, "name", "the product") or "the product"
                 _aq_dt = get_delivery_time_str(pinned_product, client) or "3–7 business days"
@@ -4619,7 +4682,10 @@ async def run_slot_state_machine(
                     # it instead; the ORIGINAL pinned slot is only re-asked if
                     # the customer declines (see run_order_switch_confirm_guard,
                     # which resolves this on the next turn).
-                    _aq_switch_prompt = f"Would you like to order {_aq_named_product.name}? (Yes / No)"
+                    _aq_switch_prompt = get_template(
+                        _lang_svc.normalize_language(getattr(conv, "last_customer_language", None)),
+                        "would_you_like_to_order_switch", name=_aq_named_product.name,
+                    )
                     _aq_reply = f"{_aq_answer}\n\n{_aq_switch_prompt}"
                     try:
                         await conversation_service.update_order_field(
@@ -4707,26 +4773,13 @@ async def run_slot_state_machine(
                         await catalogue_service.get_product_variant_info(db, _ir_target)
                         if _ir_named_product is not None else variant_info
                     )
-                    _ir_lines = [
-                        f"{_ir_target.name} [{getattr(_ir_target, 'sku', None)}] — "
-                        f"{format_price(getattr(_ir_target, 'price', 0) or 0)}"
-                    ]
-                    if _ir_vi.get("available_colors"):
-                        _ir_lines.append(f"Available colors: {', '.join(_ir_vi['available_colors'])}")
-                    if _ir_vi.get("available_sizes"):
-                        _ir_lines.append(f"Available sizes: {', '.join(_ir_vi['available_sizes'])}")
-                    if _ir_named_product is not None:
-                        # Only ask order-intent when the photo shown is of a
-                        # DIFFERENT product than the one already pinned/
-                        # confirmed for this order. When _ir_target IS the
-                        # pinned product, order intent was already confirmed
-                        # (originally, or via the cross-product switch-confirm
-                        # "yes") — re-asking here is redundant; the slot
-                        # question appended below already continues that
-                        # confirmed order.
-                        _ir_lines.append("")
-                        _ir_lines.append("Would you like to order? (Yes / No)")
-                    _ir_card = "\n".join(_ir_lines)
+                    # Only ask order-intent when the photo shown is of a DIFFERENT product than the one already
+                    # pinned/confirmed for this order. When _ir_target IS the pinned product, order intent was
+                    # already confirmed — re-asking is redundant; the slot question appended below continues it.
+                    _ir_card = render_product_card(
+                        getattr(conv, "last_customer_language", None) or language, _ir_target, _ir_vi,
+                        ask_order=_ir_named_product is not None,
+                    )
 
                     _ir_lang = getattr(conv, "last_customer_language", None) or language or "english"
                     _ir_prod_name = getattr(pinned_product, "name", "the product") or "the product"
@@ -4875,11 +4928,25 @@ async def run_slot_state_machine(
             # transition); it carries no further content to extract. Route
             # straight to OTHER so resolve_transition() just asks the first
             # slot question cleanly, without treating "yes" as a bad answer.
-            _just_entered_order_collection_via_affirmation = (
-                _stored_stage in conversation_flow._BROWSING_STAGES
-                and stage == "order_collection"
-                and user_text.strip().lower() in conversation_flow._PURCHASE_AFFIRMATION
+            _entered_from_browsing = (
+                _stored_stage in conversation_flow._BROWSING_STAGES and stage == "order_collection"
             )
+            _just_entered_order_collection_via_affirmation = _entered_from_browsing and (
+                user_text.strip().lower() in conversation_flow._PURCHASE_AFFIRMATION
+                or command_words.is_yes(user_text)
+            )
+            if _entered_from_browsing and not _just_entered_order_collection_via_affirmation and message.type == "text":
+                # The buy-intent gate / router start_order moved us into order_collection on a phrase like
+                # "ye le lunga" / "order karna hai" / "book karo". Unless the same message also answers the
+                # first question ("blue one please"), it is the purchase intent itself, not an answer — without
+                # this the phrase was read as a colour and the customer got "Sorry, 'ye le lunga' colour is
+                # not available" in a loop.
+                _entry_probe = conversation_flow.extract_order_field(
+                    conv, user_text, variant_info=variant_info, conversation_history=history_dicts,
+                    available_stock=available_stock,
+                    saved_address=getattr(customer_profile, "address", None) if customer_profile else None,
+                )
+                _just_entered_order_collection_via_affirmation = _entry_probe is None
 
             # P0-2: deterministic fast-path — a trivial slot answer (color/size/
             # qty/yes-no/free-text address) never needs an LLM classify call.
@@ -5105,7 +5172,10 @@ async def run_slot_state_machine(
                 _ot_threshold_mo = int(getattr(client, "off_topic_threshold", None) or _DEFAULT_OFF_TOPIC_THRESHOLD) if client else _DEFAULT_OFF_TOPIC_THRESHOLD
                 _shop_name_mo = (getattr(client, "business_name", None) or "our shop") if client else "our shop"
                 if _midorder_ot_count >= _ot_threshold_mo:
-                    _ot_boundary_mo = f"I can only help with orders from {_shop_name_mo}. Tap a product or type 'cancel' to start over."
+                    _ot_boundary_mo = get_template(
+                        _lang_svc.normalize_language(getattr(conv, "last_customer_language", None)),
+                        "off_topic_boundary", business=_shop_name_mo,
+                    )
                     logger.warning("OFF_TOPIC threshold (mid-order): conv=%s count=%d — boundary reply.", conv.id, _midorder_ot_count)
                     try:
                         await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
@@ -5512,24 +5582,15 @@ async def run_slot_state_machine(
                             )
                         )
                         if _vs_opts:
-                            _VS_REJ = {
-                                "english": "Sorry, we don't have {value} in {slot}. Available {slot}s: {opts}",
-                                "hindi": "Maafi, {value} {slot} available nahi hai. Available {slot}: {opts}",
-                                "gujarati": "Maaf karo, {value} {slot} available nathi. Available {slot}: {opts}",
-                                "hindi_devanagari": "माफी, {slot} में {value} उपलब्ध नहीं है। उपलब्ध {slot}: {opts}",
-                                "gujarati_script": "માફ કરશો, {slot} માં {value} ઉપલબ્ધ નથી. ઉપલબ્ધ {slot}: {opts}",
-                            }
-                            if _vs_lang in ("hindi_roman", "hinglish"):
-                                _vs_tpl = _VS_REJ["hindi"]
-                            elif _vs_lang in _VS_REJ:
-                                _vs_tpl = _VS_REJ[_vs_lang]
-                            elif _vs_lang == "gujarati_roman":
-                                _vs_tpl = _VS_REJ["gujarati"]
-                            else:
-                                _vs_tpl = _VS_REJ["english"]
-                            _vs_rej = _vs_tpl.format(
-                                value=user_text.strip()[:20],
-                                slot=_next_slot_pre,
+                            _vs_code = _lang_svc.normalize_language(_vs_lang)
+                            _vs_value = user_text.strip()[:20]
+                            # Echo what the customer typed only when it reads like an option word; "hmm", emoji
+                            # or a sentence fragment echoed back ("color hmm not available") looks broken.
+                            _vs_plausible = bool(re.fullmatch(r"[\w .\-/+]{1,20}", _vs_value)) and any(ch.isalnum() for ch in _vs_value)
+                            _vs_rej = get_template(
+                                _vs_code, "variant_slot_rejected" if _vs_plausible else "variant_slot_rejected_noecho",
+                                value=_vs_value,
+                                slot=get_template(_vs_code, f"attr_{'colour' if _next_slot_pre == 'color' else _next_slot_pre}"),
                                 opts=_vs_opts,
                             )
                             logger.info(
@@ -5937,7 +5998,7 @@ async def _render_order_reply(
                     f"📦 {_item['product_name']} {_variant_bits} × {_item['qty']} = {format_price(_sub)}"
                 )
             _cart_delivery = get_delivery_time_str(_prod, client) or "3–7 business days"
-            return _gt(
+            return _upi_only_banner(client, lang) + _gt(
                 lang, "cart_order_summary",
                 items_block="\n".join(_cart_lines),
                 total=format_price(_cart_grand_total),
@@ -5972,7 +6033,7 @@ async def _render_order_reply(
                        delivery_time=_summary_delivery)
         if _variant_str:
             _kw["variant"] = _variant_str
-        return _gt(lang, _tpl, **_kw)
+        return _upi_only_banner(client, lang) + _gt(lang, _tpl, **_kw)
 
     if action == "reask_confirm":
         return _gt(lang, "already_confirmed")
@@ -6023,9 +6084,9 @@ async def _render_order_reply(
         )
         _cs_name_r, _cs_price_r = await _find_cross_sell_candidate(db, client, conv, _pinned_sku)
         if _cs_name_r and _cs_price_r and _cat_url_r:
-            _catalogue_line = f"🛍️ You might also like {_cs_name_r} ({_cs_price_r}) — {_cat_url_r}"
+            _catalogue_line = _gt(lang, "catalogue_cross_sell", name=_cs_name_r, price=_cs_price_r, url=_cat_url_r)
         elif _cat_url_r:
-            _catalogue_line = f"🛍️ Browse more: {_cat_url_r}"
+            _catalogue_line = _gt(lang, "catalogue_browse_more", url=_cat_url_r)
         else:
             _catalogue_line = ""
         _total_fmt = format_price(_total)
@@ -6180,6 +6241,9 @@ async def run_summary_confirmation(
         and next_slot is None
         and message.type == "text"
         and _is_order_aside_question(user_text)
+        # "cash on delivery" / "UPI" just answered the payment question and produced this very summary —
+        # it is not a delivery/payment side-question (it used to prepend "Delivery: 3–7 business days.").
+        and not _is_payment_option_answer("payment_method", user_text)
     ):
         # ── Issue A: side-question at the summary/confirm step ──────
         # detect_stage() keeps the customer in awaiting_final_confirmation
@@ -6303,7 +6367,10 @@ async def run_summary_confirmation(
             # run_order_switch_confirm_guard on the customer's next turn
             # (now stage-aware: declining resumes THIS summary, not
             # order_collection).
-            _afc_switch_prompt = f"Would you like to order {_afc_named_product.name}? (Yes / No)"
+            _afc_switch_prompt = get_template(
+                _lang_svc.normalize_language(getattr(conv, "last_customer_language", None)),
+                "would_you_like_to_order_switch", name=_afc_named_product.name,
+            )
             _afc_reply = f"{_afc_q_answer}\n\n{_afc_switch_prompt}"
             try:
                 await conversation_service.update_order_field(
@@ -6456,9 +6523,11 @@ async def run_summary_confirmation(
                 available_stock=None,  # deferred: variant attrs not yet re-chosen
                 product_name=_afc_switch_product.name,
             )
-            ai_reply = f"Sure, switching to {_afc_switch_product.name}. 👍\n\n{_afc_switch_sq}" if _afc_switch_sq else (
-                f"Sure, switching to {_afc_switch_product.name}. 👍"
+            _afc_switch_line = get_template(
+                _lang_svc.normalize_language(getattr(conv, "last_customer_language", None)),
+                "switching_to", product=_afc_switch_product.name,
             )
+            ai_reply = f"{_afc_switch_line}\n\n{_afc_switch_sq}" if _afc_switch_sq else _afc_switch_line
             try:
                 await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
                 await conversation_service.save_message(db, conv.id, "assistant", ai_reply)
@@ -6473,9 +6542,9 @@ async def run_summary_confirmation(
         elif _afc_switch_product is None:
             # No catalog match either — don't re-echo the summary; give an
             # explicit escape hatch instead of looping.
-            _afc_no_match_reply = (
-                f"Couldn't find '{user_text.strip()}' — reply 1️⃣/2️⃣/3️⃣, "
-                "or send the product name/code you want instead."
+            _afc_no_match_reply = get_template(
+                _lang_svc.normalize_language(getattr(conv, "last_customer_language", None)),
+                "afc_no_match", text=user_text.strip(),
             )
             try:
                 await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
@@ -6670,17 +6739,7 @@ async def run_llm_routing(
             variant_info if _img_target is pinned_product
             else await catalogue_service.get_product_variant_info(db, _img_target)
         )
-        _img_lines = [
-            f"{_img_target.name} [{getattr(_img_target, 'sku', None)}] — "
-            f"{format_price(getattr(_img_target, 'price', 0) or 0)}"
-        ]
-        if _img_vi.get("available_colors"):
-            _img_lines.append(f"Available colors: {', '.join(_img_vi['available_colors'])}")
-        if _img_vi.get("available_sizes"):
-            _img_lines.append(f"Available sizes: {', '.join(_img_vi['available_sizes'])}")
-        _img_lines.append("")
-        _img_lines.append("Would you like to order? (Yes / No)")
-        ai_reply = "\n".join(_img_lines)
+        ai_reply = render_product_card(getattr(conv, "last_customer_language", None) or language, _img_target, _img_vi)
 
         _img_url = getattr(_img_target, "image_url", None)
         if _is_valid_image_url(_img_url) and client:
@@ -6792,24 +6851,13 @@ async def run_llm_routing(
         _psku2 = getattr(_pinned_for_reply, "sku", None) or conv.pending_product_sku
         _av_colors2 = variant_info.get("available_colors", [])
         _av_sizes2 = variant_info.get("available_sizes", [])
-        _lines2 = []
-        if _pick_just_resolved:
-            # This is the first reveal of the product this turn (resolved from a
-            # "do you sell X?" / multi-choice question, not a price/available? follow-up
-            # about a product already shown) — lead with a plain acknowledgment so the
-            # product card doesn't appear with no context, per user feedback.
-            _lines2.append("Yes, we have this available:")
-            _lines2.append("")
-        _lines2.append(
-            f"{_pn2} [{_psku2}] — {format_price(getattr(_pinned_for_reply, 'price', 0) or 0)}"
+        # _pick_just_resolved: first reveal of the product this turn (resolved from a "do you sell X?" /
+        # multi-choice question, not a price/available? follow-up) — lead with a plain acknowledgment so the
+        # card doesn't appear with no context.
+        ai_reply = render_product_card(
+            language, _pinned_for_reply, {"available_colors": _av_colors2, "available_sizes": _av_sizes2},
+            intro=_pick_just_resolved, name=_pn2, sku=_psku2,
         )
-        if _av_colors2:
-            _lines2.append(f"Available colors: {', '.join(_av_colors2)}")
-        if _av_sizes2:
-            _lines2.append(f"Available sizes: {', '.join(_av_sizes2)}")
-        _lines2.append("")
-        _lines2.append("Would you like to order? (Yes / No)")
-        ai_reply = "\n".join(_lines2)
         _log_route(conv.id, "TEMPLATE", "fix1_pinned_known_fact", extra=f"sku={_psku2} stage={stage}")
         logger.info(
             "conv=%s FIX1 deterministic compact product reply for %r (stage=%r) — no LLM call",
@@ -7579,6 +7627,60 @@ def _should_use_buttons(
 
 
 
+def render_product_card(
+    lang: str | None, product, variant_info: dict | None, *, ask_order: bool = True, intro: bool = False,
+    name=None, sku=None,
+) -> str:
+    """
+    The compact product card every browsing path shows, in the customer's language:
+
+        [Yes, we have this available:]            (intro)
+        Name [SKU] — ₹Price
+        Available colors: ... / Available sizes: ...
+        Would you like to order? (Yes / No)       (ask_order)
+
+    Facts come from the DB row; only the labels are translated.
+    """
+    code = _lang_svc.normalize_language(lang)
+    vi = variant_info or {}
+    shown_name = name or getattr(product, "name", None) or ""
+    shown_sku = sku or getattr(product, "sku", None)
+    lines: list[str] = []
+    if intro:
+        lines += [get_template(code, "card_intro"), ""]
+    lines.append(f"{shown_name} [{shown_sku}] — {format_price(getattr(product, 'price', 0) or 0)}")
+    if vi.get("available_colors"):
+        lines.append(get_template(code, "card_colors", colors=", ".join(vi["available_colors"])))
+    if vi.get("available_sizes"):
+        lines.append(get_template(code, "card_sizes", sizes=", ".join(vi["available_sizes"])))
+    if ask_order:
+        lines += ["", get_template(code, "would_you_like_to_order_generic")]
+    return "\n".join(lines)
+
+
+def _order_offer_cues() -> tuple[str, ...]:
+    """
+    Closing question of the 'Would you like to order?' offer in every template language (the part before
+    the '(Yes / No)' hint, last three words — product names sit earlier in the sentence), lower-cased.
+    """
+    cues = {"would you like to order?"}
+    for templates in TEMPLATES.values():
+        generic = templates.get("would_you_like_to_order_generic", "")
+        question = generic.split(" (")[0].strip()
+        if question:
+            cues.add(" ".join(question.split()[-3:]).lower())
+    return tuple(cues)
+
+
+_ORDER_OFFER_CUES_ALL = _order_offer_cues()
+
+
+def _asks_to_order(reply: str) -> bool:
+    """True when the reply ends with the yes/no 'would you like to order?' offer, in any template language."""
+    lower = (reply or "").lower()
+    return any(cue in lower for cue in _ORDER_OFFER_CUES_ALL)
+
+
 async def decide_send_instruction(
     db,
     conv,
@@ -7624,16 +7726,17 @@ async def decide_send_instruction(
     # Purely additive on top of the text reply already built above — typing
     # "yes"/"1"/a product name still resolves exactly as before; tapping is
     # just a faster path to the same outcome.
+    _btn_lang = _lang_svc.normalize_language(getattr(conv, "last_customer_language", None))
     if is_whatsapp and button_type == "text":
         if (
-            "would you like to order?" in ai_reply.lower()
+            _asks_to_order(ai_reply)
             and pinned_product is not None
             and getattr(conv, "pending_product_sku", None)
         ):
             button_type = "offer_buttons"
             offer_buttons = [
-                {"id": "offer_yes", "title": "Yes"},
-                {"id": "offer_no", "title": "No"},
+                {"id": "offer_yes", "title": get_template(_btn_lang, "btn_yes")},
+                {"id": "offer_no", "title": get_template(_btn_lang, "btn_no")},
             ]
         elif next_slot in ("color", "size", "material"):
             # BUG 2 FIX: a slot question's buttons must always come from that
@@ -7771,11 +7874,11 @@ async def decide_send_instruction(
 
         payment_buttons = []
         if accepts_upi and upi_id_set:
-            payment_buttons.append({"id": "upi", "title": "💳 Pay via UPI"})
+            payment_buttons.append({"id": "upi", "title": get_template(_btn_lang, "btn_pay_upi")})
         if cod_eligible:
-            payment_buttons.append({"id": "cod", "title": "🚚 Cash on Delivery"})
+            payment_buttons.append({"id": "cod", "title": get_template(_btn_lang, "btn_pay_cod")})
         if accepts_bank and bank_ready:
-            payment_buttons.append({"id": "bank_transfer", "title": "🏦 Bank Transfer"})
+            payment_buttons.append({"id": "bank_transfer", "title": get_template(_btn_lang, "btn_pay_bank")})
 
         # WhatsApp buttons support max 3; if none configured fall back to text
         payment_buttons = payment_buttons[:3]
@@ -7792,8 +7895,8 @@ async def decide_send_instruction(
         return PipelineResult(
             text=ai_reply,
             buttons=[
-                ButtonSpec(id="confirm_pay", title="Confirm & Pay"),
-                ButtonSpec(id="cancel_order", title="Cancel"),
+                ButtonSpec(id="confirm_pay", title=get_template(_btn_lang, "btn_confirm_pay")),
+                ButtonSpec(id="cancel_order", title=get_template(_btn_lang, "btn_cancel")),
             ],
         )
 
@@ -8055,6 +8158,8 @@ class InboundContext:
     # ("pink wala" -> "Pink"); the stored inbound message is restored to this original afterwards.
     router_original_text: "str | None" = None
     media_type: "str | None" = None
+    # Set by _transcribe_voice_note_early: what a voice note said (the pipeline then sees it as typed text).
+    voice_transcript: "str | None" = None
 
 
 async def handle_inbound_message(ctx: InboundContext) -> PipelineResult:
@@ -8088,10 +8193,126 @@ async def handle_inbound_message(ctx: InboundContext) -> PipelineResult:
         return blocked
     result = await payment_inbound.pre_process(ctx)
     if result is None:
+        await _transcribe_voice_note_early(ctx)
         result = await _handle_inbound_message_core(ctx)
+    result = await _ensure_reply_language(ctx, result)
+    result = _echo_voice_transcript(ctx, result)
     await _restore_router_original_text(ctx, before_max)
+    await _mark_voice_messages(ctx, before_max)
     await payment_inbound.post_process(ctx, before_max)
     return result
+
+
+async def _transcribe_voice_note_early(ctx: InboundContext) -> None:
+    """
+    Turn a voice note into the text it says BEFORE the pipeline runs.
+
+    Until now a voice note reached the pipeline as "[voice note]": it could not fill a slot ("blue", "yes"), match a
+    product, or tell the bot which language the customer speaks — so a Gujarati voice note was answered in English
+    and an order could not be completed by voice. With the transcript in place the whole pipeline (router, slot
+    machine, language sync) treats it exactly like typed text. If transcription fails the message stays a voice note
+    and the old "please type it" handling applies.
+    """
+    message = ctx.message
+    if getattr(message, "type", None) != "audio" or getattr(message, "audio", None) is None:
+        return
+    try:
+        audio_bytes = await ctx.download_media(message.audio.id)
+        ext = ((message.audio.mime_type or "audio/ogg").split("/")[-1].split(";")[0]) or "ogg"
+        transcript = (await voice_service.transcribe_voice_note(audio_bytes, f"audio.{ext}")).strip()
+    except Exception as exc:  # noqa: BLE001 - fall back to the voice-note placeholder handling
+        logger.warning("voice note transcription failed conv=%s: %s", getattr(ctx.conv, "id", None), exc)
+        return
+    if not transcript:
+        return
+    from app.schemas.webhook import TextContent
+
+    ctx.voice_transcript = transcript
+    ctx.user_text = transcript
+    ctx.message = message.model_copy(update={"type": "text", "text": TextContent(body=transcript)})
+
+
+def _echo_voice_transcript(ctx: InboundContext, result: "PipelineResult") -> "PipelineResult":
+    """Prefix the reply with what was heard (_italic_), so the customer can see a misheard word."""
+    transcript = getattr(ctx, "voice_transcript", None)
+    if transcript and result is not None and result.text and not getattr(result, "skip_send", False):
+        result.text = f"_{transcript}_\n\n{result.text}"
+    return result
+
+
+async def _mark_voice_messages(ctx: InboundContext, before_max_id: int) -> None:
+    """Flag this turn's stored inbound message(s) as coming from a voice note (original_type='audio')."""
+    if not getattr(ctx, "voice_transcript", None) or ctx.conv is None:
+        return
+    from sqlalchemy import update
+
+    from app.models.message import Message
+
+    try:
+        await ctx.db.execute(
+            update(Message).where(
+                Message.conversation_id == ctx.conv.id, Message.id > before_max_id, Message.role == "user",
+            ).values(original_type="audio")
+        )
+        await ctx.db.commit()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error("voice message flag failed conv=%s: %s", ctx.conv.id, exc)
+        try:
+            await ctx.db.rollback()
+        except Exception:
+            pass
+
+
+async def _allowed_latin_words(ctx: InboundContext) -> frozenset[str]:
+    """Latin words a native-script reply may keep: catalogue (names/categories/colours/sizes), shop, customer-typed text."""
+    from app.services import reply_localizer
+
+    conv, client = ctx.conv, ctx.client
+    texts: list[str | None] = [
+        ctx.user_text, getattr(conv, "customer_name", None), getattr(conv, "delivery_address", None),
+        getattr(client, "business_name", None), getattr(client, "upi_id", None),
+    ]
+    try:
+        for product in await catalogue_service.list_products(ctx.db, client.id):
+            texts += [product.name, product.category, product.sku]
+            texts += [f"{v.color or ''} {v.size or ''} {v.material or ''}" for v in (product.variants or [])]
+    except Exception as exc:  # noqa: BLE001 - the allow-list is best effort
+        logger.warning("allowed-words lookup failed: %s", exc)
+    return reply_localizer.allowed_words_from(*texts)
+
+
+async def _ensure_reply_language(ctx: InboundContext, result: "PipelineResult") -> "PipelineResult":
+    """
+    Last-mile guarantee that the reply is in the customer's language and script.
+
+    Replies already in the right script pass untouched (no cost). Anything else — a language without a
+    template set (Marathi, Tamil, ...) or English text from a code path that has no translation for the
+    customer's language — is translated by reply_localizer, which keeps every price/number/SKU intact
+    and falls back to the original text on any problem. The conversation history keeps the engine's own
+    (English) text on purpose: the stage machine recognises "the agent just asked X" from that text.
+    Never raises.
+    """
+    conv = ctx.conv
+    if result is None or conv is None or getattr(result, "skip_send", False) or not result.text:
+        return result
+    from app.services import reply_localizer
+
+    lang = getattr(conv, "last_customer_language", None)
+    try:
+        allowed = frozenset()
+        native = _lang_svc.expected_script(lang) is not None
+        if native and (
+            not _lang_svc.reply_matches_language(result.text, lang) or reply_localizer.stray_latin_words(result.text)
+        ):
+            # Possibly impure: the English words may be catalogue names / the customer's own Latin-script
+            # name or address — those stay. Only fetch the catalogue when the cheap text check fires.
+            allowed = await _allowed_latin_words(ctx)
+        return await reply_localizer.localize_result(
+            result, lang, client_id=getattr(ctx.client, "id", None), conversation_id=conv.id, allowed=allowed,
+        )
+    except Exception as exc:  # noqa: BLE001 - the reply must go out regardless
+        logger.error("reply language guard failed conv=%s: %s", getattr(conv, "id", None), exc)
+        return result
 
 
 async def _billing_preflight(ctx: InboundContext) -> "PipelineResult | None":
@@ -8202,6 +8423,9 @@ async def _handle_inbound_message_core(ctx: InboundContext) -> PipelineResult:
     # so every downstream code path (name-match guard, stage-lock, order-detect,
     # etc.) can reference the pre-update stage unconditionally.
     _stored_stage: str = conv.current_stage or "greeting"
+
+    # Reply language = the language of THIS message (see sync_conversation_language).
+    await sync_conversation_language(db, conv, message, user_text)
 
     # A screenshot is already with the seller: the conversation must not stay locked in the payment
     # stage answering every message with a payment template.
@@ -8417,9 +8641,7 @@ async def _handle_inbound_message_core(ctx: InboundContext) -> PipelineResult:
     # ROUTER_V2 on: one LLM call picks an action for every message that isn't a ₹0 fast path; the
     # engine executes it (app/services/router_actions.py). Off — or LLM unavailable — the keyword
     # greeting + order-status detectors run exactly as before.
-    _pre_route_language = _lang_svc.detect_language(
-        user_text, previous_language=getattr(conv, "last_customer_language", None) or "english",
-    )
+    _pre_route_language = _lang_svc.normalize_language(getattr(conv, "last_customer_language", None))
     _cat_link_result = await run_catalogue_link_short_circuit(
         db, conv, client, message, user_text, wamid, _stored_stage, _record_usage,
     )
@@ -8437,6 +8659,15 @@ async def _handle_inbound_message_core(ctx: InboundContext) -> PipelineResult:
         )
         if _router_out.early_result is not None:
             return _router_out.early_result
+        if _router_out.use_keyword_fallback:
+            # The LLM was unavailable, so the keyword path answers this turn — and the keyword cancel guard that
+            # the router normally replaces (see the cancel-in-payment guard above) must run again, otherwise
+            # "cancel my order" during an LLM outage re-sent the payment instruction instead of cancelling.
+            _fb_cancel = await run_cancel_in_payment_guard(
+                db, conv, client, sender_phone, user_text, wamid, _stored_stage, _record_usage,
+            )
+            if _fb_cancel is not None:
+                return _fb_cancel
         if not _router_out.use_keyword_fallback:
             _run_keyword_front_door = False
             _router_force_order = _router_out.force_order
@@ -8508,8 +8739,8 @@ async def _handle_inbound_message_core(ctx: InboundContext) -> PipelineResult:
     # ── Sales pipeline: stage → focused prompt ───────────────────────────────
     # Pass previous language so ambiguous single-word replies ("yes", "COD")
     # inherit the customer's established language rather than resetting.
-    previous_language = getattr(conv, "last_customer_language", None) or "english"
-    language = _lang_svc.detect_language(user_text, previous_language=previous_language)
+    # The turn's language was already synced onto the conversation (sync_conversation_language).
+    previous_language = language = _lang_svc.normalize_language(getattr(conv, "last_customer_language", None))
 
     # Detect conversation stage — pass stored stage so payment/completed are locked,
     # and pending_product_sku so Mode A → Mode B transition fires correctly.
@@ -8553,7 +8784,7 @@ async def _handle_inbound_message_core(ctx: InboundContext) -> PipelineResult:
         # "confirm" is now the canonical confirm_pay button translation (BUG 3 FIX —
         # replaces "1" which collided with valid quantity answers).
         "confirm", "1", "हाँ", "હા", "ہاں", "yep", "yup", "yeah",
-    })
+    }) | command_words.WORDS["yes"]
     if (
         message.type == "text"
         and stage in _BROWSING_STAGES_GATE
@@ -8831,9 +9062,9 @@ RULES:
             if reason == "prompt_injection":
                 # Bypass AI entirely — send canned safe reply.
                 business_name = getattr(client, "business_name", "this business") if client else "this business"
-                safe_reply = (
-                    f"I can only help with {business_name} products and orders. "
-                    "How can I assist you?"
+                safe_reply = get_template(
+                    _lang_svc.normalize_language(getattr(conv, "last_customer_language", None)),
+                    "injection_refusal", business=business_name,
                 )
                 logger.warning("Injection attempt: %s", sender_phone)
                 await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
@@ -8973,7 +9204,10 @@ RULES:
             _ot_threshold_idle = int(getattr(client, "off_topic_threshold", None) or _DEFAULT_OFF_TOPIC_THRESHOLD) if client else _DEFAULT_OFF_TOPIC_THRESHOLD
             _shop_name_idle = (getattr(client, "business_name", None) or "our shop") if client else "our shop"
             if _idle_ot_count >= _ot_threshold_idle:
-                _boundary_idle = f"I can only help with orders from {_shop_name_idle}. Tap a product or type 'cancel' to start over."
+                _boundary_idle = get_template(
+                    _lang_svc.normalize_language(getattr(conv, "last_customer_language", None)),
+                    "off_topic_boundary", business=_shop_name_idle,
+                )
                 logger.warning("OFF_TOPIC threshold (idle): conv=%s count=%d — boundary reply.", conv.id, _idle_ot_count)
                 try:
                     await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
@@ -9162,17 +9396,9 @@ RULES:
                     )
                 else:
                     _ocr_vi = await catalogue_service.get_product_variant_info(db, _ocr_product)
-                    _ocr_lines = [
-                        f"{_ocr_product.name} [{_ocr_product.sku}] — "
-                        f"{format_price(getattr(_ocr_product, 'price', 0) or 0)}"
-                    ]
-                    if _ocr_vi.get("available_colors"):
-                        _ocr_lines.append(f"Available colors: {', '.join(_ocr_vi['available_colors'])}")
-                    if _ocr_vi.get("available_sizes"):
-                        _ocr_lines.append(f"Available sizes: {', '.join(_ocr_vi['available_sizes'])}")
-                    _ocr_lines.append("")
-                    _ocr_lines.append("Would you like to order? (Yes / No)")
-                    ai_reply = "\n".join(_ocr_lines)
+                    ai_reply = render_product_card(
+                        getattr(conv, "last_customer_language", None) or language, _ocr_product, _ocr_vi,
+                    )
 
                     # Treat the OCR'd SKU exactly like a typed-SKU pin — same
                     # slot-reset + pending_product_sku write the vision-LLM match
@@ -9782,16 +10008,10 @@ RULES:
         except Exception as exc:
             logger.error("summary_shown update error: %s", exc)
 
-    # Persist language — only when the message was not an ambiguous fallback
-    # so that short replies don't accidentally overwrite the real language,
-    # and never from a name/address answer (proper nouns and street names such
-    # as "9 Ellis Bridge, Ahmedabad" are detected as Hindi and would flip every
-    # later template — e.g. the payment instruction — to the wrong language).
+    # The conversation language itself was persisted at the top of the turn
+    # (sync_conversation_language). Here only the customer profile follows it — and never from a
+    # name/address answer or an ambiguous one-word reply.
     if not _lang_svc.is_ambiguous(user_text) and not is_free_text_slot_answer(conv, user_text):
-        try:
-            await conversation_service.update_language(db, conv.id, language)
-        except Exception as exc:
-            logger.error("Language update error: %s", exc)
         if customer_profile is not None:
             try:
                 customer_profile.preferred_language = language

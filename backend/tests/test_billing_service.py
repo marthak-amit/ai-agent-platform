@@ -1,3 +1,4 @@
+from tests.conftest import with_savepoint
 """Tests for app/services/billing_service.py."""
 
 from datetime import date, timedelta
@@ -83,6 +84,7 @@ async def test_record_conversation_activity_creates_new_monthly_usage_row(mock_d
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = None
     mock_db.execute.return_value = mock_result
+    with_savepoint(mock_db)
 
     await billing_service.record_conversation_activity(mock_db, client, conv)
 

@@ -13,7 +13,7 @@ from datetime import date, datetime, timezone
 from typing import Optional
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import Integer, cast, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.order import Order
@@ -23,18 +23,23 @@ from app.services.language_templates import format_price
 logger = logging.getLogger(__name__)
 
 
-async def _get_order_count_for_year(_client_id: int, year: int, db: AsyncSession) -> int:
-    """Return the total number of orders across ALL clients for the given year.
-
-    Used to generate a globally unique order number (order_number has a unique
-    constraint across all clients, so the sequence must be global too).
+async def _next_order_number(db: AsyncSession, year: int) -> str:
     """
-    result = await db.execute(
-        select(func.count()).where(
-            func.extract("year", Order.created_at) == year,
+    Next globally unique order number 'ORD-<year>-NNNN'.
+
+    order_number has a UNIQUE index across ALL clients, so the sequence is global. Two customers confirming
+    at the same moment used to compute the same `count + 1` and the second INSERT died on the unique index
+    (the customer's confirmed order was lost). A transaction-level advisory lock now serialises number
+    allocation until the creating transaction commits, and the number comes from the highest number issued
+    this year (not a row count, which also repeats after any deletion).
+    """
+    await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": 7_240_000 + year})
+    last = await db.scalar(
+        select(func.max(cast(func.split_part(Order.order_number, "-", 3), Integer))).where(
+            Order.order_number.like(f"ORD-{year}-%")
         )
     )
-    return result.scalar_one() or 0
+    return f"ORD-{year}-{(last or 0) + 1:04d}"
 
 
 async def mark_order_paid(
@@ -220,8 +225,7 @@ async def create_cart_order(
         )
 
     year = datetime.now(timezone.utc).year
-    count = await _get_order_count_for_year(client_id, year, db)
-    order_number = f"ORD-{year}-{str(count + 1).zfill(4)}"
+    order_number = await _next_order_number(db, year)
     grand_total = sum(li["quantity"] * li["unit_price"] for li in line_items)
     first = line_items[0]
 

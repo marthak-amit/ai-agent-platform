@@ -525,7 +525,7 @@ def test_template_language_prefers_script_then_router_language():
     assert router_actions.template_language(d("en"), "hello", conv) == "english"
     assert router_actions.template_language(d("gu"), "kem cho", conv) == "gujarati_roman"
     assert router_actions.template_language(d("en"), "मेरा ऑर्डर कहाँ है", conv) == "hindi_devanagari"
-    assert router_actions.template_language(d("hinglish"), "order kaha hai", conv) == "hinglish"
+    assert router_actions.template_language(d("hinglish"), "order kaha hai", conv) == "hindi_roman"
 
 
 # ── catalogue link short-circuit (runs before the router) ───────────────────

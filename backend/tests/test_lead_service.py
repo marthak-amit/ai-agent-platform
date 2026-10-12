@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tests.conftest import with_savepoint
+
 from app.services import lead_service
 from app.services.intent_service import classify_lead
 
@@ -28,6 +30,7 @@ async def test_tag_lead_creates_new_lead(db, mock_settings):
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = None
     db.execute.return_value = mock_result
+    with_savepoint(db)
 
     await lead_service.tag_lead(db, "919999999999", 1, [{"role": "user", "content": "order karna hai"}])
 

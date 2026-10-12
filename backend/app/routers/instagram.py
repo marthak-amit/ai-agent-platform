@@ -291,7 +291,7 @@ async def _handle_dm(
         # webhook.py documents for WhatsApp's audio ack.
         try:
             await outbound.ig_send_dm(
-                ig_user_id, sender_igsid, "🎤 Voice note suna. Ek second...",
+                ig_user_id, sender_igsid, "🎤⏳",
                 kind=MessageKind.PIPELINE_REPLY, db=db,
                 client_id=getattr(conv, "client_id", None),
                 conversation_id=getattr(conv, "id", None),

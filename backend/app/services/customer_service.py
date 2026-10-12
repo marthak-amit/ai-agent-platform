@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.customer import Customer
+from app.services.db_helpers import add_or_get
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +66,9 @@ async def upsert_customer(
     customer = await get_customer(db, client_id, phone)
     now = datetime.now(timezone.utc)
 
+    created = False
     if customer is None:
-        customer = Customer(
+        customer, created = await add_or_get(db, Customer(
             client_id=client_id,
             phone=phone,
             name=name,
@@ -76,11 +78,10 @@ async def upsert_customer(
             first_message_at=now,
             last_message_at=now,
             last_inbound_at=now,
-        )
-        db.add(customer)
-        await db.flush()
-        logger.info("Created new customer profile phone=%s client=%s", phone, client_id)
-    else:
+        ), select(Customer).where(Customer.client_id == client_id, Customer.phone == phone))
+        if created:
+            logger.info("Created new customer profile phone=%s client=%s", phone, client_id)
+    if not created:
         customer.last_message_at = now
         # upsert_customer only runs on inbound webhooks, so this doubles as
         # the send-gate's 24h-window snapshot (migration 0055).
