@@ -7,7 +7,7 @@ send (text / image / approved template) with 24h-window enforcement, and
 bot pause/resume.
 
 Endpoints:
-- GET   /conversations                     list (filter=all|unread|payment_to_verify|bot_paused, search=)
+- GET   /conversations                     list (filter=all|unread|payment_to_verify|awaiting_payment|bot_paused, search=)
 - GET   /conversations/{id}                thread + customer panel + 24h window state
 - POST  /conversations/{id}/read           mark read (clears unread count)
 - POST  /conversations/{id}/media          upload an image to attach to a message
@@ -49,7 +49,7 @@ from app.services import (
     outbound,
     send_gate,
 )
-from app.services.order_state_machine import ORDER_PAYMENT_SUBMITTED
+from app.services.order_state_machine import ORDER_PAYMENT_SUBMITTED, ORDER_PENDING_PAYMENT
 from app.services.send_gate import MessageKind
 
 logger = logging.getLogger(__name__)
@@ -83,6 +83,7 @@ class ConversationSummary(BaseModel):
     last_message: Optional[LastMessageOut]
     unread_count: int
     payment_to_verify: bool
+    awaiting_payment: bool = False  # UPI order created, payment instructions sent, no screenshot yet
     bot_paused: bool
     ai_enabled: bool
     updated_at: Optional[str]
@@ -166,6 +167,7 @@ class ConversationDetail(BaseModel):
     updated_at: Optional[str]
     window: WindowOut
     opted_out: bool
+    awaiting_payment: bool = False
     messages: list[MessageOut]
     has_more: bool
     events: list[OrderEventOut]
@@ -257,6 +259,11 @@ async def _get_conv_or_404(db: AsyncSession, client_id: int, conv_id: int) -> Co
     return conv
 
 
+def _is_awaiting_payment(order: Order) -> bool:
+    """True for a UPI order the customer hasn't paid/submitted yet (COD orders never wait on a screenshot)."""
+    return order.status == ORDER_PENDING_PAYMENT and (order.payment_method or "").upper() != "COD"
+
+
 def _effective_bot_paused(conv: Conversation, client) -> bool:
     """Paused, unless a human_send pause has already idled out (resumes on next inbound)."""
     return conv.ai_enabled is False and not conversation_control.auto_resume_due(conv, client)
@@ -318,7 +325,7 @@ async def list_approved_templates(
 
 @router.get("", response_model=list[ConversationSummary])
 async def list_conversations(
-    filter: Literal["all", "unread", "payment_to_verify", "bot_paused"] = Query("all"),
+    filter: Literal["all", "unread", "payment_to_verify", "awaiting_payment", "bot_paused"] = Query("all"),
     search: Optional[str] = Query(None, max_length=100, description="Customer name or phone."),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
@@ -329,7 +336,8 @@ async def list_conversations(
     List the business's conversations, most recent activity first.
 
     Filters: unread (inbound newer than last_read_at), payment_to_verify
-    (has an order in payment_submitted), bot_paused (AI not replying).
+    (has an order in payment_submitted), awaiting_payment (has a UPI order in
+    pending_payment — customer hasn't paid yet), bot_paused (AI not replying).
     """
     cid = user.client_id
     last_msg_at = (
@@ -344,9 +352,15 @@ async def list_conversations(
     to_verify = exists().where(
         Order.conversation_id == Conversation.id, Order.status == ORDER_PAYMENT_SUBMITTED
     ).correlate(Conversation)
+    # Customer has the UPI details but hasn't sent a screenshot — the moment a hesitant buyer
+    # ("is this a scam?") needs a human, so the inbox flags it.
+    awaiting = exists().where(
+        Order.conversation_id == Conversation.id, Order.status == ORDER_PENDING_PAYMENT,
+        or_(Order.payment_method.is_(None), func.upper(Order.payment_method) != "COD"),
+    ).correlate(Conversation)
 
     stmt = (
-        select(Conversation, Customer.name, unread.label("unread"), to_verify.label("to_verify"))
+        select(Conversation, Customer.name, unread.label("unread"), to_verify.label("to_verify"), awaiting.label("awaiting"))
         .outerjoin(Customer, (Customer.client_id == Conversation.client_id) & (Customer.phone == Conversation.phone_number))
         .where(Conversation.client_id == cid, Conversation.is_sandbox == False)  # noqa: E712
     )
@@ -354,6 +368,8 @@ async def list_conversations(
         stmt = stmt.where(unread > 0)
     elif filter == "payment_to_verify":
         stmt = stmt.where(to_verify)
+    elif filter == "awaiting_payment":
+        stmt = stmt.where(awaiting)
     elif filter == "bot_paused":
         stmt = stmt.where(Conversation.ai_enabled == False)  # noqa: E712
     if search:
@@ -378,7 +394,7 @@ async def list_conversations(
     )).all())
 
     out = []
-    for conv, cust_name, unread_n, verify in rows:
+    for conv, cust_name, unread_n, verify, awaiting_n in rows:
         m = last_by_conv.get(conv.id)
         d = channel_sender.message_to_dict(m) if m else None
         out.append(ConversationSummary(
@@ -388,7 +404,7 @@ async def list_conversations(
                 text=(m.content or "")[:120], direction=d["direction"], sender_type=d["sender_type"],
                 media_type=m.media_type, created_at=_ts(m.created_at),
             ) if m else None,
-            unread_count=int(unread_n or 0), payment_to_verify=bool(verify),
+            unread_count=int(unread_n or 0), payment_to_verify=bool(verify), awaiting_payment=bool(awaiting_n),
             bot_paused=_effective_bot_paused(conv, user.client), ai_enabled=conv.ai_enabled is not False,
             updated_at=_ts(m.created_at if m else conv.updated_at),
         ))
@@ -472,6 +488,7 @@ async def get_conversation(
         lead_status=lead or "cold", message_count=int(total),
         created_at=_ts(conv.created_at) or "", updated_at=_ts(conv.updated_at),
         window=await _window(db, conv), opted_out=bool(customer and customer.opted_out),
+        awaiting_payment=any(_is_awaiting_payment(o) for o in orders),
         messages=[_msg_out(m, conv.channel, proofs, names) for m in messages], has_more=has_more,
         events=events, current_order=_order_brief(current) if current else None,
         orders=[_order_brief(o) for o in orders],

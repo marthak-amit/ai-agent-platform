@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { AlertTriangle, ChevronLeft, Info, MessageSquare, Pause, Play, RefreshCw, X } from "lucide-react";
+import { AlertTriangle, ChevronLeft, Hourglass, Info, MessageSquare, Pause, Play, RefreshCw, X } from "lucide-react";
 import Layout from "../components/Layout";
 import ChannelIcon from "../components/chat/ChannelIcon";
 import ConversationList from "../components/chat/ConversationList";
@@ -164,6 +164,11 @@ export default function Conversations() {
     void loadInbox();
   }, [loadInbox]);
 
+  // A bot reply may be the payment instructions that flip a chat to "awaiting payment" (set server-side),
+  // so re-sync the list shortly after each one; bursts of replies collapse into one refresh.
+  const awaitingRefresh = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(awaitingRefresh.current), []);
+
   // ── thread ──────────────────────────────────────────────────────────────────
 
   const loadDetail = useCallback(
@@ -274,6 +279,10 @@ export default function Conversations() {
           };
           return [updated, ...prev.filter((_, i) => i !== idx)];
         });
+        if (msg.direction === "outbound" && msg.sender_type === "bot") {
+          window.clearTimeout(awaitingRefresh.current);
+          awaitingRefresh.current = window.setTimeout(() => void loadInbox(true), 1500);
+        }
         break;
       }
       case "payment_submitted":
@@ -578,6 +587,13 @@ export default function Conversations() {
                     <span className="text-amber-800/80">{t("chat.auto_resume_at", { time: clockTime(detail.auto_resume_at) })}</span>
                   )}
                   {detail.taken_over_note && <span className="italic text-amber-800/70 truncate">“{detail.taken_over_note}”</span>}
+                </div>
+              )}
+              {(items.find((c) => c.id === detail.id)?.awaiting_payment ?? detail.awaiting_payment) && (
+                <div className="bg-brand-warning/15 border-b border-brand-warning/40 px-4 py-2 text-xs text-amber-900 flex items-center gap-2">
+                  <Hourglass size={12} className="shrink-0" />
+                  <span className="font-semibold">{t("chat.awaiting_payment")}</span>
+                  <span className="text-amber-800/80">{t("chat.awaiting_payment_hint")}</span>
                 </div>
               )}
               {connection === "polling" && (

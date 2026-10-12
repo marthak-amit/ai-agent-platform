@@ -163,24 +163,45 @@ async def llm_call(
     `use_breaker=False` keeps a side feature (vision) from tripping the reply-path breaker.
     """
     t0 = time.perf_counter()
-    try:
+
+    async def _attempt(msgs: list[dict], rf: dict | None):
+        """One provider call (breaker-guarded unless use_breaker=False)."""
         if use_breaker:
-            resp = await chat(
-                model, messages, max_tokens=max_tokens, temperature=temperature,
-                response_format=response_format, client=client,
+            return await chat(
+                model, msgs, max_tokens=max_tokens, temperature=temperature, response_format=rf, client=client,
             )
-        else:
-            kwargs = build_request(
-                model, messages, max_tokens=max_tokens, temperature=temperature, response_format=response_format
-            )
-            resp = await (client or get_client()).chat.completions.create(**kwargs)
-    except Exception as exc:
+        kwargs = build_request(model, msgs, max_tokens=max_tokens, temperature=temperature, response_format=rf)
+        return await (client or get_client()).chat.completions.create(**kwargs)
+
+    async def _record_failure(exc: Exception) -> None:
+        """Write the failed attempt to llm_usage (a breaker short-circuit made no call, so it is skipped)."""
         if not isinstance(exc, llm_health.LLMUnavailableError):
             await llm_usage_service.record_usage(
                 purpose=purpose, model=model, latency_ms=int((time.perf_counter() - t0) * 1000), success=False,
                 error_code=llm_usage_service.error_code_for(exc),
                 client_id=client_id, conversation_id=conversation_id, order_id=order_id,
             )
+
+    try:
+        try:
+            resp = await _attempt(messages, response_format)
+        except Exception as exc:
+            if not is_json_validate_failure(exc):
+                raise
+            # Groq's server-side JSON validation rejected the generation (400 json_validate_failed).
+            # Retry ONCE without strict response_format; callers parse the text leniently (first {...} block).
+            await _record_failure(exc)
+            logger.warning(
+                "LLM json_validate_failed (purpose=%s model=%s) — retrying once without strict response_format",
+                purpose, model,
+            )
+            t0 = time.perf_counter()
+            retry_messages = messages
+            if response_format:
+                retry_messages = [*messages, {"role": "user", "content": JSON_MODE_HINT + " No markdown, no commentary."}]
+            resp = await _attempt(retry_messages, None)
+    except Exception as exc:
+        await _record_failure(exc)
         raise
     usage = getattr(resp, "usage", None)
     await llm_usage_service.record_usage(
@@ -190,6 +211,14 @@ async def llm_call(
         client_id=client_id, conversation_id=conversation_id, order_id=order_id,
     )
     return resp
+
+
+def is_json_validate_failure(exc: BaseException) -> bool:
+    """True for Groq's HTTP 400 'Failed to generate/validate JSON' (code json_validate_failed)."""
+    if getattr(exc, "status_code", None) != 400:
+        return False
+    text = str(exc)
+    return "json_validate_failed" in text or "Failed to generate JSON" in text or "Failed to validate JSON" in text
 
 
 def get_stt_client() -> Groq:
@@ -254,6 +283,32 @@ def final_text(resp) -> str:
     return strip_reasoning(content) if isinstance(content, str) else ""
 
 
+def first_json_block(text: str) -> str | None:
+    """The first balanced {...} block in `text` (string-aware), or None — tolerates prose before/after it."""
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth, in_str, escaped = 0, False, False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None
+
+
 def parse_json_object(raw: str | None) -> dict | None:
     """
     Extract a JSON object from model output.
@@ -268,6 +323,9 @@ def parse_json_object(raw: str | None) -> dict | None:
     fenced = _FENCE_RE.search(text)
     if fenced:
         candidates.insert(0, fenced.group(1))
+    first_block = first_json_block(text)
+    if first_block:
+        candidates.append(first_block)
     start, end = text.find("{"), text.rfind("}")
     if start != -1 and end > start:
         candidates.append(text[start:end + 1])

@@ -161,17 +161,46 @@ _PAID_RE = re.compile(
 )
 
 
+_NOT_PAID_RE = re.compile(
+    r"\b(?:not|never|haven'?t|hasn'?t|didn'?t|did\s+not|have\s+not|has\s+not|yet\s+to|nahi|nahin|nhi|nathi|mat)\b",
+    re.IGNORECASE,
+)
+
+
 def is_paid_intent(text: str) -> bool:
     """
     True for a short "I've paid" style message (EN/HI/GU, roman or native script).
 
     Length-capped so a long sentence that merely contains "done" ("is the
-    order done?") is not misread as a payment claim.
+    order done?") is not misread as a payment claim. A negated claim ("I have not paid",
+    "payment nahi kiya") is the opposite of a claim and is never one.
     """
     t = (text or "").strip()
     if not t or len(t.split()) > 8:
         return False
-    return bool(_PAID_RE.search(t))
+    return bool(_PAID_RE.search(t)) and not _NOT_PAID_RE.search(t)
+
+
+# Messages from a customer who owes (or says they don't owe) a payment: asking for the details, the UPI id /
+# QR, how to pay, or saying they haven't paid / haven't sent the screenshot yet. All are answered by
+# re-sending the open order's payment instruction — never by resetting the conversation.
+_PAYMENT_HELP_RE = re.compile(
+    r"\bpayment\s*(?:details?|info|information|link|process|method|options?|kahan|kaise|kese)\b"
+    r"|\b(?:how|where)\s+(?:to|do\s+i|can\s+i|should\s+i|will\s+i)\s+pay\b"
+    r"|\b(?:kaise|kese|kem|kaha|kahan)\s+(?:karu\s+)?pay\b|\bpay\s+(?:kaise|kese|kem|kahan)\b"
+    r"|\b(?:upi|qr|gpay|phonepe|paytm|scanner)\b"
+    r"|\b(?:not|never|haven'?t|didn'?t|did\s+not|have\s+not|yet\s+to)\s+(?:\w+\s+){0,3}?(?:paid|pay|sent|send|screenshot|payment)\b"
+    r"|\b(?:payment|pay|paid|screenshot)\s+(?:abhi\s+)?(?:nahi|nahin|nhi|nathi)\b"
+    r"|\bnahi\s+(?:kiya|bheja|hua)\b"
+    r"|\bsend\s+(?:me\s+)?(?:the\s+)?payment\b|\bgive\s+(?:me\s+)?(?:the\s+)?payment\b"
+    r"|\bhow\s+much\s+(?:do\s+i\s+)?(?:to\s+)?pay\b|\bkitna\s+pay\b",
+    re.IGNORECASE,
+)
+
+
+def is_payment_help_request(text: str) -> bool:
+    """True when the message asks for payment details / how to pay, or says the customer hasn't paid yet."""
+    return bool(_PAYMENT_HELP_RE.search(text or ""))
 
 
 def actor_label(user) -> str:
@@ -213,18 +242,21 @@ class PaymentInstruction:
 
 
 def instruction_text(order: Order, client: Client, lang: str) -> str:
-    """Order summary + amount + UPI ID (+ seller's custom note), in the customer's language."""
+    """Order summary + amount + UPI ID (+ seller's custom note) + the next-steps block, in the customer's language."""
     payee = getattr(client, "upi_display_name", None)
     extra = getattr(client, "payment_instructions", None)
-    return get_template(
+    amount = format_price(order.total_amount)
+    body = get_template(
         lang, "pay_instruction",
         order_number=order.order_number,
         items=render_items(order),
-        amount=format_price(order.total_amount),
+        amount=amount,
         upi_id=client.upi_id,
         payee_line=f"\n{payee}" if payee else "",
         extra=f"\n{extra}" if extra else "",
     )
+    # Spell out the three steps so the customer knows what happens next (pay -> screenshot -> we verify).
+    return f"{body}\n\n{get_template(lang, 'pay_steps', amount=amount)}"
 
 
 async def build_payment_instruction(
@@ -241,6 +273,13 @@ async def build_payment_instruction(
     lang = _lang(conv)
     payee = getattr(client, "upi_display_name", None)
     text = instruction_text(order, client, lang)
+    # WhatsApp can't always render the QR (private URL, suppressed image): the deep link keeps a one-tap
+    # route to pay with the exact amount and order reference.
+    try:
+        link = build_upi_uri(client.upi_id, payee, order.total_amount, order.id)
+        text = f"{text}\n\n{get_template(lang, 'pay_upi_link', upi_link=link)}"
+    except Exception as exc:
+        logger.debug("UPI deep link skipped for order %s: %s", order.id, exc)
     closing = get_template(lang, "pay_send_screenshot")
 
     qr_url: str | None = None

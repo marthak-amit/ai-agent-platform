@@ -13,6 +13,7 @@ import re
 import unicodedata as _ud
 
 from collections import OrderedDict
+from dataclasses import dataclass
 
 from app.services import llm_client, llm_health
 
@@ -367,8 +368,25 @@ CATALOGUE_KEYWORDS: tuple[str, ...] = (
 )
 
 
+# The pre-filled message the public shop's "Order on WhatsApp" button sends ("I want to order from your
+# catalogue: … SKU: SR27754 …"), or any message that labels a SKU / orders "from your catalogue". It
+# mentions the catalogue as the *source* of an order — it is not a request for the catalogue link.
+_CATALOGUE_ORDER_PASTE_RE = re.compile(
+    r"\bSKU\s*[:：#-]\s*[A-Za-z0-9]"
+    r"|\border(?:ing|ed)?\b[^\n]{0,40}?\bfrom\s+(?:your|the|ur|this)\s+(?:catalog|catalogue|shop|store)\b",
+    re.IGNORECASE,
+)
+
+
+def is_catalogue_order_paste(text: str) -> bool:
+    """True for a catalogue "Order on WhatsApp" message (labelled SKU, or "order … from your catalogue")."""
+    return bool(_CATALOGUE_ORDER_PASTE_RE.search(text or ""))
+
+
 def is_catalogue_request(text: str) -> bool:
-    """Return True if the customer is asking for the full catalogue / shop link."""
+    """Return True if the customer is asking for the full catalogue / shop link (not ordering from it)."""
+    if is_catalogue_order_paste(text):
+        return False
     lower = text.lower()
     return any(kw in lower for kw in CATALOGUE_KEYWORDS)
 
@@ -1197,6 +1215,177 @@ def _extract_multi_color_qty_pairs(text: str, available_colors: list[str]) -> li
                 pairs.append({"color": canon, "qty": int(qty_s)})
                 seen.add(canon.lower())
     return pairs if len(pairs) >= 2 else None
+
+
+# ── Per-unit variant breakdown ("2 L and one M, same colour") ─────────────────
+# Deterministic parser for a free-text split of an order across sizes/colours. Used at the
+# variant_mode question (and any colour/size/quantity question) so the router LLM can never
+# flatten "2 L and one M" into "same".
+# Open questions at which a "2 L and one M" split is understood.
+BREAKDOWN_SLOTS = frozenset({"color", "size", "material", "quantity", "variant_mode"})
+_NUMBER_WORDS: dict[str, int] = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "ek": 1, "teen": 3, "char": 4, "chaar": 4, "paanch": 5, "panch": 5,
+}
+# "do" (Hindi two) is also an English verb: only a quantity when a variant token follows.
+_AMBIGUOUS_NUMBER_WORDS: dict[str, int] = {"do": 2}
+_BREAKDOWN_SIZE_VOCAB = frozenset({"xxs", "xs", "s", "m", "l", "xl", "xxl", "xxxl", "2xl", "3xl", "4xl", "5xl"})
+_BREAKDOWN_TOKEN_RE = re.compile(r"\d+|[a-z]+(?:'[a-z]+)?")
+_SAME_COLOUR_RE = re.compile(r"\bsame\s+colou?r\b|\bcolou?r\s+same\b|\bsame\s+rang\b")
+
+
+@dataclass
+class VariantBreakdown:
+    """A parsed split: complete line items, plus any size/colour the customer named that the product lacks."""
+
+    items: list[dict]
+    invalid: list[str]
+
+
+def _breakdown_vocab(variant_info: dict) -> tuple[dict[str, str], dict[str, str]]:
+    """(size lookup, colour lookup): lower-case spelling -> catalogue spelling, aliases folded in."""
+    sizes = {s.lower(): s for s in (variant_info.get("available_sizes") or [])}
+    for alias, canon in _SIZE_ALIASES.items():
+        if " " not in alias and canon.lower() in sizes and alias not in sizes:
+            sizes[alias] = sizes[canon.lower()]
+    colors = {c.lower(): c for c in (variant_info.get("available_colors") or [])}
+    return sizes, colors
+
+
+def _breakdown_stream(text: str, variant_info: dict) -> list[tuple[str, object]] | None:
+    """
+    Turn text into an ordered stream of ("qty", n) / ("size", S) / ("color", C) / ("bad", token) elements.
+    Returns None when numeric sizes make digits ambiguous. "bad" marks a size/colour word the product lacks.
+    """
+    sizes, colors = _breakdown_vocab(variant_info)
+    if any(k.isdigit() for k in sizes):
+        return None     # numeric sizes ("38"/"40") are indistinguishable from quantities: leave it to the LLM path
+    toks = _BREAKDOWN_TOKEN_RE.findall((text or "").lower())
+    multi_colors = sorted((c for c in colors if " " in c), key=len, reverse=True)
+    from app.services.intent_router import _COLOR_WORDS   # lazy: intent_router imports this module
+
+    stream: list[tuple[str, object]] = []
+    i = 0
+    while i < len(toks):
+        tok = toks[i]
+        matched = False
+        for mc in multi_colors:
+            parts = mc.split()
+            if toks[i:i + len(parts)] == parts:
+                stream.append(("color", colors[mc]))
+                i += len(parts)
+                matched = True
+                break
+        if matched:
+            continue
+        if tok.isdigit():
+            if int(tok) >= 1:
+                stream.append(("qty", int(tok)))
+        elif tok in _NUMBER_WORDS:
+            stream.append(("qty", _NUMBER_WORDS[tok]))
+        elif tok in _AMBIGUOUS_NUMBER_WORDS:
+            nxt = toks[i + 1] if i + 1 < len(toks) else ""
+            if nxt in sizes or nxt in colors or nxt in ("pcs", "pc", "piece", "pieces"):
+                stream.append(("qty", _AMBIGUOUS_NUMBER_WORDS[tok]))
+        elif tok in sizes:
+            stream.append(("size", sizes[tok]))
+        elif tok in colors:
+            stream.append(("color", colors[tok]))
+        elif tok in _BREAKDOWN_SIZE_VOCAB:
+            stream.append(("bad", tok.upper()))
+        elif tok in _COLOR_WORDS and tok not in ("sky", "multi", "rose", "mint", "wine", "rust"):
+            stream.append(("bad", tok.title()))
+        i += 1
+    return stream
+
+
+def looks_like_variant_breakdown(text: str, variant_info: dict) -> bool:
+    """True when text names a quantity and at least two sizes/colours — worth parsing as a split."""
+    stream = _breakdown_stream(text, variant_info or {})
+    if stream is None:
+        return False
+    n_variant = sum(1 for kind, _v in stream if kind in ("size", "color", "bad"))
+    return n_variant >= 2 and any(kind == "qty" for kind, _v in stream)
+
+
+def parse_variant_breakdown(
+    text: str, variant_info: dict, *, base_color: str | None = None, base_size: str | None = None,
+) -> VariantBreakdown | None:
+    """
+    Parse "2 L and one M", "L x 2, M x 1", "1 blue L and 2 red M, same colour" into line items.
+
+    Needs at least two groups, each a quantity plus a size and/or colour (all drawn from the product's
+    real options). A group missing colour/size takes `base_color`/`base_size` (the values already
+    collected, i.e. "same colour"); when the product needs an attribute that neither the text nor the
+    base supplies, the split is incomplete and None is returned. Mixed orderings return None. A size/colour
+    the product doesn't carry ("2 XL") is reported in `.invalid` instead of being silently dropped.
+    """
+    stream = _breakdown_stream(text, variant_info or {})
+    if not stream:
+        return None
+    groups: list[dict] = []
+    invalid: list[str] = []
+    qty_first = next((k for k, _v in stream if k != "bad"), None) == "qty"
+    cur: dict = {}
+    for kind, value in stream:
+        if kind == "bad":
+            invalid.append(str(value))
+            continue
+        if qty_first:
+            if kind == "qty":
+                if cur:
+                    groups.append(cur)
+                cur = {"qty": value}
+            elif not cur or kind in cur:
+                return None
+            else:
+                cur[kind] = value
+        elif kind == "qty":
+            if "qty" in cur or not cur:
+                return None
+            cur["qty"] = value
+            groups.append(cur)
+            cur = {}
+        elif kind in cur:
+            return None
+        else:
+            cur[kind] = value
+    if cur:
+        if not qty_first:
+            return None
+        groups.append(cur)
+    if invalid:
+        return VariantBreakdown(items=[], invalid=list(dict.fromkeys(invalid)))
+    if len(groups) < 2:
+        return None
+    vi = variant_info or {}
+    items: list[dict] = []
+    for g in groups:
+        if "size" not in g and "color" not in g:
+            return None
+        color = g.get("color") or (base_color if vi.get("needs_color") else None)
+        size = g.get("size") or (base_size if vi.get("needs_size") else None)
+        if (vi.get("needs_color") and not color) or (vi.get("needs_size") and not size):
+            return None
+        for existing in items:
+            if existing["color"] == color and existing["size"] == size:
+                existing["qty"] += g["qty"]
+                break
+        else:
+            items.append({"color": color, "size": size, "qty": g["qty"]})
+    if len(items) < 2:
+        return None
+    return VariantBreakdown(items=items, invalid=[])
+
+
+def describe_breakdown(items: list[dict]) -> str:
+    """'2 L + 1 M' (colour added only when the lines differ in colour): the echo shown to the customer."""
+    multi_color = len({i.get("color") for i in items}) > 1
+    parts = []
+    for i in items:
+        label = " ".join(p for p in ((i.get("color") if multi_color else None), i.get("size")) if p)
+        parts.append(f"{i['qty']} {label}".strip())
+    return " + ".join(parts)
 
 
 # Section 2 — deterministic multi-slot capture helpers. These let a single

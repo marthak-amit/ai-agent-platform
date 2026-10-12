@@ -45,6 +45,98 @@ const COLOR_PRESETS = [
 const SIZE_PRESETS_CLOTHING = ["XS", "S", "M", "L", "XL", "XXL", "3XL"];
 const SIZE_PRESETS_NUMBERS  = ["28", "30", "32", "34", "36", "38", "40"];
 
+const JEWELLERY_FINISH_PRESETS = [
+  { name: "Gold",      hex: "#F59E0B", border: false },
+  { name: "Silver",    hex: "#C0C0C0", border: true  },
+  { name: "Rose Gold", hex: "#E8A598", border: false },
+  { name: "Oxidised",  hex: "#4B5563", border: false },
+  { name: "Antique",   hex: "#A16207", border: false },
+  { name: "Kundan",    hex: "#FDE68A", border: true  },
+  { name: "Pearl",     hex: "#F5F5F4", border: true  },
+  { name: "Multi",     hex: "#8B5CF6", border: false },
+];
+
+type ColorPreset = { name: string; hex: string; border: boolean };
+type SizeGroup = { label: string; values: string[] };
+
+/**
+ * What the variant builder offers for a category. `offers` = axes shown as
+ * choices, `defaults` = axes pre-selected when the category is picked.
+ */
+interface CategoryVariantConfig {
+  offers: { colors: boolean; sizes: boolean };
+  defaults: { colors: boolean; sizes: boolean };
+  colorLabel: string;
+  sizeLabel: string;
+  colorPresets: ColorPreset[];
+  sizeGroups: SizeGroup[];
+  hint: string;
+}
+
+const DEFAULT_VARIANT_CONFIG: CategoryVariantConfig = {
+  offers: { colors: true, sizes: true },
+  defaults: { colors: false, sizes: false },
+  colorLabel: "Colors / Shades",
+  sizeLabel: "Sizes",
+  colorPresets: COLOR_PRESETS,
+  sizeGroups: [
+    { label: "Clothing", values: SIZE_PRESETS_CLOTHING },
+    { label: "Numbers", values: SIZE_PRESETS_NUMBERS },
+  ],
+  hint: "(colors, sizes)",
+};
+
+const CATEGORY_VARIANT_CONFIG: Record<string, CategoryVariantConfig> = {
+  Saree: {
+    ...DEFAULT_VARIANT_CONFIG,
+    offers: { colors: true, sizes: false },
+    defaults: { colors: true, sizes: false },
+    hint: "(colors)",
+  },
+  Dupatta: {
+    ...DEFAULT_VARIANT_CONFIG,
+    offers: { colors: true, sizes: false },
+    defaults: { colors: true, sizes: false },
+    hint: "(colors)",
+  },
+  Lehenga: {
+    ...DEFAULT_VARIANT_CONFIG,
+    defaults: { colors: true, sizes: true },
+    sizeGroups: [
+      { label: "Clothing", values: ["XS", "S", "M", "L", "XL", "XXL"] },
+      { label: "Fit", values: ["Free Size", "Semi-stitched"] },
+    ],
+  },
+  Kurti: {
+    ...DEFAULT_VARIANT_CONFIG,
+    defaults: { colors: true, sizes: true },
+    sizeGroups: [
+      { label: "Clothing", values: SIZE_PRESETS_CLOTHING },
+      { label: "Bust (inches)", values: ["34", "36", "38", "40", "42", "44"] },
+    ],
+  },
+  Jewellery: {
+    ...DEFAULT_VARIANT_CONFIG,
+    defaults: { colors: true, sizes: false },
+    colorLabel: "Finish / Colour",
+    sizeLabel: "Size (bangles, rings…)",
+    colorPresets: JEWELLERY_FINISH_PRESETS,
+    sizeGroups: [
+      { label: "Bangle size", values: ["2.2", "2.4", "2.6", "2.8", "2.10"] },
+      { label: "Ring size", values: ["10", "12", "14", "16", "18", "20"] },
+      { label: "Fit", values: ["Free Size", "Adjustable"] },
+    ],
+    hint: "(finish, sizes)",
+  },
+};
+
+function getVariantConfig(category: string): CategoryVariantConfig {
+  return CATEGORY_VARIANT_CONFIG[category] ?? DEFAULT_VARIANT_CONFIG;
+}
+
+const COLOR_HEX_MAP: Record<string, string> = {};
+[...COLOR_PRESETS, ...JEWELLERY_FINISH_PRESETS].forEach((cp) => { COLOR_HEX_MAP[cp.name] = cp.hex; });
+
 const API_BASE = import.meta.env.VITE_API_URL
   ? import.meta.env.VITE_API_URL.replace("/api", "")
   : "";
@@ -73,6 +165,19 @@ function totalVariantStock(vs: VariantState): number {
     (sum, k) => sum + (parseInt(vs.stockMatrix[k] || "0", 10) || 0),
     0,
   );
+}
+
+/**
+ * Re-point the variant builder at a newly picked category. Axes the seller has
+ * already filled in are kept; empty axes follow the category's defaults.
+ */
+function applyCategoryDefaults(vs: VariantState, category: string): VariantState {
+  const cfg = getVariantConfig(category);
+  return {
+    ...vs,
+    useColors: vs.colors.length > 0 || cfg.defaults.colors,
+    useSizes: vs.sizes.length > 0 || cfg.defaults.sizes,
+  };
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -214,10 +319,30 @@ function ImageDropZone({ preview, onFile }: { preview: string; onFile: (f: File)
 
 // ── Variant builder ───────────────────────────────────────────────────────────
 
-function VariantBuilder({ vs, setVs }: {
+function VariantBuilder({ vs, setVs, category }: {
   vs: VariantState;
   setVs: React.Dispatch<React.SetStateAction<VariantState>>;
+  category: string;
 }) {
+  const cfg = getVariantConfig(category);
+  // An axis is shown if the category offers it OR the product already uses it
+  // (so editing an old product never hides its existing colours/sizes).
+  const showColors = cfg.offers.colors || vs.useColors || vs.colors.length > 0;
+  const showSizes = cfg.offers.sizes || vs.useSizes || vs.sizes.length > 0;
+  const showAxisPicker = showColors && showSizes;
+  let step = showAxisPicker ? 1 : 0;
+  const nextStep = () => ++step;
+
+  // With a single offered axis there is no "what varies?" picker, so that axis must be on.
+  useEffect(() => {
+    if (showAxisPicker) return;
+    setVs((prev) => {
+      const useColors = showColors ? true : prev.useColors;
+      const useSizes = showSizes ? true : prev.useSizes;
+      return useColors === prev.useColors && useSizes === prev.useSizes ? prev : { ...prev, useColors, useSizes };
+    });
+  }, [showAxisPicker, showColors, showSizes, setVs]);
+
   function toggleColor(name: string) {
     setVs((prev) => {
       const colors = prev.colors.includes(name)
@@ -283,8 +408,7 @@ function VariantBuilder({ vs, setVs }: {
   const total = totalVariantStock(vs);
   const variantCount = keys.length;
 
-  const colorHexMap: Record<string, string> = {};
-  COLOR_PRESETS.forEach((cp) => { colorHexMap[cp.name] = cp.hex; });
+  const colorHexMap = COLOR_HEX_MAP;
 
   const isBoth = vs.useColors && vs.useSizes && vs.colors.length > 0 && vs.sizes.length > 0;
   const isColorsOnly = vs.useColors && !vs.useSizes && vs.colors.length > 0;
@@ -296,7 +420,7 @@ function VariantBuilder({ vs, setVs }: {
       <div className="flex items-center justify-between px-4 py-3 bg-gray-50">
         <div>
           <div className="text-sm font-medium text-gray-700">This product has variants</div>
-          <div className="text-xs text-gray-400">(colors, sizes)</div>
+          <div className="text-xs text-gray-400">{cfg.hint}</div>
         </div>
         <button
           type="button"
@@ -310,7 +434,8 @@ function VariantBuilder({ vs, setVs }: {
       {vs.hasVariants && (
         <div className="p-4 flex flex-col gap-5">
 
-          {/* Step 1: What varies */}
+          {/* Step 1: What varies — only when the category offers more than one axis */}
+          {showAxisPicker && (
           <div>
             <div className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Step 1 — What varies?</div>
             <div className="flex gap-4">
@@ -321,7 +446,7 @@ function VariantBuilder({ vs, setVs }: {
                   onChange={(e) => setVs((prev) => ({ ...prev, useColors: e.target.checked }))}
                   className="rounded accent-brand-primary"
                 />
-                <span className="text-sm text-gray-700">Colors / Shades</span>
+                <span className="text-sm text-gray-700">{cfg.colorLabel}</span>
               </label>
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
@@ -330,19 +455,20 @@ function VariantBuilder({ vs, setVs }: {
                   onChange={(e) => setVs((prev) => ({ ...prev, useSizes: e.target.checked }))}
                   className="rounded accent-brand-primary"
                 />
-                <span className="text-sm text-gray-700">Sizes</span>
+                <span className="text-sm text-gray-700">{cfg.sizeLabel}</span>
               </label>
             </div>
           </div>
+          )}
 
           {/* Step 2: Colors */}
-          {vs.useColors && (
+          {showColors && vs.useColors && (
             <div>
-              <div className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Step 2 — Available Colors</div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Step {nextStep()} — Available {cfg.colorLabel}</div>
 
               {/* Color presets */}
               <div className="flex flex-wrap gap-2 mb-3">
-                {COLOR_PRESETS.map((cp) => (
+                {cfg.colorPresets.map((cp) => (
                   <button
                     key={cp.name}
                     type="button"
@@ -401,37 +527,28 @@ function VariantBuilder({ vs, setVs }: {
           )}
 
           {/* Step 3: Sizes */}
-          {vs.useSizes && (
+          {showSizes && vs.useSizes && (
             <div>
-              <div className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Step 3 — Available Sizes</div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Step {nextStep()} — Available {cfg.sizeLabel}</div>
 
-              <div className="mb-2">
-                <div className="text-[11px] text-gray-400 mb-1.5">Clothing</div>
-                <div className="flex flex-wrap gap-1.5 mb-3">
-                  {SIZE_PRESETS_CLOTHING.map((s) => (
-                    <button
-                      key={s}
-                      type="button"
-                      onClick={() => toggleSize(s)}
-                      className={`px-3 py-1 rounded-lg text-xs font-medium border transition-all ${vs.sizes.includes(s) ? "bg-brand-primaryDark text-white border-brand-primary" : "bg-white text-gray-600 border-gray-200 hover:border-brand-primary/40"}`}
-                    >
-                      {s}
-                    </button>
-                  ))}
-                </div>
-                <div className="text-[11px] text-gray-400 mb-1.5">Numbers</div>
-                <div className="flex flex-wrap gap-1.5">
-                  {SIZE_PRESETS_NUMBERS.map((s) => (
-                    <button
-                      key={s}
-                      type="button"
-                      onClick={() => toggleSize(s)}
-                      className={`px-3 py-1 rounded-lg text-xs font-medium border transition-all ${vs.sizes.includes(s) ? "bg-brand-primaryDark text-white border-brand-primary" : "bg-white text-gray-600 border-gray-200 hover:border-brand-primary/40"}`}
-                    >
-                      {s}
-                    </button>
-                  ))}
-                </div>
+              <div className="mb-2 flex flex-col gap-3">
+                {cfg.sizeGroups.map((group) => (
+                  <div key={group.label}>
+                    <div className="text-[11px] text-gray-400 mb-1.5">{group.label}</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {group.values.map((s) => (
+                        <button
+                          key={s}
+                          type="button"
+                          onClick={() => toggleSize(s)}
+                          className={`px-3 py-1 rounded-lg text-xs font-medium border transition-all ${vs.sizes.includes(s) ? "bg-brand-primaryDark text-white border-brand-primary" : "bg-white text-gray-600 border-gray-200 hover:border-brand-primary/40"}`}
+                        >
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
               </div>
 
               {/* Custom size */}
@@ -470,7 +587,7 @@ function VariantBuilder({ vs, setVs }: {
           {/* Step 4: Stock grid */}
           {keys.length > 0 && (
             <div>
-              <div className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Step 4 — Stock per Variant</div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Step {nextStep()} — Stock per Variant</div>
 
               {/* Fill all */}
               <div className="flex items-center gap-2 mb-3">
@@ -627,7 +744,7 @@ function VariantBuilder({ vs, setVs }: {
               {keys.length > 0 && (
                 <div className="mt-3 border-t border-gray-100 pt-3">
                   <div className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
-                    Step 6 — Variant Photos <span className="normal-case font-normal text-gray-400">(needed for photo enhancement)</span>
+                    Step {nextStep()} — Variant Photos <span className="normal-case font-normal text-gray-400">(needed for photo enhancement)</span>
                   </div>
                   <div className="flex flex-col gap-1.5">
                     {keys.map((k) => {
@@ -1096,7 +1213,10 @@ export default function Catalogue() {
     try {
       await deleteProduct(p.id);
       setProducts((prev) => prev.filter((x) => x.id !== p.id));
-    } catch { /* silent */ }
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      alert(detail || "Could not delete this product. Please try again.");
+    }
   }
 
   const activeVariants = (selected?.variants ?? []).filter((v: ProductVariant) => v.is_active);
@@ -1287,7 +1407,11 @@ export default function Catalogue() {
 
                 <div>
                   <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">Category</label>
-                  <select value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}
+                  <select value={form.category} onChange={(e) => {
+                      const category = e.target.value;
+                      setForm((f) => ({ ...f, category }));
+                      setVariantState((vs) => applyCategoryDefaults(vs, category));
+                    }}
                     className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary bg-white">
                     <option value="">Select category…</option>
                     {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
@@ -1342,7 +1466,7 @@ export default function Catalogue() {
                 </div>
 
                 {/* Variant builder */}
-                <VariantBuilder vs={variantState} setVs={setVariantState} />
+                <VariantBuilder vs={variantState} setVs={setVariantState} category={form.category} />
 
                 <div className="flex items-center justify-between py-1">
                   <div>

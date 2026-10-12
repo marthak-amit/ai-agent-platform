@@ -448,11 +448,19 @@ async def delete_product(
 
     Raises:
         HTTPException 404: If product not found or owned by another client.
+        HTTPException 409: If open orders still hold stock on the product.
     """
     product = await catalogue_service.get_product(db, current_client.id, product_id)
     if product is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found.")
-    await catalogue_service.delete_product(db, product)
+    try:
+        await catalogue_service.delete_product(db, product)
+    except catalogue_service.ProductInUseError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This product has open orders awaiting payment. Cancel or complete them first, or pause the product instead.",
+        )
 
 
 # ── Stock management ──────────────────────────────────────────────────────────

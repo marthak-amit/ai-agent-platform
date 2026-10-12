@@ -21,12 +21,14 @@ export interface InboxItem {
   last_message: LastMessage | null;
   unread_count: number;
   payment_to_verify: boolean;
+  /** UPI order created and payment details sent, but no screenshot yet — a human may need to reassure the buyer. */
+  awaiting_payment: boolean;
   bot_paused: boolean;
   ai_enabled: boolean;
   updated_at: string | null;
 }
 
-export type InboxFilter = "all" | "unread" | "payment_to_verify" | "bot_paused";
+export type InboxFilter = "all" | "unread" | "payment_to_verify" | "awaiting_payment" | "bot_paused";
 
 export interface ProofCard {
   proof_id: number;
@@ -96,6 +98,7 @@ export interface ChatDetail {
   updated_at: string | null;
   window: WindowState;
   opted_out: boolean;
+  awaiting_payment: boolean;
   messages: ChatMessage[];
   has_more: boolean;
   events: OrderEvent[];

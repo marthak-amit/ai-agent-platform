@@ -1,4 +1,4 @@
-import { AlertTriangle, MessageSquare, Pause, RefreshCw, Search } from "lucide-react";
+import { AlertTriangle, Hourglass, MessageSquare, Pause, RefreshCw, Search } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { InboxFilter, InboxItem } from "../../types/chat";
 import { relativeTime } from "../../utils/time";
@@ -19,8 +19,9 @@ interface Props {
 
 const FILTERS: { key: InboxFilter; i18n: string }[] = [
   { key: "all", i18n: "chat.filter_all" },
-  { key: "unread", i18n: "chat.filter_unread" },
+  { key: "awaiting_payment", i18n: "chat.filter_awaiting_payment" },
   { key: "payment_to_verify", i18n: "chat.filter_payment" },
+  { key: "unread", i18n: "chat.filter_unread" },
   { key: "bot_paused", i18n: "chat.filter_paused" },
 ];
 
@@ -111,9 +112,9 @@ export default function ConversationList({
                 key={c.id}
                 onClick={() => onSelect(c.id)}
                 aria-current={c.id === selectedId}
-                className={`w-full text-left px-4 py-3 border-b border-gray-50 transition-colors ${
-                  c.id === selectedId ? "bg-brand-primary/10" : "hover:bg-brand-bg"
-                }`}
+                className={`w-full text-left px-4 py-3 border-b border-gray-50 border-l-4 transition-colors ${
+                  c.awaiting_payment ? "border-l-brand-warning" : "border-l-transparent"
+                } ${c.id === selectedId ? "bg-brand-primary/10" : c.awaiting_payment ? "bg-brand-warning/10 hover:bg-brand-warning/20" : "hover:bg-brand-bg"}`}
               >
                 <div className="flex items-start gap-3">
                   <div className="relative shrink-0">
@@ -144,11 +145,16 @@ export default function ConversationList({
                         </span>
                       )}
                     </div>
-                    {(c.payment_to_verify || c.bot_paused) && (
+                    {(c.payment_to_verify || c.awaiting_payment || c.bot_paused) && (
                       <div className="flex gap-1.5 mt-1.5">
                         {c.payment_to_verify && (
                           <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-brand-warning/20 text-amber-800">
                             {t("chat.payment_to_verify")}
+                          </span>
+                        )}
+                        {c.awaiting_payment && (
+                          <span className="flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-brand-warning/30 text-amber-900">
+                            <Hourglass size={9} /> {t("chat.awaiting_payment")}
                           </span>
                         )}
                         {c.bot_paused && (

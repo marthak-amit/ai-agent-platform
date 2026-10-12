@@ -59,6 +59,15 @@ _GATE_WORDS = (
 )
 _CATALOGUE_ORDER_RE = re.compile(r"SKU:\s*\S+", re.IGNORECASE)
 
+# Pieces of the public shop's pre-filled "Order on WhatsApp" message. WhatsApp can mangle the emoji into
+# "�", so every pattern keys on the labels/words, never on the emoji.
+_SKU_LABEL_RE = re.compile(r"SKU\s*[:：#-]\s*([A-Za-z0-9][\w\-/.]*)", re.IGNORECASE)
+_BOLD_NAME_RE = re.compile(r"\*([^*\n]{2,80})\*")
+_PRODUCT_LINE_RE = re.compile(r"Product\s*[:：]\s*(.+?)(?=\s*(?:\n|SKU\s*[:：]|$))", re.IGNORECASE)
+_QTY_LABEL_RE = re.compile(r"(?:Quantity|Qty)\s*[:：]\s*(\d{1,3})", re.IGNORECASE)
+_VARIANT_LINE_RE = re.compile(r"^\s*(?:Colou?r|Size|Material)\s*[:：]", re.IGNORECASE | re.MULTILINE)
+_NO_SKU_VALUES = frozenset({"n/a", "na", "none", "null", "-", "nil"})
+
 # Redaction for text that goes into the prompt (history): phones, emails/UPI ids, links, pincodes.
 _PHONE_RE = re.compile(r"(?<!\d)(?:\+?\d{1,3}[\s-]?)?(?:\d[\s-]?){9,13}\d(?!\d)")
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)*")
@@ -400,13 +409,21 @@ async def fast_path_reason(
     if mtype not in ("text", "audio") or not (user_text or "").strip():
         return "non_text"
     text = user_text.strip()
-    if _CATALOGUE_ORDER_RE.search(text):
+    if _CATALOGUE_ORDER_RE.search(text) or conversation_flow.is_catalogue_order_paste(text):
         return "catalogue_order"
     for product in all_products:
         if op._is_exact_sku_message(text, product):
             return "exact_sku"
     if op._find_exact_name_match(all_products, text) is not None:
         return "exact_name"
+
+    # "I want 2 L and one M": a per-unit split must reach the slot machine verbatim — the router LLM
+    # would flatten it into a bare "same"/"M" answer and drop the rest.
+    if (
+        pinned_product is not None and stage in ORDER_SLOT_STAGES and next_slot in conversation_flow.BREAKDOWN_SLOTS
+        and conversation_flow.looks_like_variant_breakdown(text, variant_info or {})
+    ):
+        return "variant_breakdown"
 
     norm = normalize_option(text)
     is_int = bool(re.fullmatch(r"\d{1,4}", norm))
@@ -434,6 +451,138 @@ async def fast_path_reason(
             return "slot_payment"
         if next_slot == "mobile_number" and re.fullmatch(r"\+?\d[\d\s-]{8,13}", text):
             return "slot_phone"
+    return None
+
+
+# ── catalogue "Order on WhatsApp" message ────────────────────────────────────
+
+@dataclass(frozen=True)
+class CatalogueOrder:
+    """What a catalogue order message names: SKU and/or product name, quantity, whether it pre-fills variants."""
+
+    sku: str | None = None
+    name: str | None = None
+    quantity: int | None = None
+    has_variant_lines: bool = False
+
+
+def parse_catalogue_order(text: str) -> CatalogueOrder:
+    """
+    Pull the product reference out of a catalogue order message.
+
+    SKU comes from the "SKU: …" label ("N/A" — a product without a SKU — counts as none); the name from
+    the *bold* title or a "Product:" line, so a SKU-less product can still be matched by name.
+    """
+    text = text or ""
+    sku_match = _SKU_LABEL_RE.search(text)
+    sku = sku_match.group(1).strip(".,;") if sku_match else None
+    if sku and sku.lower() in _NO_SKU_VALUES:
+        sku = None
+    name_match = _BOLD_NAME_RE.search(text) or _PRODUCT_LINE_RE.search(text)
+    name = " ".join(name_match.group(1).split()) if name_match else None
+    qty_match = _QTY_LABEL_RE.search(text)
+    return CatalogueOrder(
+        sku=sku or None, name=name or None, quantity=int(qty_match.group(1)) if qty_match else None,
+        has_variant_lines=bool(_VARIANT_LINE_RE.search(text)),
+    )
+
+
+# ── tolerant colour / size answers ───────────────────────────────────────────
+
+_COLOR_ALIASES = {
+    "gulabi": "pink", "rani": "pink", "lal": "red", "laal": "red", "neela": "blue", "neeli": "blue", "nila": "blue",
+    "aasmani": "sky blue", "hara": "green", "hari": "green", "lila": "green", "safed": "white", "safeda": "white",
+    "sufed": "white", "kala": "black", "kali": "black", "kaala": "black", "peela": "yellow", "pila": "yellow",
+    "pili": "yellow", "sunehri": "gold", "sona": "gold", "golden": "gold", "narangi": "orange", "jamuni": "purple",
+    "baingani": "purple", "bhura": "brown", "bhoora": "brown", "silver": "silver", "chandi": "silver",
+    "kesari": "orange", "maroon": "maroon", "dholi": "white", "vadli": "blue",
+}
+_SIZE_ALIASES = {
+    "small": "s", "medium": "m", "large": "l", "extra large": "xl", "x large": "xl", "xlarge": "xl",
+    "double xl": "xxl", "2xl": "xxl", "xxxl": "3xl", "triple xl": "3xl", "extra small": "xs",
+}
+_COLOR_WORDS = frozenset({
+    "orange", "blue", "green", "pink", "red", "yellow", "black", "white", "purple", "maroon", "beige", "grey", "gray",
+    "brown", "navy", "gold", "silver", "cream", "magenta", "turquoise", "teal", "lavender", "peach", "mustard",
+    "violet", "olive", "wine", "coral", "rust", "mint", "sky", "rose", "khaki", "multicolor", "multi",
+} | set(_COLOR_ALIASES))
+_SIZE_RE = re.compile(r"(?:xxs|xs|s|m|l|xl|xxl|xxxl|[2-9]xl|free size|freesize|\d{2})")
+# Words around an option that carry no information ("pink wala chahiye", "size M please").
+_OPTION_FILLER = frozenset({
+    "colour", "color", "rang", "size", "wala", "wali", "wale", "one", "please", "pls", "plz", "chahiye", "chahie",
+    "chaiye", "dedo", "de", "do", "dijiye", "the", "a", "i", "want", "need", "ok", "okay", "mujhe", "mane", "joiye",
+    "joie", "hai", "ji", "me", "in", "of", "is", "number", "ka", "ki", "ko", "nu", "ni", "vala", "vali",
+})
+
+
+_OPTION_NEGATIONS = frozenset({"no", "not", "nahi", "nahin", "nhi", "mat", "dont", "don", "nathi", "na", "without", "except"})
+
+
+@dataclass(frozen=True)
+class OptionAttempt:
+    """A short reply to a colour/size/material question: matched to an option, or a real option that isn't offered."""
+
+    status: str   # "match" (value = the catalogue's spelling) | "unavailable" (value = what the customer asked for)
+    value: str
+
+
+def _slot_kind(next_slot: str | None) -> str | None:
+    """'color' / 'size' / 'material' for an option slot name (cart slots included), else None."""
+    key = _OPTION_SLOT_KEYS.get(next_slot or "")
+    return {"available_colors": "color", "available_sizes": "size", "available_materials": "material"}.get(key or "")
+
+
+def resolve_option_attempt(text: str, next_slot: str | None, options: list[str]) -> OptionAttempt | None:
+    """
+    Understand a short answer to an open colour/size/material question without the LLM.
+
+    Matches typos ("pinkk"), fillers ("pink wala chahiye", "size M please"), Hinglish/Gujarati colour words
+    ("gulabi" → Pink) and size words ("medium" → M). Returns "unavailable" when the customer clearly named a
+    colour/size the product doesn't offer in stock ("Gray") so the shop can say so instead of guessing, and
+    None when this doesn't look like an option answer at all (it then goes to the router).
+    """
+    kind = _slot_kind(next_slot)
+    if kind is None or not options:
+        return None
+    tokens = normalize_option(text).split()
+    if not tokens or len(tokens) > 5 or _OPTION_NEGATIONS.intersection(tokens):
+        return None     # "pink nahi chahiye" names a colour but does not choose it
+    core_tokens = [t for t in tokens if t not in _OPTION_FILLER] or []
+    core = " ".join(core_tokens)
+    if not core:
+        return None
+
+    def _canon_key(value: str) -> str:
+        """Comparison key: normalised, with gray/grey unified."""
+        return normalize_option(value).replace("gray", "grey")
+
+    by_key = {_canon_key(o): o for o in options}
+    core = _canon_key(core)
+    if core in by_key:
+        return OptionAttempt("match", by_key[core])
+    aliases = _COLOR_ALIASES if kind == "color" else _SIZE_ALIASES if kind == "size" else {}
+    if core in aliases:
+        target = _canon_key(aliases[core])
+        return OptionAttempt("match", by_key[target]) if target in by_key else OptionAttempt("unavailable", aliases[core].title() if kind == "color" else aliases[core].upper())
+    if len(core) >= 4:
+        import difflib
+
+        close = difflib.get_close_matches(core, list(by_key), n=1, cutoff=0.8)
+        if close:
+            return OptionAttempt("match", by_key[close[0]])
+    contained = [k for k in by_key if k in core_tokens or (" " in k and k in core)]
+    if len(contained) == 1:
+        return OptionAttempt("match", by_key[contained[0]])
+    if contained:
+        return None     # several offered options named ("blue ya pink"): the customer has not chosen yet
+    if kind == "color":
+        named = list(dict.fromkeys(t for t in core.split() if t in _COLOR_WORDS))
+        if len(named) == 1:
+            # Echo the customer's own spelling ("Gray"), but a Hinglish word as its English colour ("kala" → "Black").
+            raw = next((t for t in core_tokens if _canon_key(t) == named[0]), named[0])
+            return OptionAttempt("unavailable", _COLOR_ALIASES.get(raw, raw).title())
+    elif kind == "size" and _SIZE_RE.fullmatch(core):
+        return OptionAttempt("unavailable", core.upper())
     return None
 
 

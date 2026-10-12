@@ -613,7 +613,7 @@ async def test_answer_slot_is_canonicalised_and_applied_by_the_slot_machine(repl
 
 
 async def test_answer_slot_with_value_not_offered_reasks_with_options_and_writes_nothing(replay_http, replay_session, router, monkeypatch):
-    """The model says colour=Green but only Pink/Blue exist → 'not an available option' + the colour question again."""
+    """'green please' but only Pink/Blue exist → 'Green isn't available for …' + the colour question again (settled before the LLM)."""
     phone, pnid = ph("0014")
     captured = capture_all(monkeypatch)
     client, _, _ = await seed_shop(replay_session, phone, pnid)
@@ -623,7 +623,7 @@ async def test_answer_slot_with_value_not_offered_reasks_with_options_and_writes
 
     reply = await say(replay_http, captured, phone, pnid, "green please")
 
-    assert "isn't one of the available options" in reply and "Pink" in reply and "Blue" in reply
+    assert "Green isn't available for Cotton Lehenga" in reply and "Pink" in reply and "Blue" in reply
     conv = await get_conv(replay_session, conv_id)
     assert conv.selected_color is None and conv.current_stage == "order_collection"
 
@@ -1132,3 +1132,111 @@ async def test_live_router_classifies_the_spec_examples():
         call = await intent_router.call_router(ctx, text, client_id=None, conversation_id=None)
         assert call.decision is not None, (text, call.error)
         assert call.decision.action.value == expected, (text, call.decision)
+
+
+# ── catalogue "Order on WhatsApp" message + tolerant slot answers ────────────
+
+def _shop_paste(name: str, sku: str, qty: int = 1) -> str:
+    """The text the public shop's 'Order on WhatsApp' button pre-fills (WhatsApp shows the emoji as U+FFFD)."""
+    return (f"Hi! � I want to order from your catalogue:\n\n� *{name}*\n� SKU: {sku}\n"
+            f"� Quantity: {qty}\n� Total: ₹2,499\n\nPlease confirm my order!")
+
+
+async def test_shop_order_message_opens_that_product_not_the_catalogue_link(replay_http, replay_session, router, monkeypatch):
+    """The exact message from the shop's order button → product card + first question; no 'complete collection', no LLM."""
+    phone, pnid = ph("0050")
+    captured = capture_all(monkeypatch)
+    capture_images(monkeypatch)
+    await seed_shop(replay_session, phone, pnid)
+    paste = _shop_paste("Red Silk Saree", "SR20002")
+
+    reply = await say(replay_http, captured, phone, pnid, paste)
+
+    assert "complete collection" not in reply and "Red Silk Saree [SR20002] — ₹2,499" in reply
+    assert router.calls == []
+    first = (await messages(replay_session, 1))[0]
+    conv = await get_conv(replay_session, first.conversation_id)
+    assert conv.pending_product_sku == "SR20002"
+    assert [m.content for m in await messages(replay_session, conv.id) if m.role == "user"] == [paste]
+
+
+async def test_shop_order_message_mid_order_switches_to_the_chosen_product(replay_http, replay_session, router, monkeypatch):
+    """Halfway through another product's order, tapping 'Order' in the shop moves the order to that product."""
+    phone, pnid = ph("0051")
+    captured = capture_all(monkeypatch)
+    capture_images(monkeypatch)
+    client, _, _ = await seed_shop(replay_session, phone, pnid)
+    conv_id = await prime_conv(replay_session, phone=phone, client_id=client.id, stage="order_collection",
+                               pending_product_sku="LH10042", last_shown_sku="LH10042", selected_color="Pink")
+
+    reply = await say(replay_http, captured, phone, pnid, _shop_paste("Red Silk Saree", "SR20002"))
+
+    assert "complete collection" not in reply and "Red Silk Saree" in reply
+    conv = await get_conv(replay_session, conv_id)
+    assert conv.pending_product_sku == "SR20002" and conv.selected_color is None
+
+
+async def test_shop_order_message_for_a_product_without_sku_is_matched_by_name(replay_http, replay_session, router, monkeypatch):
+    """'SKU: N/A' (a product with no SKU) is matched by the *bold* product name."""
+    phone, pnid = ph("0052")
+    captured = capture_all(monkeypatch)
+    capture_images(monkeypatch)
+    await seed_shop(replay_session, phone, pnid)
+
+    reply = await say(replay_http, captured, phone, pnid, _shop_paste("Printed Kurti", "N/A"))
+
+    assert "complete collection" not in reply and "Printed Kurti [KU30001]" in reply
+
+
+async def test_shop_order_message_for_a_deleted_product_says_so_and_links_the_shop(replay_http, replay_session, router, monkeypatch):
+    """A stale shop page (product no longer exists) → 'no exact match' + the shop link, never a random fuzzy product."""
+    phone, pnid = ph("0053")
+    captured = capture_all(monkeypatch)
+    await seed_shop(replay_session, phone, pnid)
+
+    reply = await say(replay_http, captured, phone, pnid, _shop_paste("Old Saree", "ZZ99999"))
+
+    assert "exact match" in reply and "/router-0053" in reply and router.calls == []
+
+
+async def test_plain_catalogue_request_still_gets_the_shop_link(replay_http, replay_session, router, monkeypatch):
+    """The fix must not break 'Catalogue please'."""
+    phone, pnid = ph("0054")
+    captured = capture_all(monkeypatch)
+    await seed_shop(replay_session, phone, pnid)
+
+    reply = await say(replay_http, captured, phone, pnid, "Catalogue please")
+
+    assert "/router-0054" in reply and router.calls == []
+
+
+async def test_a_colour_the_product_does_not_come_in_is_declined_with_the_options(replay_http, replay_session, router, monkeypatch):
+    """'Gray' at the colour question → 'Gray isn't available for Cotton Lehenga' + the colour question; nothing saved, no LLM."""
+    phone, pnid = ph("0055")
+    captured = capture_all(monkeypatch)
+    client, _, _ = await seed_shop(replay_session, phone, pnid)
+    conv_id = await prime_conv(replay_session, phone=phone, client_id=client.id, stage="order_collection",
+                               pending_product_sku="LH10042", last_shown_sku="LH10042")
+
+    reply = await say(replay_http, captured, phone, pnid, "Gray")
+
+    assert "Gray isn't available for Cotton Lehenga" in reply and "Pink" in reply and "Blue" in reply
+    assert "Happy to help" not in reply and router.calls == []
+    conv = await get_conv(replay_session, conv_id)
+    assert conv.selected_color is None and conv.current_stage == "order_collection"
+
+
+@pytest.mark.parametrize("typed", ["pinkk", "gulabi", "pink wala chahiye", "colour pink"])
+async def test_a_misspelled_or_hinglish_colour_is_accepted_without_the_llm(replay_http, replay_session, router, monkeypatch, typed):
+    """Typos, fillers and Hinglish colour words resolve to the offered colour and the order moves to the size question."""
+    phone, pnid = ph("0056")
+    captured = capture_all(monkeypatch)
+    client, _, _ = await seed_shop(replay_session, phone, pnid)
+    conv_id = await prime_conv(replay_session, phone=phone, client_id=client.id, stage="order_collection",
+                               pending_product_sku="LH10042", last_shown_sku="LH10042")
+
+    reply = await say(replay_http, captured, phone, pnid, typed)
+
+    conv = await get_conv(replay_session, conv_id)
+    assert conv.selected_color == "Pink" and "Size" in reply and router.calls == []
+    assert [m.content for m in await messages(replay_session, conv_id) if m.role == "user"] == [typed]
