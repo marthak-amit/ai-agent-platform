@@ -142,3 +142,20 @@ async def test_hinglish_reply_to_english_customer_is_rewritten(monkeypatch):
     _fake_llm(monkeypatch, "Yes, we have this available. Which colour would you like to order?")
     out = await rl.localize("Haan ji, hamare paas yeh available hai. Kaunsa color chahiye aapko?", "english")
     assert out.startswith("Yes, we have")
+
+
+async def test_gujarati_reply_to_english_customer_is_translated_to_english(monkeypatch):
+    """A whole-Gujarati reply to an English customer is translated; a few Indic letters in an English reply are left alone."""
+    mock = _fake_llm(monkeypatch, "Sorry, I didn't get that.")
+    assert await rl.localize("માફ કરશો, સમજાયું નહીં.", "english") == "Sorry, I didn't get that."
+    assert mock.await_count == 1
+    mixed = "Navratri गरबा Choli [CC40001] — ₹1,800 is available"
+    assert await rl.localize(mixed, "english") == mixed
+    assert mock.await_count == 1
+
+
+def test_mostly_non_latin_detection():
+    """_mostly_non_latin: whole-script text yes, English with one native word no, URLs/ids ignored."""
+    assert rl._mostly_non_latin("આ છે")
+    assert not rl._mostly_non_latin("Hello गरबा world")
+    assert not rl._mostly_non_latin("😊 123")

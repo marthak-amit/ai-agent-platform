@@ -69,6 +69,11 @@ _COLOR_TABLE = {
 }
 
 
+def color_aliases(canonical: str) -> list[tuple[str, str]]:
+    """Every (alias, canonical colour) pair for one canonical colour name ("red" → [("laal","red"), ("lal","red"), ...])."""
+    return [(alias, target) for alias, target in _COLOR_ALIAS.items() if target == canonical]
+
+
 def normalize_token(text: str) -> str:
     """Lower-case a word and fold the Unicode variants keyboards produce (NFC, nukta forms, ZWJ/ZWNJ removed)."""
     out = unicodedata.normalize("NFC", (text or "").lower()).replace("‌", "").replace("‍", "")

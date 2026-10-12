@@ -57,6 +57,13 @@ _SYSTEM = (
 )
 
 
+def _mostly_non_latin(text: str) -> bool:
+    """True when most letters of `text` are not Latin — a whole Gujarati/Hindi/... reply sent to an English customer."""
+    counts = _lang.script_counts(_URLISH.sub(" ", text or ""))
+    total = sum(counts.values())
+    return total > 0 and counts.get("latin", 0) / total < 0.4
+
+
 def _facts(text: str) -> list[str]:
     """Verbatim tokens (digits, ids, URLs) the translation has to keep."""
     return [m.group(0).rstrip(".,") for m in _FACT_RE.finditer(text or "")]
@@ -137,8 +144,8 @@ async def localize(
     if text is None or not needs_translation(text, lang, allowed):
         return text
     code = _lang.normalize_language(lang)
-    if code == "english" and not _lang.roman_language_mismatch(text, code):
-        # Indic/Arabic script reply to an English customer — rare (an Indic product name); keep as is.
+    if code == "english" and not _lang.roman_language_mismatch(text, code) and not _mostly_non_latin(text):
+        # A few Indic letters in an English reply (an Indic product name) — keep as is.
         return text
     cached = _cache_get(code, text)
     if cached is not None:
@@ -162,7 +169,8 @@ async def localize(
     if (
         not translated or not _facts_preserved(text, translated) or not _lang.reply_matches_language(translated, code, allowed)
         # never accept a translation that is MORE English than the original
-        or len(stray_latin_words(translated, allowed)) > len(stray_latin_words(text, allowed))
+        or (_lang.expected_script(code) is not None
+            and len(stray_latin_words(translated, allowed)) > len(stray_latin_words(text, allowed)))
     ):
         logger.warning("reply localizer: rejected %s translation (facts/script check failed)", code)
         return text

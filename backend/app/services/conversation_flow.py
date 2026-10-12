@@ -1309,6 +1309,15 @@ def _breakdown_vocab(variant_info: dict) -> tuple[dict[str, str], dict[str, str]
         if " " not in alias and canon.lower() in sizes and alias not in sizes:
             sizes[alias] = sizes[canon.lower()]
     colors = {c.lower(): c for c in (variant_info.get("available_colors") or [])}
+    # Roman-script aliases of the catalogue's colours ("lal" → Red, "neela" → Blue): without them the split parser
+    # reported a perfectly valid colour answer as a colour the product doesn't carry.
+    for catalogue_color in list(colors.values()):
+        canonical = indic_vocab.canonical_color(catalogue_color)
+        if not canonical:
+            continue
+        for alias, target in indic_vocab.color_aliases(canonical):
+            if alias.isascii() and alias.isalpha() and alias not in colors:
+                colors[alias] = catalogue_color
     return sizes, colors
 
 
