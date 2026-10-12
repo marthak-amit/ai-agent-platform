@@ -867,7 +867,8 @@ async def test_i_want_to_talk_to_someone_pauses_the_bot_and_flags_the_dashboard(
     realtime_service.unsubscribe(client.id, queue)
 
     follow = await say(replay_http, captured, phone, pnid, "hello??")      # paused: saved silently, router not called
-    assert follow == "" and len(router.calls) == 1
+    # "talk to someone" is now recognised deterministically (side_questions) — no router/LLM call at all
+    assert follow == "" and len(router.calls) == 0
 
 
 async def test_hi_without_a_product_gets_the_welcome_and_hi_mid_browse_resumes(replay_http, replay_session, router, monkeypatch):

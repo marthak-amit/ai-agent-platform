@@ -245,3 +245,9 @@ async def test_build_answer_for_the_new_topics(monkeypatch):
     assert "रद्द" in await sq.build_answer(None, client, None, None, "decline", "hindi_devanagari", "no")
     assert "રદ" in await sq.build_answer(None, client, None, None, "decline", "gujarati_script", "no")
     assert await sq.build_answer(None, client, None, None, "trust", "english", "is it safe?") == get_template("english", "rt_handoff_offer")
+
+
+def test_offer_as_a_verb_is_not_a_discount_question():
+    """'Do you offer gift wrapping?' is not about discounts; 'any offer?' is."""
+    assert sq.detect_topic("Do you offer gift wrapping for this?") is None
+    assert sq.detect_topic("any offer going on?") == "discount"

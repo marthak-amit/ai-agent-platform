@@ -263,3 +263,33 @@ async def test_side_question_at_the_summary_re_shows_the_summary_with_confirm_bu
     assert conv.current_stage == "awaiting_final_confirmation"
     done = await say(replay_http, captured, phone, pnid, "Yes")
     assert "placed" in done.lower() or "order" in done.lower()
+
+
+async def test_when_will_it_come_with_an_existing_order_is_left_to_the_order_status_flow(replay_http, replay_session, router, monkeypatch):
+    """A customer with an unpaid order asking 'kab milega' gets the order-status answer, not the generic delivery line."""
+    from tests.replay.test_router_v2 import seed_order
+
+    captured = capture_all(monkeypatch)
+    phone, pnid = ph("19")
+    client, _, _ = await seed_shop(replay_session, phone, pnid)
+    await seed_order(replay_session, client, phone, status="pending_payment", paid_days_ago=None)
+    router.when("kab milega", "order_status", {"focus": "delivery"}, language="hinglish")
+
+    reply = await say(replay_http, captured, phone, pnid, "kab milega")
+
+    assert "payment verify hone ke baad" in reply
+    assert len(router.calls) == 1
+
+
+async def test_an_open_which_one_menu_is_closed_by_a_side_question(replay_http, replay_session, router, monkeypatch):
+    """After 'saree' shows a numbered menu, 'how many days will delivery take?' is answered and the menu is cleared."""
+    captured = capture_all(monkeypatch)
+    phone, pnid = ph("20")
+    await seed_shop(replay_session, phone, pnid, router_on=False)
+    await say(replay_http, captured, phone, pnid, "saree")
+
+    reply = await say(replay_http, captured, phone, pnid, "how many days will delivery take?")
+
+    assert "3–7 business days" in reply
+    conv = await get_conv(replay_session, (await messages(replay_session, 1))[0].conversation_id)
+    assert conv.pending_choice_skus is None

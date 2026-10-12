@@ -115,10 +115,10 @@ _LEXICON: dict[str, tuple[str, ...]] = {
         "bulk", "wholesale", "bulk order", "reseller", "resell", "dealer", "in quantity", "thok", "थोक", "બલ્ક", "જથ્થાબંધ", "હોલસેલ", "होलसेल",
     ),
     "discount": (
-        "discount", "discounts", "offer", "offers", "cheaper", "less price", "reduce price", "best price", "last price", "final price",
+        "discount", "discounts", "any offer", "any offers", "koi offer", "offer hai", "special offer", "festival offer", "cheaper", "less price", "reduce price", "best price", "last price", "final price",
         "bargain", "negotiate", "too expensive", "expensive", "costly", "price kam", "kam karo", "thoda kam", "kam kar do", "mehenga",
-        "mahenga", "mangu", "moghu", "ghanu mangu", "ochu karo", "ochhu karo", "छूट", "डिस्काउंट", "ऑफर", "महंगा", "कम करो", "थोड़ा कम", "कीमत कम",
-        "ડિસ્કાઉન્ટ", "ઓફર", "મોંઘું", "મોંઘુ", "ઓછું કરો", "ઓછુ કરો", "થોડું ઓછું", "ભાવ ઓછો", "છૂટ", "ছাড়", "ডিসকাউন্ট", "தள்ளுபடி", "తగ్గింపు",
+        "mahenga", "mangu", "moghu", "ghanu mangu", "ochu karo", "ochhu karo", "छूट", "डिस्काउंट", "कोई ऑफर", "ऑफर है", "महंगा", "कम करो", "थोड़ा कम", "कीमत कम",
+        "ડિસ્કાઉન્ટ", "કોઈ ઓફર", "ઓફર છે", "મોંઘું", "મોંઘુ", "ઓછું કરો", "ઓછુ કરો", "થોડું ઓછું", "ભાવ ઓછો", "છૂટ", "ছাড়", "ডিসকাউন্ট", "தள்ளுபடி", "తగ్గింపు",
         "ರಿಯಾಯಿತಿ", "ഡിസ്കൗണ്ട്", "ਛੋਟ", "ରିହାତି", "رعایت", "ڈسکاؤنٹ",
     ),
 }
@@ -461,6 +461,8 @@ async def run_side_question_guard(
         topic = "cancel"
     if topic is None:
         return None
+    if topic == "delivery_time" and not in_order and await _has_open_order(db, client, conv, sender_phone):
+        return None       # "when will it come?" about an order the customer already has → the order-status flow
     lang = ra.template_language(None, user_text, conv)
     logger.info("SIDE_QUESTION conv=%s topic=%s stage=%s slot=%s", conv.id, topic, stored_stage, next_slot)
 
@@ -484,6 +486,7 @@ async def run_side_question_guard(
     answer = await build_answer(db, client, conv, pinned, topic, lang, user_text)
     if not answer:
         return None
+    await ra._clear_menu(db, conv)      # an open "which one? 1/2/3" menu is closed by any unrelated question
     route = f"side_{topic}"
     if resume_slot:
         outcome = await ra._reask(rc, lang, None, route, prefix_text=answer)
@@ -505,6 +508,21 @@ async def run_side_question_guard(
             text = f"{answer}\n\n{get_template(lang, 'would_you_like_to_order_named', name=pinned.name, sku=pinned.sku)}"
         outcome = await rc.reply(text, route, lang)
     return outcome.early_result
+
+
+async def _has_open_order(db, client, conv, sender_phone: str) -> bool:
+    """True when this customer already has an order that is not cancelled (so 'when will it come?' means that order)."""
+    from sqlalchemy import or_, select
+
+    from app.models.order import Order
+
+    row = await db.execute(
+        select(Order.id).where(
+            Order.client_id == client.id, Order.status != "cancelled",
+            or_(Order.customer_phone == sender_phone, Order.conversation_id == conv.id),
+        ).limit(1)
+    )
+    return row.first() is not None
 
 
 def _offer_open(conv) -> bool:
