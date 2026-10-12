@@ -88,6 +88,18 @@ def test_last_agent_offered_upi_only_when_cod_present():
 def test_last_agent_offered_saved_address_detection():
     assert _last_agent_offered_saved_address(_HISTORY_SAVED_ADDR) is True
 
+def test_saved_address_offer_is_recognised_in_every_template_language():
+    """The 'deliver to <address>? (yes/change)' offer is detected in Hindi/Gujarati (Roman + script) and "બરાબર" confirms it."""
+    from app.services.conversation_flow import classify_address_confirmation
+    from app.services.language_templates import get_template
+
+    for lang in ("english", "hindi_roman", "hindi_devanagari", "gujarati_roman", "gujarati_script"):
+        offer = get_template(lang, "confirm_saved_address", address="12 MG Road, Pune 411001")
+        assert _last_agent_offered_saved_address([{"role": "model", "content": offer}]) is True, lang
+    assert classify_address_confirmation("બરાબર") == "confirm"
+    assert classify_address_confirmation("બદલો") == "change"
+
+
 def test_affirmatives_set():
     for word in ("yes", "haan", "ha", "ok", "okay", "sahi", "theek"):
         assert word in _SLOT_AFFIRMATIVES, f"{word!r} missing from _SLOT_AFFIRMATIVES"

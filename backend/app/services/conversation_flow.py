@@ -607,6 +607,9 @@ def classify_address_confirmation(text: str) -> str:
     return "unclear"
 
 
+_SAVED_ADDRESS_CUES: tuple[str, ...] = _template_cues("confirm_saved_address")
+
+
 def _last_agent_offered_saved_address(conversation_history: list[dict]) -> bool:
     """True if the most recent agent message offered a saved address for confirmation (Deliver to X? yes/change)."""
     for m in reversed(conversation_history):
@@ -617,6 +620,7 @@ def _last_agent_offered_saved_address(conversation_history: list[dict]) -> bool:
                 or "(yes/change)" in text
                 or "yes/change" in text
                 or "use this address" in text
+                or any(cue in " ".join(text.split()) for cue in _SAVED_ADDRESS_CUES)
             )
     return False
 

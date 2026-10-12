@@ -93,7 +93,8 @@ def check_turn(session, rec, lang: str | None) -> None:
         if text.strip() and not ls.reply_matches_language(text, lang, frozenset(_ALLOWED_LATIN)):
             session.flag("wrong_language", f"expected {lang}; reply is in the wrong script", rec)
         elif ls.expected_script(lang) is not None and text.strip():
-            bad = impure_words(text)
+            # Echoing what the customer just typed ("sorry, size 'hmm' isn't available") is not an English leak.
+            bad = [w for w in impure_words(text) if w.lower() not in (rec.sent or "").lower()]
             if bad:
                 session.flag("impure_language", f"expected pure {lang}; Latin words: {sorted(set(bad))[:8]}", rec)
         for bid, title in sent.buttons:
