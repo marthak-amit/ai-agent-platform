@@ -196,6 +196,26 @@ FAQ = {
     "malayalam": ["ക്യാഷ് ഓൺ ഡെലിവറി ഉണ്ടോ?"], "punjabi": ["ਕੀ ਕੈਸ਼ ਆਨ ਡਿਲੀਵਰੀ ਹੈ?"], "odia": ["କ୍ୟାସ ଅନ ଡେଲିଭରି ଅଛି କି?"],
     "urdu": ["کیا کیش آن ڈیلیوری ہے؟"],
 }
+# Side questions asked in the middle of an order (the bot must answer and resume the open step, state untouched).
+SIDE_RETURN = {
+    "english": ["what is your return policy?", "can I return it if I don't like it?"], "hindi_roman": ["return policy kya hai?", "return ho sakta hai kya?"],
+    "hindi_devanagari": ["रिटर्न पॉलिसी क्या है?"], "gujarati_roman": ["ketla diwas ma return kari sakai ka aebi kai policy nathi?", "mare return policy joi che"],
+    "gujarati_script": ["રિટર્ન પોલિસી શું છે?", "શું રિટર્ન થઈ શકે?"], "marathi": ["रिटर्न पॉलिसी काय आहे?"], "marathi_roman": ["return policy kay ahe?"],
+    "bengali": ["রিটার্ন পলিসি কী?"], "tamil": ["ரிட்டர்ன் பாலிசி என்ன?"], "telugu": ["రిటర్న్ పాలసీ ఏమిటి?"], "kannada": ["ರಿಟರ್ನ್ ಪಾಲಿಸಿ ಏನು?"],
+    "malayalam": ["റിട്ടേൺ പോളിസി എന്താണ്?"], "punjabi": ["ਰਿਟਰਨ ਪਾਲਿਸੀ ਕੀ ਹੈ?"], "odia": ["ରିଟର୍ନ ପଲିସି କଣ?"], "urdu": ["ریٹرن پالیسی کیا ہے؟"],
+}
+SIDE_DELIVERY = {
+    "english": ["how many days for delivery?"], "hindi_roman": ["delivery kitne din mein hogi?"], "hindi_devanagari": ["डिलीवरी कितने दिन में होगी?"],
+    "gujarati_roman": ["delivery ketla divas ma thase?"], "gujarati_script": ["ડિલિવરી ક્યારે મળશે?"], "marathi": ["डिलिव्हरीला किती दिवस लागतील?"],
+    "marathi_roman": ["delivery kiti divas lagtil?"], "bengali": ["ডেলিভারি কত দিন লাগবে?"], "tamil": ["டெலிவரிக்கு எத்தனை நாள் ஆகும்?"],
+    "telugu": ["డెలివరీకి ఎన్ని రోజులు?"], "kannada": ["ಡೆಲಿವರಿಗೆ ಎಷ್ಟು ದಿನ?"], "malayalam": ["ഡെലിവറിക്ക് എത്ര ദിവസം?"],
+    "punjabi": ["ਡਿਲੀਵਰੀ ਕਿੰਨੇ ਦਿਨ?"], "odia": ["ଡେଲିଭରି କେତେ ଦିନ?"], "urdu": ["ڈیلیوری کتنے دن میں؟"],
+}
+SIDE_ACK = {
+    "english": ["ok", "hmm"], "hindi_roman": ["theek hai", "achha"], "hindi_devanagari": ["ठीक है"], "gujarati_roman": ["thik che"],
+    "gujarati_script": ["ઠીક છે"], "marathi": ["ठीक"], "marathi_roman": ["theek"], "bengali": ["ওকে"], "tamil": ["சரி"], "telugu": ["సరే"],
+    "kannada": ["ಸರಿ"], "malayalam": ["ശരി"], "punjabi": ["ਠੀਕ ਹੈ"], "odia": ["ଠିକ ଅଛି"], "urdu": ["ٹھیک ہے"],
+}
 PAY_UPI = {l: ["UPI"] for l in LANGS}
 PAY_COD = {
     "english": ["COD", "cash on delivery"], "hindi_roman": ["COD", "cash on delivery"], "hindi_devanagari": ["COD", "कैश ऑन डिलीवरी"],

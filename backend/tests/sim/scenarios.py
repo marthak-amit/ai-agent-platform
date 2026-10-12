@@ -104,8 +104,33 @@ async def current_slot(s: Session):
     return get_next_required_slot(conv, vi or {}) if conv and conv.pending_product_sku else None
 
 
+async def _inject_side_message(s: Session, rng: random.Random, conv, slot: str | None) -> None:
+    """
+    Interrupt the order with a side question / social message and require that nothing about the order changed.
+
+    The reply language is checked by the usual per-turn invariants; here we check the state signature before/after.
+    """
+    lang = s.lang
+    kinds = ["return", "delivery", "thanks", "cod"]
+    if slot in ("color", "size", "quantity", "customer_name", "payment_method"):
+        kinds.append("ack")
+    kind = rng.choice(kinds)
+    bank = {"return": L.SIDE_RETURN, "delivery": L.SIDE_DELIVERY, "thanks": L.THANKS, "cod": L.FAQ, "ack": L.SIDE_ACK}[kind]
+    text = rng.choice(bank[lang]) if kind != "cod" else bank[lang][0]
+    before = (conv.current_stage, conv.pending_product_sku, conv.selected_color, conv.selected_size, conv.pending_order_quantity,
+              conv.customer_name, conv.delivery_address, conv.payment_method)
+    rec = await s.say(text, lang)
+    after = await s.conv()
+    now = (after.current_stage, after.pending_product_sku, after.selected_color, after.selected_size, after.pending_order_quantity,
+           after.customer_name, after.delivery_address, after.payment_method)
+    if now != before:
+        s.flag("goal_failed", f"side message {text!r} ({kind}) changed the order state: {before} -> {now}", rec)
+    elif not rec.replies:
+        s.flag("goal_failed", f"side message {text!r} ({kind}) got no reply", rec)
+
+
 async def drive_order(s: Session, rng: random.Random, *, sku: str, qty: int = 1, pay: str = "COD", color=None, size=None,
-                      stop_at: str | None = None, max_steps: int = 30, flag_timeout: bool = True) -> bool:
+                      stop_at: str | None = None, max_steps: int = 30, flag_timeout: bool = True, side: bool = False) -> bool:
     """
     Play the customer until an order exists (or `stop_at` is reached).
 
@@ -141,6 +166,9 @@ async def drive_order(s: Session, rng: random.Random, *, sku: str, qty: int = 1,
 
         slot = get_next_required_slot(conv, vi or {})
         lang = s.lang
+        if side and slot and conv.current_stage == "order_collection" and same == 0 and rng.random() < 0.4:
+            await _inject_side_message(s, rng, conv, slot)
+            conv = await s.conv()
         if conv.current_stage in ("browsing", "greeting", "product_inquiry", "qualification", "offer_making", "objection_handling") and slot and not conv.pending_order_quantity and same == 0 and not conv.selected_color:
             await express_order_intent(s, rng)
             continue
@@ -279,6 +307,13 @@ async def sc_order_variant_upi(s: Session, rng: random.Random) -> None:
     if rng.random() < 0.8:
         approve = rng.random() < 0.85
         await finish_payment(s, rng, approve=approve)
+
+
+async def sc_side_questions(s: Session, rng: random.Random) -> None:
+    """Return / delivery / COD questions, thanks and 'ok' sprinkled through an order: answered, state untouched, order completes."""
+    sku = rng.choice(["KU30001", "LH10042"])
+    color, size = pick_variant(rng, sku) if sku == "LH10042" else (None, None)
+    await drive_order(s, rng, sku=sku, qty=1, pay="COD", color=color, size=size, side=True)
 
 
 async def sc_order_variant_cod(s: Session, rng: random.Random) -> None:
@@ -484,5 +519,5 @@ SCENARIOS = [
     (sc_price_questions, 7), (sc_cancel_mid_order, 5), (sc_cancel_at_payment, 4), (sc_change_slot, 3),
     (sc_switch_product, 3), (sc_status_after_order, 5), (sc_status_no_order, 2), (sc_handoff, 4), (sc_faq, 3),
     (sc_oos, 3), (sc_over_quantity, 2), (sc_edge_inputs, 4), (sc_lang_switch, 3), (sc_sku_direct, 3), (sc_buttons, 2),
-    (sc_slot_gibberish, 4), (sc_repeat_customer, 4), (sc_voice_notes, 3),
+    (sc_slot_gibberish, 4), (sc_repeat_customer, 4), (sc_voice_notes, 3), (sc_side_questions, 8),
 ]

@@ -33,7 +33,7 @@ from app.config import get_settings
 from app.services import billing_service, catalogue_service, conversation_flow, conversation_service, customer_service
 from app.services import cost_log, escalation_service, gemini_service, lead_service, order_service, order_state_machine
 from app.services import command_words, language_service as _lang_svc, usage_service, voice_service
-from app.services import ocr_service, storage_service
+from app.services import ocr_service, side_questions, storage_service
 from app.services.delivery_service import get_delivery_time_str
 from app.services.language_templates import TEMPLATES, format_price, get_template
 from app.services import payment_verification_service, stock_reservation_service
@@ -586,11 +586,11 @@ def _build_order_aside_answer(
     qty = getattr(conv, "pending_order_quantity", None) or 0
     total = int(qty * prod_price) if (qty and prod_price) else None
 
-    # Delivery charge / time
-    if any(kw in lower for kw in ("delivery charge", "delivery fee", "shipping charge",
-                                   "delivery cost", "delivery kitna", "delivery charges")):
-        return "Delivery is free."
+    # Delivery charges and the return policy are NOT answered here: the shop's configuration holds neither, so
+    # a fixed sentence ("Delivery is free", "returns within 7 days") would be an invented promise. They are
+    # answered by side_questions (the seller's knowledge-base entry, else an honest hand-off offer).
 
+    # Delivery time
     if any(kw in lower for kw in ("delivery", "deliver", "shipping", "dispatch",
                                    "kitne din", "kab milega", "kab aayega")):
         dt = delivery_time_str or "3–7 business days"
@@ -617,10 +617,6 @@ def _build_order_aside_answer(
     if any(kw in lower for kw in ("upi", "upi id", "gpay", "phonepe", "paytm")):
         if upi_id:
             return f"UPI ID: {upi_id}"
-
-    # Return / refund policy
-    if any(kw in lower for kw in ("return", "refund", "exchange", "wapas")):
-        return "We accept returns within 7 days of delivery."
 
     return ""
 
@@ -9179,6 +9175,14 @@ async def _handle_inbound_message_core(ctx: InboundContext) -> PipelineResult:
     )
     if _cat_link_result is not None:
         return _cat_link_result
+
+    # Side questions / social messages ("return policy?", "COD available?", "thanks", "I'll think"): answered
+    # deterministically from the shop's facts, then the open step is re-asked — for router and keyword shops alike.
+    _side_result = await side_questions.run_side_question_guard(
+        db, conv, client, message, user_text, sender_phone, wamid, _stored_stage, _pre_route_language, _record_usage,
+    )
+    if _side_result is not None:
+        return _side_result
 
     _router_force_order = False
     _run_keyword_front_door = True

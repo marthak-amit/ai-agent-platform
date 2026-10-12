@@ -1597,6 +1597,103 @@ GUJARATI_SCRIPT_TEMPLATES: dict[str, str] = {
     ),
 }
 
+# ── Side questions / social messages (app/services/side_questions.py) ──────────────────────────────────────
+_SQ_EN = {
+    "sq_ack": "Sure! 🙂",
+    "sq_decline_order": "No problem! 🙂 If you'd like to stop, reply 'cancel'. Or just answer below to continue.",
+    "sq_change_product": "Sure! You can browse our catalogue here: {catalogue_url}\nSend me the product name or code you'd like instead — or carry on with your current order.",
+    "sq_why_details": "We need these details to deliver your order and prepare your invoice. 🙂",
+    "sq_thanks": "You're welcome! 😊",
+    "sq_positive": "Glad you like it! 😊",
+    "sq_bye": "Thank you! 🙏 Message us here whenever you're ready.",
+    "sq_think_later": "Sure, take your time! 🙏 Message here whenever you're ready and we'll continue.",
+    "sq_cod_yes": "Yes, Cash on Delivery (COD) is available. 🙂",
+    "sq_cod_yes_limit": "Yes, Cash on Delivery (COD) is available for orders up to ₹{limit}. 🙂",
+    "sq_cod_no": "Sorry, we don't offer Cash on Delivery — payment is by UPI.",
+    "sq_pay_upi_cod": "You can pay by UPI or Cash on Delivery (COD).",
+    "sq_pay_upi": "You can pay by UPI.",
+    "sq_pay_cod": "You can pay by Cash on Delivery (COD).",
+    "sq_delivery_time": "Delivery usually takes {delivery_time} after your order is confirmed.",
+    "sq_location": "Our address: {address}",
+}
+_SQ_HI = {
+    "sq_ack": "Ji! 🙂",
+    "sq_decline_order": "Koi baat nahi! 🙂 Agar rukna chahte hain to 'cancel' likhiye. Warna neeche ka jawab dekar aage badhiye.",
+    "sq_change_product": "Zaroor! Hamara catalogue yahan dekhiye: {catalogue_url}\nJo product chahiye uska naam ya code bhejiye — ya apna current order jaari rakhiye.",
+    "sq_why_details": "Ye details aapka order deliver karne aur invoice banane ke liye chahiye. 🙂",
+    "sq_thanks": "Aapka swagat hai! 😊",
+    "sq_positive": "Aapko pasand aaya, khushi hui! 😊",
+    "sq_bye": "Dhanyavaad! 🙏 Jab bhi ready hon, yahin message kar dijiye.",
+    "sq_think_later": "Zaroor, aaram se soch lijiye! 🙏 Jab ready hon yahin message kijiye, hum wahin se aage badhenge.",
+    "sq_cod_yes": "Ji haan, Cash on Delivery (COD) available hai. 🙂",
+    "sq_cod_yes_limit": "Ji haan, ₹{limit} tak ke orders par Cash on Delivery (COD) available hai. 🙂",
+    "sq_cod_no": "Maaf kijiye, hamare yahan Cash on Delivery nahi hai — payment UPI se hota hai.",
+    "sq_pay_upi_cod": "Aap UPI ya Cash on Delivery (COD) se payment kar sakte hain.",
+    "sq_pay_upi": "Aap UPI se payment kar sakte hain.",
+    "sq_pay_cod": "Aap Cash on Delivery (COD) se payment kar sakte hain.",
+    "sq_delivery_time": "Order confirm hone ke baad delivery mein aam taur par {delivery_time} lagte hain.",
+    "sq_location": "Hamara pata: {address}",
+}
+_SQ_GU = {
+    "sq_ack": "Ji! 🙂",
+    "sq_decline_order": "Koi vaat nahi! 🙂 Jo rokvu hoy to 'cancel' lakho. Nahi to niche no jawab aapi ne aagal vadho.",
+    "sq_change_product": "Chokkas! Amaru catalogue ahi juo: {catalogue_url}\nJe product joiye teno naam athva code moklo — athva tamaro current order chalu rakho.",
+    "sq_why_details": "Aa mahiti tamaro order deliver karva ane invoice banavva mate joiye chhe. 🙂",
+    "sq_thanks": "Tamaru swagat chhe! 😊",
+    "sq_positive": "Tamne gamyu e jaani khushi thai! 😊",
+    "sq_bye": "Aabhar! 🙏 Jyare ready ho tyare ahi message karjo.",
+    "sq_think_later": "Chokkas, nirante vichari lo! 🙏 Jyare ready ho tyare ahi message karjo, apne tyathi aagal vadhishu.",
+    "sq_cod_yes": "Ha, Cash on Delivery (COD) available chhe. 🙂",
+    "sq_cod_yes_limit": "Ha, ₹{limit} sudhina orders par Cash on Delivery (COD) available chhe. 🙂",
+    "sq_cod_no": "Maaf karjo, amari paase Cash on Delivery nathi — payment UPI thi thay chhe.",
+    "sq_pay_upi_cod": "Tame UPI athva Cash on Delivery (COD) thi payment kari shako cho.",
+    "sq_pay_upi": "Tame UPI thi payment kari shako cho.",
+    "sq_pay_cod": "Tame Cash on Delivery (COD) thi payment kari shako cho.",
+    "sq_delivery_time": "Order confirm thaya pachi delivery ma saamanya rite {delivery_time} lage chhe.",
+    "sq_location": "Amaru sarnamu: {address}",
+}
+_SQ_HI_DEV = {
+    "sq_ack": "जी! 🙂",
+    "sq_decline_order": "कोई बात नहीं! 🙂 अगर रुकना चाहते हैं तो 'रद्द' लिखिए। वरना नीचे का जवाब देकर आगे बढ़िए।",
+    "sq_change_product": "ज़रूर! हमारा कैटलॉग यहाँ देखिए: {catalogue_url}\nजो प्रोडक्ट चाहिए उसका नाम या कोड भेजिए — या अपना मौजूदा ऑर्डर जारी रखिए।",
+    "sq_why_details": "ये जानकारी आपका ऑर्डर डिलीवर करने और इनवॉइस बनाने के लिए चाहिए। 🙂",
+    "sq_thanks": "आपका स्वागत है! 😊",
+    "sq_positive": "आपको पसंद आया, खुशी हुई! 😊",
+    "sq_bye": "धन्यवाद! 🙏 जब भी तैयार हों, यहीं मैसेज कर दीजिए।",
+    "sq_think_later": "ज़रूर, आराम से सोच लीजिए! 🙏 जब तैयार हों यहीं मैसेज कीजिए, हम वहीं से आगे बढ़ेंगे।",
+    "sq_cod_yes": "जी हाँ, कैश ऑन डिलीवरी (COD) उपलब्ध है। 🙂",
+    "sq_cod_yes_limit": "जी हाँ, ₹{limit} तक के ऑर्डर पर कैश ऑन डिलीवरी (COD) उपलब्ध है। 🙂",
+    "sq_cod_no": "माफ़ कीजिए, हमारे यहाँ कैश ऑन डिलीवरी नहीं है — पेमेंट UPI से होता है।",
+    "sq_pay_upi_cod": "आप UPI या कैश ऑन डिलीवरी (COD) से पेमेंट कर सकते हैं।",
+    "sq_pay_upi": "आप UPI से पेमेंट कर सकते हैं।",
+    "sq_pay_cod": "आप कैश ऑन डिलीवरी (COD) से पेमेंट कर सकते हैं।",
+    "sq_delivery_time": "ऑर्डर कन्फर्म होने के बाद डिलीवरी में आमतौर पर {delivery_time} लगते हैं।",
+    "sq_location": "हमारा पता: {address}",
+}
+_SQ_GU_SCRIPT = {
+    "sq_ack": "જી! 🙂",
+    "sq_decline_order": "કોઈ વાત નહીં! 🙂 જો અટકાવવું હોય તો 'રદ' લખો. નહિતર નીચેનો જવાબ આપીને આગળ વધો.",
+    "sq_change_product": "ચોક્કસ! અમારું કેટલોગ અહીં જુઓ: {catalogue_url}\nજે પ્રોડક્ટ જોઈએ તેનું નામ અથવા કોડ મોકલો — અથવા તમારો હાલનો ઓર્ડર ચાલુ રાખો.",
+    "sq_why_details": "આ માહિતી તમારો ઓર્ડર ડિલિવર કરવા અને ઇન્વોઇસ બનાવવા માટે જોઈએ છે. 🙂",
+    "sq_thanks": "તમારું સ્વાગત છે! 😊",
+    "sq_positive": "તમને ગમ્યું એ જાણીને આનંદ થયો! 😊",
+    "sq_bye": "આભાર! 🙏 જ્યારે તૈયાર હો ત્યારે અહીં મેસેજ કરજો.",
+    "sq_think_later": "ચોક્કસ, નિરાંતે વિચારી લો! 🙏 જ્યારે તૈયાર હો ત્યારે અહીં મેસેજ કરજો, આપણે ત્યાંથી આગળ વધીશું.",
+    "sq_cod_yes": "હા, કેશ ઓન ડિલિવરી (COD) ઉપલબ્ધ છે. 🙂",
+    "sq_cod_yes_limit": "હા, ₹{limit} સુધીના ઓર્ડર પર કેશ ઓન ડિલિવરી (COD) ઉપલબ્ધ છે. 🙂",
+    "sq_cod_no": "માફ કરશો, અમારી પાસે કેશ ઓન ડિલિવરી નથી — પેમેન્ટ UPI થી થાય છે.",
+    "sq_pay_upi_cod": "તમે UPI અથવા કેશ ઓન ડિલિવરી (COD) થી પેમેન્ટ કરી શકો છો.",
+    "sq_pay_upi": "તમે UPI થી પેમેન્ટ કરી શકો છો.",
+    "sq_pay_cod": "તમે કેશ ઓન ડિલિવરી (COD) થી પેમેન્ટ કરી શકો છો.",
+    "sq_delivery_time": "ઓર્ડર કન્ફર્મ થયા પછી ડિલિવરીમાં સામાન્ય રીતે {delivery_time} લાગે છે.",
+    "sq_location": "અમારું સરનામું: {address}",
+}
+ENGLISH_TEMPLATES.update(_SQ_EN)
+HINDI_TEMPLATES.update(_SQ_HI)
+GUJARATI_TEMPLATES.update(_SQ_GU)
+HINDI_DEVANAGARI_TEMPLATES.update(_SQ_HI_DEV)
+GUJARATI_SCRIPT_TEMPLATES.update(_SQ_GU_SCRIPT)
+
 TEMPLATES: dict[str, dict[str, str]] = {
     "english": ENGLISH_TEMPLATES,
     "hindi_roman": HINDI_TEMPLATES,
