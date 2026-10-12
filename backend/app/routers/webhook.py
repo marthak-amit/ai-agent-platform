@@ -32,7 +32,7 @@ from app.db import get_db
 from app.schemas.webhook import WhatsAppWebhookPayload
 from app.services import catalogue_service, conversation_service, outbound, vision_service
 from app.services.send_gate import MessageKind
-from app.services.order_pipeline import InboundContext, _decode_btn, handle_inbound_message
+from app.services.order_pipeline import InboundContext, _decode_btn, ensure_reply, handle_inbound_message
 from app.routers._whatsapp_adapter import send_pipeline_result
 
 logger = logging.getLogger(__name__)
@@ -469,7 +469,20 @@ async def receive_message(
         download_media=_media_downloader(vision_service.download_whatsapp_media, getattr(client, "whatsapp_access_token", None)),
         is_whatsapp=getattr(conv, "channel", "whatsapp") == "whatsapp",
     )
-    result = await handle_inbound_message(ctx)
+    try:
+        result = await handle_inbound_message(ctx)
+    except Exception:
+        logger.exception("Pipeline crashed conv=%s — answering with the deterministic fallback", conv.id)
+        try:
+            await db.rollback()
+            await db.refresh(conv)      # the rollback expired the rows; reload before the fallback reads them
+            await db.refresh(client)
+        except Exception:
+            pass
+        result = None
+    # Every inbound message gets exactly one reply: logs `NO_REPLY conv=…` and substitutes a stage-aware
+    # fallback if the pipeline ended with nothing to send (intentional silence — skip_send — is respected).
+    result = await ensure_reply(result, ctx)
 
     # phone_number_id: prefer the one in the webhook metadata (most accurate),
     # fall back to the client's configured ID.

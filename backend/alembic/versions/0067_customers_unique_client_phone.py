@@ -1,6 +1,6 @@
 """customers: one row per (client_id, phone)
 
-Revision ID: 0066
+Revision ID: 0067
 Revises: 0065
 Create Date: 2026-10-12
 
@@ -12,8 +12,8 @@ fields kept) and the pair becomes UNIQUE; the service layer now inserts through 
 
 from alembic import op
 
-revision = "0066"
-down_revision = "0065"
+revision = "0067"
+down_revision = "0066"
 branch_labels = None
 depends_on = None
 

@@ -144,6 +144,9 @@ def test_watermark_sku_does_not_mutate_input_bytes():
 
 # ── get_watermarked_image_url ───────────────────────────────────────────────
 
+_KEY = svc._watermark_key(7, "PR10983", "https://cdn.example.com/x.jpg")
+
+
 def _r2_settings():
     return MagicMock(
         r2_endpoint="https://x.r2.cloudflarestorage.com",
@@ -181,10 +184,10 @@ def test_get_watermarked_image_url_generates_and_uploads_on_cache_miss():
             svc.get_watermarked_image_url(7, "PR10983", "https://cdn.example.com/x.jpg")
         )
 
-    assert url == "https://media.example.com/7/watermarked/PR10983.jpg"
+    assert url == f"https://media.example.com/{_KEY}"
     mock_client.put_object.assert_called_once()
     kwargs = mock_client.put_object.call_args.kwargs
-    assert kwargs["Key"] == "7/watermarked/PR10983.jpg"
+    assert kwargs["Key"] == _KEY
     svc._r2_client.cache_clear()
 
 
@@ -203,7 +206,7 @@ def test_get_watermarked_image_url_reuses_cached_object():
             svc.get_watermarked_image_url(7, "PR10983", "https://cdn.example.com/x.jpg")
         )
 
-    assert url == "https://media.example.com/7/watermarked/PR10983.jpg"
+    assert url == f"https://media.example.com/{_KEY}"
     mock_client.put_object.assert_not_called()
     mock_http_cls.assert_not_called()
     svc._r2_client.cache_clear()
@@ -244,6 +247,41 @@ def test_get_watermarked_image_url_local_disk_fallback(tmp_path):
     assert url.startswith("/uploads/wm_7_")
     saved_path = os.path.join(str(tmp_path), url.removeprefix("/uploads/"))
     assert os.path.isfile(saved_path)
+
+
+def test_watermark_key_changes_when_the_source_photo_changes():
+    """A replaced product photo must not be served from the old cached watermarked copy."""
+    a = svc._watermark_key(7, "PR10983", "https://cdn.example.com/a.jpg")
+    b = svc._watermark_key(7, "PR10983", "https://cdn.example.com/b.jpg")
+    assert a != b and a.startswith("7/watermarked/PR10983-")
+
+
+def _badge_box(img: Image.Image) -> tuple[int, int, int, int]:
+    """Bounding box of the darkened badge in the bottom-right corner of a flat-colour watermarked image."""
+    px = img.load()
+    base = px[0, 0]
+    xs, ys = [], []
+    for y in range(img.height // 2, img.height):
+        for x in range(img.width // 2, img.width):
+            if sum(abs(a - b) for a, b in zip(px[x, y], base)) > 60:
+                xs.append(x)
+                ys.append(y)
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def test_watermark_scales_down_on_small_photos_and_stays_inside_ocr_crop():
+    """A 300x300 photo gets a small badge (not 48% of the width) that sits inside the OCR crop."""
+    out = Image.open(io.BytesIO(svc.watermark_sku(_png_bytes(size=(300, 300), color=(240, 240, 240)), "JW10944")))
+    x1, y1, x2, y2 = _badge_box(out)
+    assert (x2 - x1) <= 300 * 0.34
+    assert x1 >= 300 * (1 - svc.WATERMARK_CROP_FRACTION_W) and y1 >= 300 * (1 - svc.WATERMARK_CROP_FRACTION_H)
+
+
+def test_watermark_keeps_full_size_on_large_photos():
+    """A 1200px-wide photo keeps the original 28px-font badge."""
+    out = Image.open(io.BytesIO(svc.watermark_sku(_png_bytes(size=(1200, 1200), color=(240, 240, 240)), "JW10944")))
+    x1, _, x2, _ = _badge_box(out)
+    assert 150 < (x2 - x1) < 1200 * 0.30
 
 
 # ── upload_file ───────────────────────────────────────────────────────────────

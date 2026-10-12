@@ -1,4 +1,4 @@
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Outlet, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "./context/AuthContext";
 import { RealtimeProvider } from "./context/RealtimeContext";
 import { ToastProvider } from "./context/ToastContext";
@@ -26,6 +26,19 @@ import Sandbox from "./pages/Sandbox";
 import AcceptInvite from "./pages/AcceptInvite";
 import CataloguePage from "./pages/public/CataloguePage";
 import ProductPage from "./pages/public/ProductPage";
+import { AdminAuthProvider } from "./context/AdminAuthContext";
+import AdminProtectedRoute from "./components/admin/AdminProtectedRoute";
+import AdminLayout from "./components/admin/AdminLayout";
+import AdminLogin from "./pages/admin/AdminLogin";
+import AdminOverview from "./pages/admin/AdminOverview";
+import AdminClients from "./pages/admin/AdminClients";
+import AdminClientDetail from "./pages/admin/AdminClientDetail";
+import AdminBilling from "./pages/admin/AdminBilling";
+import AdminUsage from "./pages/admin/AdminUsage";
+import AdminSystem from "./pages/admin/AdminSystem";
+import AdminAudit from "./pages/admin/AdminAudit";
+import AdminOperators from "./pages/admin/AdminOperators";
+import AdminAccount from "./pages/admin/AdminAccount";
 
 export default function App() {
   return (
@@ -185,6 +198,21 @@ export default function App() {
             }
           />
           {/* Public catalogue routes — no auth */}
+          {/* Operator console — its own auth (admin JWT in sessionStorage), never the tenant session. */}
+          <Route path="/admin" element={<AdminAuthProvider><Outlet /></AdminAuthProvider>}>
+            <Route path="login" element={<AdminLogin />} />
+            <Route element={<AdminProtectedRoute><AdminLayout /></AdminProtectedRoute>}>
+              <Route index element={<AdminProtectedRoute perm="overview.read"><AdminOverview /></AdminProtectedRoute>} />
+              <Route path="clients" element={<AdminProtectedRoute perm="clients.read"><AdminClients /></AdminProtectedRoute>} />
+              <Route path="clients/:id" element={<AdminProtectedRoute perm="clients.read"><AdminClientDetail /></AdminProtectedRoute>} />
+              <Route path="billing" element={<AdminProtectedRoute perm="billing.read"><AdminBilling /></AdminProtectedRoute>} />
+              <Route path="usage" element={<AdminProtectedRoute perm="usage.read"><AdminUsage /></AdminProtectedRoute>} />
+              <Route path="system" element={<AdminProtectedRoute perm="system.read"><AdminSystem /></AdminProtectedRoute>} />
+              <Route path="audit" element={<AdminProtectedRoute perm="audit.read"><AdminAudit /></AdminProtectedRoute>} />
+              <Route path="operators" element={<AdminProtectedRoute perm="admins.manage"><AdminOperators /></AdminProtectedRoute>} />
+              <Route path="account" element={<AdminAccount />} />
+            </Route>
+          </Route>
           <Route path="/shop/:slug" element={<CataloguePage />} />
           <Route path="/shop/:slug/product/:sku" element={<ProductPage />} />
           <Route path="/accept-invite" element={<AcceptInvite />} />

@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,7 +30,7 @@ from app.config import Settings
 from app.db import get_db
 from app.models.client import Client
 from app.models.sellertalk24_billing import BillingPlan, ClientSubscription, PaymentEvent
-from app.routers.admin import require_admin
+from app.routers.admin_deps import require_admin, require_perm
 from app.routers import billing as billing_router
 from app.routers.billing import get_gateway
 from app.schemas.sellertalk24_billing import (
@@ -46,6 +46,8 @@ from app.schemas.sellertalk24_billing import (
     AdminSubscriptionListOut,
     AdminSubscriptionOut,
 )
+from app.services import admin_audit
+from app.services.admin_audit import AdminPrincipal
 from app.services.billing import admin_ops, invoices
 from app.services.billing.razorpay_client import BillingGateway
 from app.services.billing.webhook import EventNotFound, EventNotReprocessable, reprocess_event
@@ -54,13 +56,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/billing", tags=["admin-billing"], dependencies=[Depends(require_admin)])
 
 
-async def admin_actor(x_admin_user: Annotated[Optional[str], Header()] = None) -> str:
+async def admin_actor(principal: Annotated[AdminPrincipal, Depends(require_perm("billing.write"))]) -> str:
     """
-    Who is calling. Admin auth is a shared X-Admin-Key, so the person identifies themselves with an optional
-    X-Admin-User header (recorded in the audit log, capped at 100 chars); without it the actor is "admin-key".
+    Who is calling (recorded in billing_admin_log): the signed-in operator's email, or — for the legacy shared
+    X-Admin-Key — the optional X-Admin-User header (capped at 100 chars) / "admin-key".
     """
-    cleaned = (x_admin_user or "").strip()[:100]
-    return cleaned or "admin-key"
+    return principal.actor
+
+
+async def _audit(db: AsyncSession, principal: AdminPrincipal, action: str, **kw) -> None:
+    """Write + commit an admin_audit_log row (the money-moving op itself already committed its own log)."""
+    admin_audit.record(db, principal, action, **kw)
+    await db.commit()
 
 
 def _op_error(exc: admin_ops.AdminOpError) -> HTTPException:
@@ -109,7 +116,7 @@ async def _list_subscriptions(
     return AdminSubscriptionListOut(items=items, total=int(total or 0), page=page, page_size=page_size)
 
 
-@router.get("/subscriptions", response_model=AdminSubscriptionListOut)
+@router.get("/subscriptions", response_model=AdminSubscriptionListOut, dependencies=[Depends(require_perm("billing.read"))])
 async def list_subscriptions(
     client_id: Optional[int] = Query(None),
     sub_status: Optional[str] = Query(None, alias="status"),
@@ -124,29 +131,33 @@ async def list_subscriptions(
 
 
 async def _grant(
-    db: AsyncSession, gateway: BillingGateway, settings: Settings, actor: str, *, client_id: int, plan_code: str,
-    days: Optional[int], amount_paise: Optional[int], reason: str,
+    db: AsyncSession, gateway: BillingGateway, settings: Settings, principal: AdminPrincipal, *, client_id: int,
+    plan_code: str, days: Optional[int], amount_paise: Optional[int], reason: str,
 ) -> AdminSubscriptionOut:
     """Shared by both grant routes."""
     try:
         sub = await admin_ops.grant_subscription(
-            db, client_id=client_id, plan_code=plan_code, days=days, reason=reason, actor=actor,
+            db, client_id=client_id, plan_code=plan_code, days=days, reason=reason, actor=principal.actor,
             mode=gateway.mode, amount_paise=amount_paise, settings=settings,
         )
     except admin_ops.AdminOpError as exc:
         raise _op_error(exc) from exc
+    await _audit(
+        db, principal, "billing.grant", target_type="subscription", target_id=sub.id, client_id=client_id,
+        reason=reason, detail={"plan_code": plan_code, "days": days, "amount_paise": amount_paise},
+    )
     return await _subscription_out(db, sub.id)
 
 
 @router.post("/subscriptions/grant", response_model=AdminSubscriptionOut, status_code=status.HTTP_201_CREATED)
 async def grant_subscription(
     body: AdminGrantRequest, gateway: Annotated[BillingGateway, Depends(get_gateway)],
-    settings: Annotated[Settings, Depends(billing_router.get_settings)], actor: Annotated[str, Depends(admin_actor)],
+    settings: Annotated[Settings, Depends(billing_router.get_settings)], principal: Annotated[AdminPrincipal, Depends(require_perm("billing.write"))],
     db: AsyncSession = Depends(get_db),
 ) -> AdminSubscriptionOut:
     """Record an offline payment (client in the body): stack a period of the plan after the client's current ones."""
     return await _grant(
-        db, gateway, settings, actor, client_id=body.client_id, plan_code=body.plan_code, days=body.days,
+        db, gateway, settings, principal, client_id=body.client_id, plan_code=body.plan_code, days=body.days,
         amount_paise=body.amount_paise, reason=body.reason,
     )
 
@@ -154,7 +165,7 @@ async def grant_subscription(
 @router.post("/clients/{client_id}/grant", response_model=AdminSubscriptionOut, status_code=status.HTTP_201_CREATED)
 async def grant_client_subscription(
     client_id: int, body: AdminClientGrantRequest, gateway: Annotated[BillingGateway, Depends(get_gateway)],
-    settings: Annotated[Settings, Depends(billing_router.get_settings)], actor: Annotated[str, Depends(admin_actor)],
+    settings: Annotated[Settings, Depends(billing_router.get_settings)], principal: Annotated[AdminPrincipal, Depends(require_perm("billing.write"))],
     db: AsyncSession = Depends(get_db),
 ) -> AdminSubscriptionOut:
     """
@@ -162,51 +173,65 @@ async def grant_client_subscription(
     with a tax invoice when given) and a period stacked after whatever the client already has.
     """
     return await _grant(
-        db, gateway, settings, actor, client_id=client_id, plan_code=body.plan_code, days=body.days,
+        db, gateway, settings, principal, client_id=client_id, plan_code=body.plan_code, days=body.days,
         amount_paise=body.amount_paise, reason=body.reason,
     )
 
 
 @router.post("/subscriptions/{subscription_id}/extend", response_model=AdminSubscriptionOut)
 async def extend_subscription(
-    subscription_id: int, body: AdminExtendRequest, actor: Annotated[str, Depends(admin_actor)],
+    subscription_id: int, body: AdminExtendRequest, principal: Annotated[AdminPrincipal, Depends(require_perm("billing.write"))],
     db: AsyncSession = Depends(get_db),
 ) -> AdminSubscriptionOut:
     """Push an active/pending period's end out by *days*; queued periods after it shift too."""
     try:
         sub = await admin_ops.extend_subscription(
-            db, subscription_id=subscription_id, days=body.days, reason=body.reason, actor=actor
+            db, subscription_id=subscription_id, days=body.days, reason=body.reason, actor=principal.actor
         )
     except admin_ops.AdminOpError as exc:
         raise _op_error(exc) from exc
+    await _audit(
+        db, principal, "billing.extend", target_type="subscription", target_id=sub.id, client_id=sub.client_id,
+        reason=body.reason, detail={"days": body.days},
+    )
     return await _subscription_out(db, sub.id)
 
 
 @router.post("/subscriptions/{subscription_id}/revoke", response_model=AdminSubscriptionOut)
 async def revoke_subscription(
-    subscription_id: int, body: AdminRevokeRequest, actor: Annotated[str, Depends(admin_actor)],
+    subscription_id: int, body: AdminRevokeRequest, principal: Annotated[AdminPrincipal, Depends(require_perm("billing.write"))],
     db: AsyncSession = Depends(get_db),
 ) -> AdminSubscriptionOut:
     """Cut an active/pending period short now; the tenant enters the normal grace window."""
     try:
-        sub = await admin_ops.revoke_subscription(db, subscription_id=subscription_id, reason=body.reason, actor=actor)
+        sub = await admin_ops.revoke_subscription(
+            db, subscription_id=subscription_id, reason=body.reason, actor=principal.actor
+        )
     except admin_ops.AdminOpError as exc:
         raise _op_error(exc) from exc
+    await _audit(
+        db, principal, "billing.revoke", target_type="subscription", target_id=sub.id, client_id=sub.client_id,
+        reason=body.reason,
+    )
     return await _subscription_out(db, sub.id)
 
 
 @router.put("/clients/{client_id}/billing-exempt")
 async def set_billing_exempt(
-    client_id: int, body: AdminExemptRequest, actor: Annotated[str, Depends(admin_actor)],
+    client_id: int, body: AdminExemptRequest, principal: Annotated[AdminPrincipal, Depends(require_perm("billing.write"))],
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, object]:
     """Exempt (or un-exempt) a client from billing restrictions."""
     try:
         client = await admin_ops.set_billing_exempt(
-            db, client_id=client_id, exempt=body.exempt, reason=body.reason, actor=actor
+            db, client_id=client_id, exempt=body.exempt, reason=body.reason, actor=principal.actor
         )
     except admin_ops.AdminOpError as exc:
         raise _op_error(exc) from exc
+    await _audit(
+        db, principal, "billing.exempt", target_type="client", target_id=client_id, client_id=client_id,
+        reason=body.reason, detail={"exempt": body.exempt},
+    )
     return {"client_id": client.id, "billing_exempt": bool(client.billing_exempt)}
 
 
@@ -219,7 +244,7 @@ def _event_out(e: PaymentEvent, *, with_payload: bool) -> AdminPaymentEventOut:
     )
 
 
-@router.get("/payment-events", response_model=AdminPaymentEventListOut)
+@router.get("/payment-events", response_model=AdminPaymentEventListOut, dependencies=[Depends(require_perm("billing.read"))])
 async def list_payment_events(
     has_error: Optional[bool] = Query(None, description="true = only events with an error recorded"),
     processed: Optional[bool] = Query(None),
@@ -251,7 +276,7 @@ async def list_payment_events(
     )
 
 
-@router.get("/payment-events/{event_id}", response_model=AdminPaymentEventOut)
+@router.get("/payment-events/{event_id}", response_model=AdminPaymentEventOut, dependencies=[Depends(require_perm("billing.read"))])
 async def get_payment_event(event_id: int, db: AsyncSession = Depends(get_db)) -> AdminPaymentEventOut:
     """One webhook event including its raw payload."""
     event = await db.get(PaymentEvent, event_id)
@@ -264,7 +289,7 @@ async def get_payment_event(event_id: int, db: AsyncSession = Depends(get_db)) -
 async def reprocess_payment_event(
     event_id: int,
     gateway: Annotated[BillingGateway, Depends(get_gateway)],
-    actor: Annotated[str, Depends(admin_actor)],
+    principal: Annotated[AdminPrincipal, Depends(require_perm("billing.write"))],
     db: AsyncSession = Depends(get_db),
 ) -> AdminReprocessOut:
     """Re-run a failed or unfinished webhook event through the normal handlers (they are idempotent)."""
@@ -277,16 +302,23 @@ async def reprocess_payment_event(
             status.HTTP_409_CONFLICT,
             {"code": "already_processed", "message": "This event was processed without error; nothing to redo."},
         ) from exc
-    admin_ops.log_admin_action(db, "reprocess_payment_event", actor=actor, payment_event_id=event_id, outcome=outcome, error=error)
+    admin_ops.log_admin_action(
+        db, "reprocess_payment_event", actor=principal.actor, payment_event_id=event_id, outcome=outcome, error=error
+    )
+    admin_audit.record(
+        db, principal, "billing.reprocess_event", target_type="payment_event", target_id=event_id,
+        detail={"outcome": outcome, "error": error},
+    )
     await db.commit()
     return AdminReprocessOut(outcome=outcome, processed=processed, error=error)
 
 
 @router.post("/invoices/backfill", response_model=AdminBackfillOut)
-async def backfill_invoices(actor: Annotated[str, Depends(admin_actor)], db: AsyncSession = Depends(get_db)) -> AdminBackfillOut:
+async def backfill_invoices(principal: Annotated[AdminPrincipal, Depends(require_perm("billing.write"))], db: AsyncSession = Depends(get_db)) -> AdminBackfillOut:
     """Issue invoices for paid orders that predate invoicing (oldest first, so numbers follow payment order)."""
     created = await invoices.backfill_missing_invoices(db)
     if created:
-        admin_ops.log_admin_action(db, "backfill_invoices", actor=actor, count=len(created))
+        admin_ops.log_admin_action(db, "backfill_invoices", actor=principal.actor, count=len(created))
+        admin_audit.record(db, principal, "billing.backfill_invoices", detail={"count": len(created)})
         await db.commit()
     return AdminBackfillOut(created=len(created), invoice_numbers=[i.invoice_number for i in created])

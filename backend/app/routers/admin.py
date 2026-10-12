@@ -1,9 +1,10 @@
 """
 Admin control panel router.
 
-All endpoints require the X-Admin-Key header to match ADMIN_SECRET_KEY from
-environment. This is intentionally separate from the client JWT system so
-that a leaked client token cannot grant admin access.
+Authentication is the operator JWT (Authorization: Bearer, see admin_auth.py) or the
+legacy X-Admin-Key header (see admin_deps.py) — both intentionally separate from the
+client JWT system so that a leaked client token cannot grant admin access. Each route
+declares the permission it needs (RBAC) and every mutation writes an admin_audit_log row.
 
 Endpoints:
 - GET  /admin/clients              — all clients with usage and plan info
@@ -17,49 +18,22 @@ Endpoints:
 """
 
 import logging
-import secrets
 from datetime import date, datetime
 from typing import Annotated, Any, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from pydantic import BaseModel
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
 from app.db import get_db
+from app.routers.admin_deps import require_admin, require_perm  # noqa: F401  (require_admin re-exported)
+from app.services.admin_audit import AdminPrincipal
 from app.schemas.llm_usage import LLMUsageReport
 from app.schemas.plan import PlanAdminOut, PlanUpdateRequest
 from app.services import admin_service, llm_usage_service, plan_cache
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
-
-
-# ── Auth dependency ────────────────────────────────────────────────────────────
-
-async def require_admin(x_admin_key: Optional[str] = Header(default=None)) -> None:
-    """
-    FastAPI dependency that enforces admin authentication.
-
-    Reads ADMIN_SECRET_KEY from settings and compares it with the
-    X-Admin-Key request header using a timing-safe digest comparison
-    to prevent timing-attack disclosure of the key.
-
-    Args:
-        x_admin_key: Value of the X-Admin-Key header, or None if absent.
-
-    Raises:
-        HTTPException 401: If the header is missing or the key is wrong.
-    """
-    settings = get_settings()
-    if not x_admin_key or not secrets.compare_digest(
-        x_admin_key.encode("utf-8"),
-        settings.admin_secret_key.encode("utf-8"),
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing admin key.",
-        )
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -85,6 +59,12 @@ class PlatformStatsOut(BaseModel):
     monthly_revenue_inr: int
     messages_today: int
     messages_this_month: int
+
+
+class ReasonBody(BaseModel):
+    """Optional free-text reason recorded in the audit log."""
+
+    reason: str = Field(default="", max_length=1000)
 
 
 class ClientStatusOut(BaseModel):
@@ -118,7 +98,7 @@ class RevenueOut(BaseModel):
 @router.get(
     "/clients",
     response_model=list[ClientAdminOut],
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_perm("clients.read"))],
 )
 async def list_all_clients(
     db: AsyncSession = Depends(get_db),
@@ -126,7 +106,7 @@ async def list_all_clients(
     """
     Return all registered clients with their current usage and plan revenue.
 
-    Requires X-Admin-Key header.
+    Requires an admin credential with the matching permission.
 
     Returns:
         List of ClientAdminOut objects ordered by client id.
@@ -137,7 +117,7 @@ async def list_all_clients(
 @router.get(
     "/stats",
     response_model=PlatformStatsOut,
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_perm("overview.read"))],
 )
 async def platform_stats(
     db: AsyncSession = Depends(get_db),
@@ -145,7 +125,7 @@ async def platform_stats(
     """
     Return platform-wide aggregate statistics.
 
-    Requires X-Admin-Key header.
+    Requires an admin credential with the matching permission.
 
     Returns:
         PlatformStatsOut with active_clients, monthly_revenue_inr,
@@ -157,10 +137,11 @@ async def platform_stats(
 @router.put(
     "/clients/{client_id}/suspend",
     response_model=ClientStatusOut,
-    dependencies=[Depends(require_admin)],
 )
 async def suspend_client(
     client_id: int,
+    principal: Annotated[AdminPrincipal, Depends(require_perm("clients.write"))],
+    body: Annotated[Optional[ReasonBody], Body()] = None,
     db: AsyncSession = Depends(get_db),
 ) -> ClientStatusOut:
     """
@@ -169,7 +150,7 @@ async def suspend_client(
     The client's AI agent will stop responding to messages once the webhook
     can no longer find an active client. The client's data is preserved.
 
-    Requires X-Admin-Key header.
+    Requires an admin credential with the matching permission.
 
     Args:
         client_id: Target client primary key.
@@ -181,7 +162,9 @@ async def suspend_client(
         HTTPException 404: If client_id does not exist.
     """
     try:
-        client = await admin_service.set_client_active(db, client_id, active=False)
+        client = await admin_service.set_client_active(
+            db, client_id, active=False, audit=(principal, body.reason if body else "")
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
@@ -197,16 +180,17 @@ async def suspend_client(
 @router.put(
     "/clients/{client_id}/activate",
     response_model=ClientStatusOut,
-    dependencies=[Depends(require_admin)],
 )
 async def activate_client(
     client_id: int,
+    principal: Annotated[AdminPrincipal, Depends(require_perm("clients.write"))],
+    body: Annotated[Optional[ReasonBody], Body()] = None,
     db: AsyncSession = Depends(get_db),
 ) -> ClientStatusOut:
     """
     Re-activate a previously suspended client account.
 
-    Requires X-Admin-Key header.
+    Requires an admin credential with the matching permission.
 
     Args:
         client_id: Target client primary key.
@@ -218,7 +202,9 @@ async def activate_client(
         HTTPException 404: If client_id does not exist.
     """
     try:
-        client = await admin_service.set_client_active(db, client_id, active=True)
+        client = await admin_service.set_client_active(
+            db, client_id, active=True, audit=(principal, body.reason if body else "")
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
@@ -234,7 +220,7 @@ async def activate_client(
 @router.get(
     "/revenue",
     response_model=RevenueOut,
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_perm("billing.read"))],
 )
 async def revenue_breakdown(
     db: AsyncSession = Depends(get_db),
@@ -245,7 +231,7 @@ async def revenue_breakdown(
     Revenue is subscription-based (active clients × plan price). All three
     tiers are always present in the breakdown, even when count is zero.
 
-    Requires X-Admin-Key header.
+    Requires an admin credential with the matching permission.
 
     Returns:
         RevenueOut with month, total_revenue_inr, and per-plan breakdown.
@@ -256,7 +242,7 @@ async def revenue_breakdown(
 @router.get(
     "/usage/llm",
     response_model=LLMUsageReport,
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_perm("usage.read"))],
 )
 async def llm_usage_report(
     client_id: Optional[int] = Query(None, description="Restrict to one client; omit for all clients."),
@@ -268,7 +254,7 @@ async def llm_usage_report(
     """
     LLM tokens, ₹ cost, latency and failures from the llm_usage ledger, platform-wide or per client.
 
-    Requires X-Admin-Key header.
+    Requires an admin credential with the matching permission.
     """
     report = await llm_usage_service.usage_report(db, client_id=client_id, start=from_date, end=to_date, limit=limit)
     return LLMUsageReport(client_id=client_id, **report)
@@ -277,7 +263,7 @@ async def llm_usage_report(
 @router.get(
     "/plans",
     response_model=list[PlanAdminOut],
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_perm("billing.read"))],
 )
 async def list_all_plans(
     db: AsyncSession = Depends(get_db),
@@ -285,7 +271,7 @@ async def list_all_plans(
     """
     Return every plan, including inactive ones, in tier order.
 
-    Requires X-Admin-Key header.
+    Requires an admin credential with the matching permission.
 
     Returns:
         List of PlanAdminOut objects.
@@ -296,11 +282,11 @@ async def list_all_plans(
 @router.put(
     "/plans/{plan_id}",
     response_model=PlanAdminOut,
-    dependencies=[Depends(require_admin)],
 )
 async def update_plan(
     plan_id: str,
     body: PlanUpdateRequest,
+    principal: Annotated[AdminPrincipal, Depends(require_perm("plans.write"))],
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """
@@ -312,7 +298,7 @@ async def update_plan(
     Invalidates the in-process plan cache so the change is visible without
     a redeploy.
 
-    Requires X-Admin-Key header.
+    Requires an admin credential with the matching permission.
 
     Args:
         plan_id: Target plan's primary key (e.g. "starter").
@@ -327,7 +313,7 @@ async def update_plan(
     """
     updates = body.model_dump(exclude_unset=True, exclude_none=True)
     try:
-        plan = await admin_service.update_plan(db, plan_id, updates)
+        plan = await admin_service.update_plan(db, plan_id, updates, audit=principal)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 

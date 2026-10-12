@@ -11,6 +11,7 @@ configured, so local dev keeps working without R2 credentials.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import logging
 import os
@@ -38,11 +39,16 @@ _UPLOADS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__fi
 # outgoing product photo — ocr_service.py crops exactly this bottom-right
 # region when reading a screenshot the customer sends back later, so these
 # constants must stay in sync with whatever ocr_service crops.
-WATERMARK_FONT_SIZE = 28
-WATERMARK_MARGIN = 14
+WATERMARK_FONT_SIZE = 28  # maximum; shrunk for small photos so the badge never dominates them
+WATERMARK_MIN_FONT_SIZE = 8
 WATERMARK_BG_OPACITY = 170  # 0-255, semi-transparent box behind the text
 WATERMARK_CROP_FRACTION_W = 0.35  # rightmost 35% of the width
 WATERMARK_CROP_FRACTION_H = 0.15  # bottommost 15% of the height
+# The whole badge (box + edge gap) must stay inside the OCR crop above, with room to spare.
+WATERMARK_MAX_BOX_FRACTION_W = 0.30
+WATERMARK_MAX_BOX_FRACTION_H = 0.12
+# Bump when the watermark's look changes: it is part of the cache key, so already-stored copies are regenerated.
+WATERMARK_VERSION = 2
 
 
 def is_r2_configured() -> bool:
@@ -94,10 +100,10 @@ def compress_image(contents: bytes) -> bytes:
     return buffer.getvalue()
 
 
-def _watermark_font():
+def _watermark_font(size: int = WATERMARK_FONT_SIZE):
     """Bundled scalable Pillow font — no filesystem font install needed on Railway."""
     try:
-        return ImageFont.load_default(size=WATERMARK_FONT_SIZE)
+        return ImageFont.load_default(size=size)
     except TypeError:
         # Pillow < 10.1 — load_default() doesn't accept a size argument.
         return ImageFont.load_default()
@@ -108,10 +114,11 @@ def watermark_sku(contents: bytes, sku: str) -> bytes:
     Draw a "SKU: {sku}" watermark bottom-right on a COPY of the image, over
     a semi-transparent background box so it stays legible against any photo.
 
-    Font size, margin, and corner are fixed constants (WATERMARK_*) so the
-    watermark lands in the exact same place on every product photo —
-    ocr_service.py depends on this consistency to crop the right region
-    when reading it back from a customer's re-shared screenshot.
+    The corner and the format are fixed, and the badge always stays inside the
+    WATERMARK_CROP_FRACTION_* region ocr_service.py crops to read it back from
+    a customer's re-shared screenshot. The font is WATERMARK_FONT_SIZE on large
+    photos and is scaled down on small ones (box ≤ 30% of the width, ≤ 12% of the
+    height) so a low-resolution photo isn't covered by an oversized badge.
 
     Does not touch the original — returns brand-new JPEG bytes.
 
@@ -132,20 +139,28 @@ def watermark_sku(contents: bytes, sku: str) -> bytes:
 
     overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-    font = _watermark_font()
     label = f"SKU: {sku.strip().upper()}"
 
-    text_bbox = draw.textbbox((0, 0), label, font=font)
-    text_w = text_bbox[2] - text_bbox[0]
-    text_h = text_bbox[3] - text_bbox[1]
+    # Largest font (≤ WATERMARK_FONT_SIZE) whose badge fits the allowed share of this photo.
+    for size in range(WATERMARK_FONT_SIZE, WATERMARK_MIN_FONT_SIZE - 1, -1):
+        font = _watermark_font(size)
+        margin = max(2, size // 2)
+        text_bbox = draw.textbbox((0, 0), label, font=font)
+        text_w = text_bbox[2] - text_bbox[0]
+        text_h = text_bbox[3] - text_bbox[1]
+        if (
+            text_w + margin * 3 <= base.width * WATERMARK_MAX_BOX_FRACTION_W
+            and text_h + margin * 3 <= base.height * WATERMARK_MAX_BOX_FRACTION_H
+        ):
+            break
 
-    box_x2 = base.width - WATERMARK_MARGIN
-    box_y2 = base.height - WATERMARK_MARGIN
-    box_x1 = box_x2 - text_w - WATERMARK_MARGIN * 2
-    box_y1 = box_y2 - text_h - WATERMARK_MARGIN * 2
+    box_x2 = base.width - margin
+    box_y2 = base.height - margin
+    box_x1 = box_x2 - text_w - margin * 2
+    box_y1 = box_y2 - text_h - margin * 2
     draw.rectangle([box_x1, box_y1, box_x2, box_y2], fill=(0, 0, 0, WATERMARK_BG_OPACITY))
     draw.text(
-        (box_x1 + WATERMARK_MARGIN - text_bbox[0], box_y1 + WATERMARK_MARGIN - text_bbox[1]),
+        (box_x1 + margin - text_bbox[0], box_y1 + margin - text_bbox[1]),
         label, font=font, fill=(255, 255, 255, 255),
     )
 
@@ -155,10 +170,17 @@ def watermark_sku(contents: bytes, sku: str) -> bytes:
     return buffer.getvalue()
 
 
-def _watermark_key(client_id: int, sku: str) -> str:
-    """Deterministic R2 key for a SKU's watermarked copy — same key reused across sends."""
+def _watermark_key(client_id: int, sku: str, source_image_url: str = "") -> str:
+    """
+    Deterministic R2 key for a SKU's watermarked copy — same key reused across sends.
+
+    Includes a short hash of (WATERMARK_VERSION, source URL) so replacing the
+    product photo, or changing how the watermark looks, produces a new key
+    instead of serving a stale cached copy.
+    """
     safe_sku = re.sub(r"[^A-Za-z0-9_-]", "_", sku.strip().upper()) or "UNKNOWN"
-    return f"{client_id}/watermarked/{safe_sku}.jpg"
+    digest = hashlib.sha1(f"{WATERMARK_VERSION}|{source_image_url}".encode()).hexdigest()[:8]
+    return f"{client_id}/watermarked/{safe_sku}-{digest}.jpg"
 
 
 async def get_watermarked_image_url(
@@ -188,7 +210,7 @@ async def get_watermarked_image_url(
     settings = get_settings()
 
     if is_r2_configured():
-        key = _watermark_key(client_id, sku)
+        key = _watermark_key(client_id, sku, source_image_url)
         try:
             _r2_client().head_object(Bucket=settings.r2_bucket_name, Key=key)
             if settings.r2_public_base_url:
@@ -220,7 +242,7 @@ async def get_watermarked_image_url(
             f.write(watermarked)
         return f"/uploads/{filename}"
 
-    key = _watermark_key(client_id, sku)
+    key = _watermark_key(client_id, sku, source_image_url)
     _r2_client().put_object(
         Bucket=settings.r2_bucket_name,
         Key=key,

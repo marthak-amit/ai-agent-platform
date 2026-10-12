@@ -556,3 +556,90 @@ async def test_catalogue_link_short_circuit_answers_before_router(monkeypatch):
 
     assert await order_pipeline.run_catalogue_link_short_circuit(
         None, conv, client, msg, "green saree under 1000", "w2", "greeting", _noop) is None
+
+
+# ── catalogue "Order on WhatsApp" message ────────────────────────────────────
+
+SHOP_PASTE = (
+    "Hi! � I want to order from your catalogue:\n\n� *Banarasi Silk Saree*\n� SKU: SR27754\n"
+    "� Quantity: 1\n� Total: ₹2,450\n\nPlease confirm my order!"
+)
+
+
+def test_catalogue_order_paste_is_not_a_catalogue_link_request():
+    """The shop's order message mentions 'your catalogue' as the source — it must not trigger the shop link."""
+    from app.services import conversation_flow as cf
+
+    assert cf.is_catalogue_order_paste(SHOP_PASTE)
+    assert not cf.is_catalogue_request(SHOP_PASTE)
+    assert not cf.is_catalogue_request("I want to order from your catalogue")
+    assert not cf.is_catalogue_request("Product: Lehenga\nSKU: LH10042")
+    for text in ("Catalogue please", "send me the full catalogue", "catalog bhejo", "shop link"):
+        assert cf.is_catalogue_request(text) and not cf.is_catalogue_order_paste(text), text
+
+
+def test_parse_catalogue_order_reads_sku_name_quantity():
+    """SKU/name/quantity are read from the labels, so mangled emoji ('�') and 'SKU: N/A' are harmless."""
+    full = intent_router.parse_catalogue_order(SHOP_PASTE)
+    assert (full.sku, full.name, full.quantity, full.has_variant_lines) == ("SR27754", "Banarasi Silk Saree", 1, False)
+
+    no_sku = intent_router.parse_catalogue_order("Hi! I want to order from your catalogue:\n*Cotton Kurti*\nSKU: N/A\nQuantity: 3")
+    assert (no_sku.sku, no_sku.name, no_sku.quantity) == (None, "Cotton Kurti", 3)
+
+    legacy = intent_router.parse_catalogue_order("Hi! I want to order:\nProduct: Designer Lehenga\nSKU: LH10042\nColor: Red\nSize: XL")
+    assert (legacy.sku, legacy.name, legacy.has_variant_lines) == ("LH10042", "Designer Lehenga", True)
+
+
+async def test_catalogue_order_paste_is_a_fast_path_even_without_a_sku_label():
+    """'I want to order from your catalogue …' never goes to the LLM router."""
+    assert await _fast(SHOP_PASTE) == "catalogue_order"
+    assert await _fast("I want to order *Cotton Kurti* from your catalogue") == "catalogue_order"
+
+
+# ── tolerant colour / size answers ───────────────────────────────────────────
+
+COLORS = ["Blue", "Pink", "Red"]
+SIZES = ["S", "M", "L", "XL", "XXL"]
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("pinkk", "Pink"), ("PINK", "Pink"), ("gulabi", "Pink"), ("lal wala chahiye", "Red"), ("neela", "Blue"),
+    ("dark pink", "Pink"), ("pink please", "Pink"), ("colour red", "Red"), ("sky blue", "Blue"),
+])
+def test_resolve_option_attempt_matches_typos_fillers_and_hinglish(text, expected):
+    """Near-misses of an offered colour resolve to the catalogue's spelling."""
+    assert intent_router.resolve_option_attempt(text, "color", COLORS) == intent_router.OptionAttempt("match", expected)
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("medium", "M"), ("size m please", "M"), ("extra large", "XL"), ("2xl", "XXL"), ("large", "L"),
+])
+def test_resolve_option_attempt_matches_size_words(text, expected):
+    """'medium' / 'extra large' / '2xl' resolve to the offered size."""
+    assert intent_router.resolve_option_attempt(text, "size", SIZES) == intent_router.OptionAttempt("match", expected)
+
+
+@pytest.mark.parametrize("text,asked", [("Gray", "Gray"), ("grey please", "Grey"), ("kala", "Black"), ("yellow", "Yellow")])
+def test_resolve_option_attempt_flags_colours_that_are_not_offered(text, asked):
+    """A real colour the product doesn't come in is reported back, not guessed at."""
+    assert intent_router.resolve_option_attempt(text, "color", COLORS) == intent_router.OptionAttempt("unavailable", asked)
+
+
+def test_resolve_option_attempt_flags_a_size_that_is_not_offered():
+    """'xs' with S–XXL on offer is 'unavailable'."""
+    assert intent_router.resolve_option_attempt("xs", "size", SIZES) == intent_router.OptionAttempt("unavailable", "XS")
+
+
+@pytest.mark.parametrize("text", [
+    "pink nahi chahiye", "no", "blue ya pink", "gray ya black", "what is the price", "I want to talk to someone",
+    "kya delivery free hai aur kitne din lagenge", "",
+])
+def test_resolve_option_attempt_leaves_everything_else_to_the_router(text):
+    """Negations, several options, questions and unrelated text are not option answers."""
+    assert intent_router.resolve_option_attempt(text, "color", COLORS) is None
+
+
+def test_resolve_option_attempt_only_applies_to_option_slots():
+    """No option question open (name/address/quantity) → never reinterpret the message."""
+    assert intent_router.resolve_option_attempt("pink", "customer_name", COLORS) is None
+    assert intent_router.resolve_option_attempt("pink", None, COLORS) is None

@@ -59,6 +59,8 @@ _PASSTHROUGH_SLOTS = frozenset({"name", "address", "phone", "breakdown"})   # fr
 _PII_SLOTS = frozenset({"name", "address", "phone"})
 _ORDER_DRAFT_STAGES = frozenset({"order_collection", "awaiting_final_confirmation", "awaiting_switch_confirm"})
 _MAX_LIST = 5
+# Invalid answers to the same colour/size question before the reply also offers the catalogue / a human.
+_INVALID_OPTION_ESCAPE_AT = 2
 
 # General-answer guard: the model must not state facts the engine owns.
 _UNSAFE_HINT_RE = re.compile(
@@ -429,17 +431,77 @@ async def _photo_images(rc, products: list, *, captions: bool) -> list[tuple[str
     """(url, caption) pairs for the products that have a usable image (watermarked at send time), max 3."""
     images: list[tuple[str, str | None]] = []
     for p in products:
-        url = getattr(p, "image_url", None)
-        if not op._is_valid_image_url(url):
+        url = await op.watermarked_product_image_url(rc.client, p)
+        if not url:
             continue
-        try:
-            url = await op.storage_service.get_watermarked_image_url(rc.client.id, p.sku or "", url) or url
-        except Exception as exc:  # noqa: BLE001 — fall back to the stored image
-            logger.error("router watermark error sku=%s: %s", p.sku, exc)
         images.append((url, _product_line(p) if captions else None))
         if len(images) >= _MAX_PHOTOS:
             break
     return images
+
+
+def _order_note(rc, lang: str, about_skus: "list[str] | None" = None) -> str:
+    """
+    The "your order for X is still open — answer the last question or type cancel" line, or "".
+
+    Only appended while that draft is genuinely live: the conversation is mid slot-collection (not at
+    payment, where there is no "last question"), a product is still pinned, the draft is within the
+    flow-state TTL (an abandoned one must not leak into an unrelated reply), and the reply isn't already
+    about other products (`about_skus` — a search list / card of something else).
+    """
+    conv, pinned = rc.conv, rc.pinned_product
+    if (
+        pinned is None or not getattr(conv, "pending_product_sku", None)
+        or rc.stage not in intent_router.ORDER_SLOT_STAGES
+    ):
+        return ""
+    flow_at = getattr(conv, "flow_state_at", None)
+    if flow_at is not None and op.datetime.now(op.timezone.utc) - flow_at > op._flow_state_ttl(rc.client):
+        return ""
+    if about_skus and (pinned.sku or "").upper() not in {(x or "").upper() for x in about_skus}:
+        return ""
+    return _t(lang, "rt_order_open_note", product=getattr(pinned, "name", None) or "")
+
+
+async def _switch_offer(rc, lang: str, product) -> str:
+    """
+    Mid-order, the customer asked about a DIFFERENT product: offer to switch to it.
+
+    Stashes the product as `interrupted_sku` and parks the conversation in the legacy switch-confirm stage
+    (`awaiting_order_switch_confirm`, or `awaiting_afc_switch_confirm` at the summary) so the next "yes"
+    switches the order to it and "no" resumes the open question — instead of a "yes" being read as an
+    answer for the product that was NOT being discussed. Returns the offer line ("" when it doesn't apply).
+    """
+    pinned = rc.pinned_product
+    if (
+        pinned is None or rc.stage not in intent_router.ORDER_SLOT_STAGES
+        or (product.sku or "").upper() == (pinned.sku or "").upper()
+    ):
+        return ""
+    stage = "awaiting_afc_switch_confirm" if rc.stage == "awaiting_final_confirmation" else "awaiting_order_switch_confirm"
+    try:
+        await conversation_service.update_order_field(rc.db, rc.conv.id, "interrupted_sku", product.sku)
+        rc.conv.interrupted_sku = product.sku
+        await conversation_service.update_stage(rc.db, rc.conv.id, stage)
+        rc.conv.current_stage = stage
+    except Exception as exc:  # noqa: BLE001 — without the stash the offer would be a lie
+        logger.error("router switch-offer stash error conv=%s: %s", rc.conv.id, exc)
+        return ""
+    return _t(lang, "switch_offer", product=product.name, pinned=pinned.name)
+
+
+def extract_variant_filters(product, text: str):
+    """RouterFilters-like (colour, size) the text asks about, matched against `product`'s real options."""
+    from types import SimpleNamespace
+
+    colors, sizes = _variant_values(product, "color", False), _variant_values(product, "size", False)
+    tokens = re.findall(r"[a-z0-9]+", (text or "").lower())
+    color = next((c for c in colors if _norm(c) in tokens), None)
+    if color is None:
+        named = next((t for t in tokens if t in intent_router._COLOR_WORDS), None)
+        color = intent_router._COLOR_ALIASES.get(named, named).title() if named else None
+    size = next((s for s in sizes if _norm(s) in tokens), None)
+    return SimpleNamespace(color=color, size=size)
 
 
 def _product_card(lang: str, product) -> str:
@@ -459,8 +521,8 @@ async def _photo_reply(rc, lang: str, product):
     card = _product_card(lang, product)
     text = card if images else f"{_t(lang, 'rt_no_photo', product=product.name)}\n\n{card}"
     if rc.stage in intent_router.ORDER_ACTIVE_STAGES:
-        pinned_name = getattr(rc.pinned_product, "name", None) or product.name
-        text = f"{text}\n\n{_t(lang, 'rt_order_open_note', product=pinned_name)}"
+        note = _order_note(rc, lang, [product.sku]) or await _switch_offer(rc, lang, product)
+        text = f"{text}\n\n{note}" if note else text
     else:
         text = f"{text}\n\n{_t(lang, 'rt_order_cta')}"
         try:
@@ -484,8 +546,9 @@ async def _list_reply(
     lines.extend(f"{i}. {_product_line(p)}" for i, p in enumerate(products, 1))
     mid_order = rc.stage in intent_router.ORDER_ACTIVE_STAGES
     if mid_order:
-        pinned = rc.pinned_product
-        lines += ["", _t(lang, "rt_order_open_note", product=getattr(pinned, "name", None) or "")]
+        note = _order_note(rc, lang, [p.sku for p in products])
+        if note:
+            lines += ["", note]
         text = "\n".join(lines)
         result = op.PipelineResult(text=text) if images else None
     else:
@@ -582,7 +645,14 @@ async def handle_show_product(rc, decision: RouterDecision):
         return await _photo_reply(rc, lang, product)
     if answer is not None:
         if mid_order and product.sku == rc.conv.pending_product_sku:
-            answer = f"{answer}\n\n{_t(lang, 'rt_order_open_note', product=product.name)}"
+            note = _order_note(rc, lang, [product.sku])
+            answer = f"{answer}\n\n{note}" if note else answer
+        elif mid_order:
+            # A different product than the one being ordered: answer, then offer to switch (its own "order it?"
+            # prompt is replaced — a bare "yes" must mean "switch", not an answer to the open question).
+            offer = await _switch_offer(rc, lang, product)
+            if offer:
+                answer = f"{answer.replace(chr(10) + _t(lang, 'rt_order_cta'), '')}\n\n{offer}"
         elif not mid_order:
             try:
                 await conversation_service.set_last_shown_sku(rc.db, rc.conv.id, product.sku)
@@ -594,10 +664,8 @@ async def handle_show_product(rc, decision: RouterDecision):
         return await rc.reply(answer, "show_product_variant", lang, result=result)
     if mid_order:
         card = _product_card(lang, product)
-        return await rc.reply(
-            f"{card}\n\n{_t(lang, 'rt_order_open_note', product=getattr(rc.pinned_product, 'name', '') or product.name)}",
-            "show_product_card", lang,
-        )
+        note = _order_note(rc, lang, [product.sku]) or await _switch_offer(rc, lang, product)
+        return await rc.reply(f"{card}\n\n{note}" if note else card, "show_product_card", lang)
     return RouterOutcomeHandled.passthrough(rc, canonical_product_text(product, rc.all_products))
 
 
@@ -665,7 +733,7 @@ def canonical_answer(rc, slot: str, value: str | None) -> str | None:
     return None
 
 
-async def _reask(rc, lang: str, prefix_key: str | None, route: str):
+async def _reask(rc, lang: str, prefix_key: str | None, route: str, *, prefix_text: str | None = None):
     """Re-ask the open slot (with its options/buttons), optionally prefixed by a short template line."""
     pinned, vi = rc.pinned_product, rc.variant_info or {}
     profile = rc.profile
@@ -673,7 +741,8 @@ async def _reask(rc, lang: str, prefix_key: str | None, route: str):
         rc.next_slot, rc.conv, vi, lang, customer_profile=profile,
         accepts_cod=getattr(rc.client, "accepts_cod", False), product_name=getattr(pinned, "name", "the product"),
     )
-    text = f"{_t(lang, prefix_key)}\n\n{question}" if prefix_key else question
+    prefix = prefix_text or (_t(lang, prefix_key) if prefix_key else "")
+    text = f"{prefix}\n\n{question}" if prefix else question
     result = await _send_with_buttons(rc.db, rc.conv, rc.client, rc.stage, text, rc.next_slot, pinned, vi)
     return await rc.reply(text, route, lang, result=result)
 
@@ -1123,6 +1192,47 @@ async def run_router_front_door(
     )
     if fast:
         trace.fast_path = fast
+        return _done(outcome)
+
+    # A short, not-quite-exact answer to an open colour/size question ("pinkk", "gulabi", "medium", or a
+    # colour the product doesn't come in, like "Gray"): settled here for ₹0 — the LLM would call it small talk.
+    attempt = (
+        intent_router.resolve_option_attempt(
+            user_text, next_slot, (variant_info or {}).get(intent_router._OPTION_SLOT_KEYS.get(next_slot or "", ""), []),
+        )
+        if getattr(message, "type", "text") == "text" and pinned is not None and stored_stage in intent_router.ORDER_SLOT_STAGES
+        else None
+    )
+    if attempt is not None:
+        if attempt.status == "match":
+            trace.fast_path = "slot_option_fuzzy"
+            outcome.user_text = attempt.value      # the legacy slot machine takes the catalogue's spelling
+            return _done(outcome)
+        trace.fast_path = "slot_option_unavailable"
+        rc = RouterCtx(
+            db=db, conv=conv, client=client, message=message, user_text=user_text, sender_phone=sender_phone,
+            wamid=wamid, stage=stored_stage, language=language, record_usage=record_usage, ctx=None,
+            all_products=all_products, pinned_product=pinned, variant_info=variant_info, next_slot=next_slot,
+            profile=None,
+        )
+        lang = (getattr(conv, "last_customer_language", None) or language or "english").lower()
+        if template_language(None, user_text, conv) in ("hindi_devanagari", "gujarati_script"):
+            lang = template_language(None, user_text, conv)
+        sorry = _t(lang, "rt_variant_no", option=attempt.value, product=pinned.name, options_line="")
+        # Count consecutive invalid answers to THIS question (same counter the slot machine uses; it resets
+        # when the slot changes or an answer is accepted). The second miss adds a way out: catalogue / human.
+        try:
+            if getattr(conv, "slot_attempt_slot", None) != next_slot:
+                conv.slot_attempt_count, conv.slot_attempt_slot = 0, next_slot
+                await conversation_service.update_order_field(db, conv.id, "slot_attempt_slot", next_slot)
+            conv.slot_attempt_count = (conv.slot_attempt_count or 0) + 1
+            await conversation_service.update_order_field(db, conv.id, "slot_attempt_count", conv.slot_attempt_count)
+        except Exception as exc:  # noqa: BLE001 — the counter is a nicety, never lose the reply
+            logger.error("router invalid-option counter error conv=%s: %s", conv.id, exc)
+        if (conv.slot_attempt_count or 0) >= _INVALID_OPTION_ESCAPE_AT:
+            sorry = f"{sorry}\n{_t(lang, 'slot_invalid_escape', catalogue_url=_catalogue_url(client))}"
+        outcome = await _reask(rc, lang, None, "slot_option_unavailable", prefix_text=sorry)
+        outcome.trace = trace
         return _done(outcome)
     if llm_budget == "soft":
         trace.fallback = "soft_llm_cap"

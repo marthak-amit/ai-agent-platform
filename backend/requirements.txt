@@ -10,6 +10,7 @@ sqlalchemy[asyncio]>=2.0.36
 asyncpg>=0.30.0
 alembic>=1.13.0
 python-jose[cryptography]>=3.3.0
+cryptography>=42.0.0  # Fernet for admin 2FA secrets (also pulled in by python-jose)
 bcrypt>=5.0.0
 python-multipart>=0.0.9
 apscheduler>=3.10.0

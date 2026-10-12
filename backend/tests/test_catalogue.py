@@ -341,6 +341,68 @@ def test_delete_product_returns_204(client, mock_db, mock_settings, make_test_us
     assert response.status_code == 204
 
 
+def test_delete_product_with_open_order_returns_409(client, mock_db, mock_settings, make_test_user):
+    """DELETE /catalogue/products/{id} returns 409 when an open order holds stock."""
+    from unittest.mock import patch
+    from app.services.auth_service import create_access_token
+    from app.services.catalogue_service import ProductInUseError
+    from app.models.client import Client
+
+    token = create_access_token({"sub": "owner@biz.com"})
+    existing_client = Client(id=1, email="owner@biz.com", hashed_password="h", is_active=True)
+    auth_result = MagicMock()
+    auth_result.scalar_one_or_none.return_value = make_test_user(existing_client)
+    mock_db.execute.return_value = auth_result
+
+    with patch(
+        "app.services.catalogue_service.get_product",
+        new=AsyncMock(return_value=_make_product(id=5, client_id=1)),
+    ), patch(
+        "app.services.catalogue_service.delete_product",
+        new=AsyncMock(side_effect=ProductInUseError("open")),
+    ):
+        response = client.delete(
+            "/catalogue/products/5",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_delete_product_service_clears_dependents():
+    """delete_product detaches orders, removes dependents, then deletes the product."""
+    from app.services import catalogue_service
+
+    db = MagicMock()
+    db.scalar = AsyncMock(return_value=0)
+    db.execute = AsyncMock()
+    db.delete = AsyncMock()
+    db.commit = AsyncMock()
+
+    await catalogue_service.delete_product(db, _make_product(id=5, client_id=1))
+
+    assert db.execute.await_count == 6
+    db.delete.assert_awaited_once()
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_product_service_refuses_active_reservation():
+    """delete_product raises ProductInUseError when an active reservation exists."""
+    from app.services import catalogue_service
+
+    db = MagicMock()
+    db.scalar = AsyncMock(return_value=1)
+    db.execute = AsyncMock()
+    db.delete = AsyncMock()
+
+    with pytest.raises(catalogue_service.ProductInUseError):
+        await catalogue_service.delete_product(db, _make_product(id=5, client_id=1))
+
+    db.delete.assert_not_awaited()
+
+
 def test_delete_product_not_found_returns_404(client, mock_db, mock_settings, make_test_user):
     """DELETE /catalogue/products/{id} returns 404 when product not found."""
     from app.services.auth_service import create_access_token

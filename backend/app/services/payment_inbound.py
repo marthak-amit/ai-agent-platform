@@ -16,6 +16,7 @@ the normal conversation flow from answering the customer.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select, update
@@ -32,6 +33,18 @@ from app.services.language_templates import get_template
 from app.services.order_state_machine import ORDER_PAYMENT_SUBMITTED, ORDER_PENDING_PAYMENT
 
 logger = logging.getLogger(__name__)
+
+# A caption that is a question / product enquiry ("available?", "kitna price hai", "size milega").
+# Such a message is a customer changing topic, not sending proof.
+_ENQUIRY_CAPTION_RE = re.compile(
+    r"\?|\b(?:available|availability|avail|price|cost|rate|kitna|kitne|kya|hai|chahiye|chahie|milega|milegi|"
+    r"stock|size|colou?r|similar|show|dikhao|want|need|order|catalogue|ye|yeh|this|che|joiye|ketla)\b",
+    re.IGNORECASE,
+)
+# A caption that points at the payment itself.
+_PROOF_CAPTION_RE = re.compile(
+    r"\b(?:paid|payment|screenshot|txn|utr|upi|transaction|transferred|done|sent)\b", re.IGNORECASE
+)
 
 
 async def _max_message_id(db, conversation_id: int) -> int:
@@ -112,6 +125,36 @@ async def _reply(ctx, key: str, *, stamp_ack: bool = False):
     return PipelineResult(text=text)
 
 
+async def _image_is_payment_proof(ctx) -> bool:
+    """
+    Decide whether an inbound image, sent while an order awaits payment, is payment proof.
+
+    Customers change their mind mid-order and send a product photo instead ("available?").
+    Signals, cheapest first: a question-style caption → not proof; our own SKU watermark
+    (OCR) → a product photo we sent them → not proof; a vision model calling it a product
+    photo → not proof. Anything unclear stays proof, so a real screenshot is never dropped.
+    """
+    caption = (getattr(getattr(ctx.message, "image", None), "caption", None) or "").strip()
+    if caption:
+        if pvs.is_paid_intent(caption) or _PROOF_CAPTION_RE.search(caption):
+            return True
+        if _ENQUIRY_CAPTION_RE.search(caption):
+            return False
+    if not ctx.media_url:
+        return True
+    try:
+        from app.services import ocr_service, vision_service
+
+        image_bytes = await ctx.download_media(ctx.message.image.id)
+        if ocr_service.detect_sku_from_image(image_bytes):
+            return False
+        if await vision_service.looks_like_product_photo(image_bytes):
+            return False
+    except Exception as exc:
+        logger.error("Proof classification failed conv=%s: %s", ctx.conv.id, exc)
+    return True
+
+
 async def _handle_payment_message(ctx):
     """Proof / paid-word handling for a conversation with an order awaiting payment."""
     msg_type = ctx.message.type
@@ -123,6 +166,10 @@ async def _handle_payment_message(ctx):
     order = await pvs.find_open_payment_order(ctx.db, ctx.conv.id)
     if order is None:
         return None  # image/"paid" with no pending order → normal flow
+
+    if is_image and not await _image_is_payment_proof(ctx):
+        logger.info("Image while order %s awaits payment is not proof — normal flow conv=%s", order.id, ctx.conv.id)
+        return None
 
     saved = await _save_inbound(ctx, ctx.user_text)
 

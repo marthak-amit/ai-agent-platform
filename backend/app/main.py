@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.log_redaction import configure_log_hygiene
-from app.routers import admin, admin_billing, analytics, auth, billing, billing_health, briefing, campaigns, catalogue, catalogue_public, channels, conversations, customers, followup, instagram, integrations, knowledge, leads, onboarding, orders, payment, payment_settings, payment_verification, photo_enhancement, plans, realtime, sandbox, team, usage, webhook, whatsapp_signup, widget
+from app.routers import admin, admin_auth, admin_billing, admin_panel, admin_users, analytics, auth, billing, billing_health, briefing, campaigns, catalogue, catalogue_public, channels, conversations, customers, followup, instagram, integrations, knowledge, leads, onboarding, orders, payment, payment_settings, payment_verification, photo_enhancement, plans, realtime, sandbox, team, usage, webhook, whatsapp_signup, widget
 from app.scheduler import start_scheduler, stop_scheduler
 from app.services import channel_status, llm_health
 
@@ -275,6 +275,9 @@ app.add_middleware(
 app.include_router(briefing.router)
 app.include_router(campaigns.router)
 app.include_router(admin.router)
+app.include_router(admin_auth.router)
+app.include_router(admin_users.router)
+app.include_router(admin_panel.router)
 app.include_router(analytics.router)
 app.include_router(channels.router)
 app.include_router(followup.router)

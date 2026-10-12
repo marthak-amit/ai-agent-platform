@@ -83,9 +83,9 @@ ADMIN_KEY = "unit-test-admin-key"
 
 @pytest.fixture(autouse=True)
 def pinned_admin_key(monkeypatch):
-    """require_admin reads app.routers.admin.get_settings(); give it a known key independent of .env / harness."""
+    """the admin dependencies read app.routers.admin_deps.get_settings(); give it a known key independent of .env / harness."""
     admin_settings = get_settings().model_copy(update=dict(admin_secret_key=ADMIN_KEY))
-    monkeypatch.setattr("app.routers.admin.get_settings", lambda: admin_settings)
+    monkeypatch.setattr("app.routers.admin_deps.get_settings", lambda: admin_settings)
 
 
 def admin_headers() -> dict:

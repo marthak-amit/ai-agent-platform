@@ -291,6 +291,61 @@ async def _abandoned_intent_followup_job() -> None:
     factory = _get_session_factory()
     async with factory() as db:
         await _send_abandoned_intent_followups(db)
+    async with factory() as db:
+        await _expire_abandoned_order_drafts(db)
+
+
+async def _expire_abandoned_order_drafts(db) -> int:
+    """
+    Silently close order drafts the customer walked away from.
+
+    A conversation sitting in order_collection / awaiting_final_confirmation (no Order row exists yet)
+    whose customer's last inbound message is older than the tenant's flow-state TTL (24h default — the same
+    window after which the pipeline would reset it on the next message, and after which Meta's free-form
+    nudge is no longer allowed) gets the pipeline's own flow-state reset (stage -> greeting, order slots
+    cleared; the saved customer profile still prefills name/address next time). Without this the stale pin leaked into later replies ("your order for X is still open…").
+    No message is sent. Conversations in `payment` are never touched: an order exists there.
+
+    Returns:
+        Number of drafts expired.
+    """
+    from datetime import timezone as _tz
+
+    from sqlalchemy import select
+
+    from app.models.client import Client
+    from app.models.conversation import Conversation
+    from app.models.message import Message
+    from app.services.order_pipeline import _flow_state_ttl, _reset_flow_state
+
+    now = datetime.now(_tz.utc)
+    result = await db.execute(
+        select(Conversation).where(
+            Conversation.current_stage.in_(["order_collection", "awaiting_final_confirmation"]),
+            Conversation.pending_product_sku.isnot(None),
+        )
+    )
+    expired = 0
+    for conv in result.scalars().all():
+        try:
+            last_inbound = (await db.execute(
+                select(Message.created_at)
+                .where(Message.conversation_id == conv.id, Message.role == "user")
+                .order_by(Message.created_at.desc()).limit(1)
+            )).scalar_one_or_none()
+            if last_inbound is None:
+                continue
+            if last_inbound.tzinfo is None:
+                last_inbound = last_inbound.replace(tzinfo=_tz.utc)
+            client = (await db.execute(select(Client).where(Client.id == conv.client_id))).scalar_one_or_none()
+            if now - last_inbound <= _flow_state_ttl(client):
+                continue
+            await _reset_flow_state(db, conv)
+            expired += 1
+            logger.info("event=draft_expired conv=%s idle_hours=%.1f", conv.id, (now - last_inbound).total_seconds() / 3600)
+        except Exception as exc:
+            logger.error("Draft expiry error for conv=%s: %s", conv.id, exc)
+    return expired
 
 
 async def _send_abandoned_intent_followups(db) -> None:

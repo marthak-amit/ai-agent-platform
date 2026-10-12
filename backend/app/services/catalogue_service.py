@@ -12,10 +12,15 @@ import re
 import uuid
 from typing import Any, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.order import Order
+from app.models.order_line_item import OrderLineItem
+from app.models.photo_generation_log import PhotoGenerationLog
 from app.models.product import Product
+from app.models.restock_notification import RestockNotification
+from app.models.stock_reservation import RESERVATION_ACTIVE, StockReservation
 from app.models.product_variant import ProductVariant
 from app.models.stock_log import StockLog, VALID_REASONS
 
@@ -478,14 +483,43 @@ async def update_product(
     return product
 
 
+class ProductInUseError(Exception):
+    """Raised when a product cannot be deleted because an open order holds stock on it."""
+
+
 async def delete_product(db: AsyncSession, product: Product) -> None:
     """
     Permanently delete a product from the database.
 
+    Orders keep their own name/SKU snapshot, so past orders are detached
+    (``product_id`` set NULL) rather than deleted. Stock logs, restock
+    requests, photo logs and settled reservations belong to the product and
+    go with it. A product with an *active* stock reservation (an open
+    pending-payment order) is refused so the customer's order isn't orphaned.
+
     Args:
         db:      Active async DB session.
         product: ORM instance to delete (already fetched + ownership checked).
+
+    Raises:
+        ProductInUseError: If an active stock reservation exists for the product.
     """
+    pid = product.id
+    active = await db.scalar(
+        select(func.count()).select_from(StockReservation).where(
+            StockReservation.product_id == pid,
+            StockReservation.status == RESERVATION_ACTIVE,
+        )
+    )
+    if active:
+        raise ProductInUseError("Product has open orders awaiting payment.")
+
+    await db.execute(update(Order).where(Order.product_id == pid).values(product_id=None))
+    await db.execute(update(OrderLineItem).where(OrderLineItem.product_id == pid).values(product_id=None))
+    await db.execute(delete(StockReservation).where(StockReservation.product_id == pid))
+    await db.execute(delete(StockLog).where(StockLog.product_id == pid))
+    await db.execute(delete(RestockNotification).where(RestockNotification.product_id == pid))
+    await db.execute(delete(PhotoGenerationLog).where(PhotoGenerationLog.product_id == pid))
     await db.delete(product)
     await db.commit()
 

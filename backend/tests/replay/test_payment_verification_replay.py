@@ -842,3 +842,23 @@ async def test_unpaid_order_new_sku_offers_switch_instead_of_payment_reminder(re
     reply = rows[-1].content
     assert "Switch to Kurti Rani" in reply and "Pay to UPI ID" not in reply, reply
     assert (await _fresh(replay_session, Order, order.id)).status == "pending_payment", "nothing changes until 'yes'"
+
+
+async def test_inbox_flags_conversation_awaiting_payment(replay_http, replay_session, seller, monkeypatch):
+    """A UPI order in pending_payment is flagged (list + filter + detail) until the screenshot arrives."""
+    stub_media_and_capture_sends(monkeypatch)
+    client, product, user, phone, pnid = await _seed(replay_session, "0015")
+    conv, _order = await _pending_order(replay_session, client, product, phone)
+    seller(user)
+
+    rows = (await replay_http.get("/conversations")).json()
+    assert [(r["id"], r["awaiting_payment"], r["payment_to_verify"]) for r in rows] == [(conv.id, True, False)]
+    assert [r["id"] for r in (await replay_http.get("/conversations?filter=awaiting_payment")).json()] == [conv.id]
+    assert (await replay_http.get(f"/conversations/{conv.id}")).json()["awaiting_payment"] is True
+
+    await send_image(replay_http, phone, phone_number_id=pnid)  # screenshot → payment_submitted
+
+    rows = (await replay_http.get("/conversations")).json()
+    assert [(r["awaiting_payment"], r["payment_to_verify"]) for r in rows] == [(False, True)]
+    assert (await replay_http.get("/conversations?filter=awaiting_payment")).json() == []
+    assert (await replay_http.get(f"/conversations/{conv.id}")).json()["awaiting_payment"] is False

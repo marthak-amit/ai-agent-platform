@@ -42,6 +42,7 @@ class ImageContent(BaseModel):
     id: str
     mime_type: Optional[str] = None
     sha256: Optional[str] = None
+    caption: Optional[str] = None
 
 
 class AudioContent(BaseModel):
