@@ -73,6 +73,10 @@ function ProofReviewCard({
             <X size={15} /> {t("chat.reject")} ✖
           </button>
         </div>
+      ) : proof.status === "withdrawn" ? (
+        <p className="mt-2 text-gray-600 font-medium" data-testid="proof-withdrawn">
+          ↩ {t("chat.proof_withdrawn")}
+        </p>
       ) : proof.status === "approved" ? (
         <p className="mt-2 text-emerald-700 font-medium">
           ✅ {t("chat.approved_by", { who: proof.reviewed_by ?? "—", at: dateTime(proof.reviewed_at) })}

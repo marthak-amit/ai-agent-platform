@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import { CalendarClock, Info } from "lucide-react";
 import type { SubscriptionState } from "../../types/billing";
 import { formatDate } from "../../utils/billing";
+import { trialDaysLeft } from "../../utils/setup";
 import UsageBar from "./UsageBar";
 
 type Tone = "green" | "amber" | "red" | "gray";
@@ -30,6 +31,42 @@ export default function CurrentPlanCard({ state }: { state: SubscriptionState })
           <Badge tone="green">{t("billing.status_exempt")}</Badge>
         </div>
         <p className="text-sm text-gray-500 mt-1">{t("billing.exempt_desc")}</p>
+      </section>
+    );
+  }
+
+  if (!sub && ent?.state === "setup") {
+    return (
+      <section className="rounded-2xl bg-white border border-gray-200 p-6">
+        <div className="flex items-center gap-3">
+          <h2 className="text-lg font-bold text-brand-secondary">{t("billing.setup_title")}</h2>
+          <Badge tone="gray">{t("billing.status_setup")}</Badge>
+        </div>
+        <p className="text-sm text-gray-500 mt-1">{t("billing.setup_desc")}</p>
+      </section>
+    );
+  }
+
+  if (!sub && ent?.state === "trial") {
+    const days = trialDaysLeft(ent.trial_ends_at) ?? 0;
+    return (
+      <section className="rounded-2xl bg-white border border-gray-200 p-6 flex flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <h2 className="text-lg font-bold text-brand-secondary">{t("billing.trial_title")}</h2>
+          <Badge tone="green">{t("billing.status_trial")}</Badge>
+          <span className="text-sm font-semibold text-brand-primaryDark">{t("billing.trial_days_left", { count: days })}</span>
+        </div>
+        <p className="text-sm text-gray-500">{t("billing.trial_desc")}</p>
+        {ent.trial_conversation_limit ? (
+          <UsageBar
+            used={ent.trial_conversations_used ?? 0}
+            limit={ent.trial_conversation_limit}
+            percent={Math.min(100, ((ent.trial_conversations_used ?? 0) / ent.trial_conversation_limit) * 100)}
+          />
+        ) : null}
+        {ent.trial_ends_at && (
+          <p className="text-xs text-gray-400">{t("billing.trial_ends", { date: formatDate(ent.trial_ends_at, i18n.language) })}</p>
+        )}
       </section>
     );
   }

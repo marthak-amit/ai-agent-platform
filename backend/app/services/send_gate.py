@@ -69,6 +69,7 @@ class DenyReason(str, Enum):
     WINDOW_CLOSED = "window_closed"
     NO_TEMPLATE_AVAILABLE = "no_template_available"
     SUBSCRIPTION_INACTIVE = "subscription_inactive"   # client has no plan past grace (billing enforcement)
+    SANDBOX = "sandbox"                               # the in-dashboard simulator's fake customer: nothing leaves the server
 
 
 #: Kinds that are business-initiated (no fresh inbound behind them) and must

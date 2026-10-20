@@ -1,0 +1,25 @@
+name: remove_not_in_cart
+description: '"Remove chair" with a saree in the cart: "There''s no chair in your cart" + the cart + [Remove an item]; nothing changes and the planner is not called. The button opens the list of the real cart lines.'
+turns:
+  - user: "I want the banarasi saree in maroon, 2 pieces"
+    plan: {actions: [{type: add_line, sku: SR20001, variant: {color: Maroon}, qty: 2}]}
+    expect: {cart: {lines: [{sku: SR20001, color: Maroon, qty: 2}]}}
+  - user: "I also want the cotton kurti in red, 1 piece"
+    plan: {actions: [{type: add_line, sku: KU10001, variant: {color: Red}, qty: 1}]}
+    expect: {cart: {lines: [{sku: SR20001, color: Maroon, qty: 2}, {sku: KU10001, color: Red, qty: 1}]}}
+  - user: "Remove chair"
+    expect:
+      fast_path: remove_absent
+      planner_calls: 0
+      cart: {lines: [{sku: SR20001, color: Maroon, qty: 2}, {sku: KU10001, color: Red, qty: 1}]}
+      reply_contains: ["There's no chair in your cart", "In your cart now", "Banarasi Silk Saree", "Cotton Kurti"]
+      reply_not_contains: ["Which one should I remove"]
+      buttons_contain: [v3_remove_menu]
+  - tap: v3_remove_menu
+    expect:
+      reply_contains: ["Which one should I remove"]
+      buttons_contain: [v3_rm_1, v3_rm_2]
+  - tap: v3_rm_1
+    expect:
+      cart: {lines: [{sku: KU10001, color: Red, qty: 1}]}
+      reply_contains: ["Removed"]

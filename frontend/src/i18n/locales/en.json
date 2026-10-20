@@ -134,7 +134,15 @@
     "no_account": "Don't have an account?",
     "have_account": "Already have an account?",
     "invalid": "Invalid email or password.",
-    "platform_name": "AI Agent Platform"
+    "platform_name": "AI Agent Platform",
+    "continue_google": "Continue with Google",
+    "google_signup": "Sign up with Google",
+    "or": "or",
+    "google_failed": "Google sign-in failed. Please try again.",
+    "google_unavailable": "Google sign-in is not available right now.",
+    "password_login_disabled": "You're signed in with Google. The old password for this email was switched off for your security.",
+    "terms_hint": "By continuing you agree to our Terms and Privacy Policy.",
+    "start_free": "Set up your AI agent — no trial clock until you go live."
   },
   "common": {
     "save": "Save",
@@ -190,6 +198,7 @@
     "approved_by": "Approved by {{who}} at {{at}}",
     "rejected_reason": "Rejected: {{reason}}",
     "rejected": "Rejected",
+    "proof_withdrawn": "Withdrawn by the customer — not a payment proof",
     "open_image": "Open image",
     "sending": "Sending…",
     "failed_retry": "Failed — tap to retry",
@@ -304,6 +313,9 @@
     "reason_unclear": "Unclear screenshot",
     "reason_placeholder": "Other reason (optional)",
     "reject_confirm": "Reject payment",
+    "high_value_title": "Verify {{amount}} in your bank before approving",
+    "high_value_body": "Order #{{order}} is a high-value order. Check that the money has really arrived in your bank / UPI app. Your confirmation is recorded in the order's audit trail.",
+    "high_value_confirm": "I've verified — approve",
     "cancel": "Cancel",
     "shortcuts": "Shortcuts: A approve · R reject · ← → switch card",
     "proof_of": "Screenshot {{i}} of {{n}}",
@@ -492,6 +504,138 @@
     "details_save_error": "We couldn't save your details. Please try again.",
     "col_invoice": "Invoice",
     "invoice_download": "Download invoice {{number}}",
-    "invoice_error": "We couldn't download the invoice. Please try again."
+    "invoice_error": "We couldn't download the invoice. Please try again.",
+    "trial_title": "Free trial",
+    "status_trial": "Trial",
+    "trial_desc": "Everything is included while you try SellerTalk24 with real customers.",
+    "trial_ends": "Ends {{date}}",
+    "setup_title": "You're still setting up",
+    "status_setup": "Setting up",
+    "setup_desc": "Your free trial hasn't started. It begins only when you go live — setting up and testing are free and never counted.",
+    "trial_days_left_one": "{{count}} day left",
+    "trial_days_left_other": "{{count}} days left"
+  },
+  "quickstart": {
+    "title": "Welcome to SellerTalk24",
+    "subtitle": "Two quick questions, then you're in your dashboard.",
+    "business_name": "Business name",
+    "business_placeholder": "e.g. Riya Sarees",
+    "language": "Dashboard language",
+    "continue": "Continue to dashboard",
+    "saving": "Saving…",
+    "samples_note": "We'll add 3 sample products so you can try your agent right away. Remove them anytime.",
+    "error": "Couldn't save. Please try again."
+  },
+  "setup": {
+    "title": "Get your agent live",
+    "progress": "{{done}}/{{total}} done",
+    "collapse": "Hide checklist",
+    "expand": "Show checklist",
+    "optional": "Optional",
+    "required": "Required",
+    "done": "Done",
+    "todo": "To do",
+    "blocked": "Finish the steps above first",
+    "item": {
+      "add_products": {
+        "title": "Add your products",
+        "desc": "Your agent sells what's in your catalogue. Samples don't count."
+      },
+      "setup_agent": {
+        "title": "Set up your agent",
+        "desc": "Tell it about your business and how to talk to customers."
+      },
+      "connect_whatsapp": {
+        "title": "Connect WhatsApp",
+        "desc": "Link your WhatsApp Business number in two minutes."
+      },
+      "connect_instagram": {
+        "title": "Connect Instagram",
+        "desc": "Answer Instagram DMs and comments too."
+      },
+      "test_agent": {
+        "title": "Test your agent",
+        "desc": "Chat as a customer — nothing is sent to WhatsApp."
+      },
+      "go_live": {
+        "title": "Go live",
+        "desc": "Start answering real customers."
+      }
+    },
+    "cta": {
+      "add_products": "Add products",
+      "setup_agent": "Set up agent",
+      "connect_whatsapp": "Connect WhatsApp",
+      "connect_instagram": "Connect Instagram",
+      "test_agent": "Open test chat",
+      "go_live": "Go live"
+    },
+    "samples": "{{count}} sample products are in your catalogue.",
+    "remove_samples": "Remove samples",
+    "removing": "Removing…",
+    "samples_removed": "Sample products removed.",
+    "status_setup": "Setting up · not live",
+    "status_live": "Live",
+    "status_trial": "Trial · {{days}} days left",
+    "golive": {
+      "title": "Go live?",
+      "trial_text": "Your free trial starts now: {{days}} days or {{limit}} conversations, whichever comes first. Setting up and testing were free and never counted.",
+      "plan_text": "Your plan is active, so your agent starts answering real customers right away.",
+      "trial_used_text": "This WhatsApp number has already used its free trial. Choose a plan to go live.",
+      "samples_text": "Your {{count}} sample products will be removed so customers are never sold samples.",
+      "confirm": "Go live now",
+      "choose_plan": "Choose a plan",
+      "cancel": "Not yet",
+      "working": "Going live…",
+      "success": "You're live! Your agent is now answering customers.",
+      "error": "Couldn't go live. Please try again.",
+      "err_incomplete": "Finish the checklist steps first.",
+      "err_trial_used": "This WhatsApp number has already used its free trial. Choose a plan to go live."
+    },
+    "page": {
+      "back": "Back to dashboard",
+      "agent_title": "Set up your agent",
+      "products_title": "Add your products",
+      "whatsapp_title": "Connect WhatsApp",
+      "instagram_title": "Connect Instagram"
+    }
+  },
+  "empty": {
+    "next_step": "Next step",
+    "orders_title": "No orders yet",
+    "customers_title": "No customers yet",
+    "chats_title": "No conversations yet",
+    "orders_desc": "Orders from your customers will show up here.",
+    "customers_desc": "Customers appear here after they message your agent.",
+    "chats_desc": "Conversations with your customers will show up here.",
+    "setup_hint": "Finish setup to start getting them:",
+    "live_hint": "Share your catalogue link or WhatsApp number to get your first one.",
+    "view_catalogue": "Open your catalogue",
+    "simulator_hint": "Simulator chats aren't shown here — they never count as real orders or customers."
+  },
+  "simulator": {
+    "title": "Test your agent",
+    "subtitle": "Chat as a customer. This runs your real agent on your real catalogue — nothing is sent to WhatsApp, and nothing counts toward your trial or usage.",
+    "placeholder": "Type as a customer…",
+    "send": "Send",
+    "reset": "Start over",
+    "resetting": "Resetting…",
+    "empty": "Say hi, ask for a product, or try placing an order.",
+    "try": "Try:",
+    "suggest_hi": "hi",
+    "suggest_products": "what do you sell?",
+    "suggest_order": "I want to order a kurti",
+    "typing": "Agent is typing…",
+    "passed": "Test passed",
+    "progress": "{{done}}/{{total}} messages to pass the test",
+    "samples_banner": "You're chatting against {{count}} sample products.",
+    "router_on": "Smart router on",
+    "router_off": "Keyword flow",
+    "limit": "Daily test limit reached.",
+    "error": "Couldn't get a reply. Please try again.",
+    "image": "image",
+    "open_list": "Options",
+    "next_go_live": "Looks good? Go back to the checklist to go live.",
+    "llm_down": "The AI model is unavailable right now, so replies are simplified and don't count toward the test yet. Try again in a few minutes."
   }
 }

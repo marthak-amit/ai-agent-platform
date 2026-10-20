@@ -51,6 +51,7 @@ RESET_VALUES = {
     "slot_attempt_count": 0,
     "slot_attempt_slot": None,
     "off_topic_count": 0,
+    "spam_muted_until": None,
     "llm_calls_today": 0,
     "llm_calls_date": None,
 }

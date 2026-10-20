@@ -8,6 +8,8 @@ injecting only those into the AI prompt to reduce token cost.
 
 from __future__ import annotations
 
+import functools
+import inspect
 import re
 import uuid
 from typing import Any, Optional
@@ -23,8 +25,28 @@ from app.models.restock_notification import RestockNotification
 from app.models.stock_reservation import RESERVATION_ACTIVE, StockReservation
 from app.models.product_variant import ProductVariant
 from app.models.stock_log import StockLog, VALID_REASONS
+from app.services import catalogue_snapshot
 
 _UNSET: Any = object()   # sentinel — distinguishes "not provided" from False/0
+
+
+def _invalidates_snapshot(fn):
+    """After a catalogue write, drop the tenant's cached static rows (agent v3 reads them from ``catalogue_snapshot``)."""
+    sig = inspect.signature(fn)
+
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        """Run the write, then invalidate even if it raised (it may have partly committed)."""
+        bound = sig.bind_partial(*args, **kwargs).arguments
+        client_id = bound.get("client_id") or getattr(bound.get("product"), "client_id", None)
+        try:
+            return await fn(*args, **kwargs)
+        finally:
+            catalogue_snapshot.invalidate(client_id)
+
+    wrapper.__invalidates_snapshot__ = True
+    return wrapper
+
 
 # Words that carry no product-search signal.
 _STOP_WORDS = {
@@ -42,7 +64,12 @@ _STOP_WORDS = {
     # ("kurti new one") and would otherwise inflate the match score for a
     # query that names a different, unrelated product ("new jeans available?").
     "new", "one", "item", "piece", "product", "good", "nice",
+    # Chatter that fuzzy-matched real products ("i cant got it" -> "Gota Patti ..."): never a product word.
+    "got", "cant", "cannot", "dont", "didnt", "wont", "say", "said", "meant", "mean", "sorry", "thanks", "thank",
+    "yes", "okay", "ok", "let", "see", "try", "also", "again", "really", "just", "very", "too", "not", "but", "was",
 }
+# Query words shorter than this only match whole words, never inside a longer one ("got" must not hit "Gota Patti").
+_MIN_SUBSTRING_LEN = 4
 
 
 # ── SKU generation ────────────────────────────────────────────────────────────
@@ -152,6 +179,7 @@ def extract_skus_from_text(text: str) -> list[str]:
 
 # ── CRUD ─────────────────────────────────────────────────────────────────────
 
+@_invalidates_snapshot
 async def create_product_variants(
     db: AsyncSession,
     product_id: int,
@@ -187,6 +215,7 @@ async def create_product_variants(
     return result
 
 
+@_invalidates_snapshot
 async def sync_product_variants(
     db: AsyncSession,
     product: Product,
@@ -286,6 +315,7 @@ async def adjust_variant_stocks(
     return product
 
 
+@_invalidates_snapshot
 async def create_product(
     db: AsyncSession,
     client_id: int,
@@ -300,6 +330,7 @@ async def create_product(
     low_stock_alert: int = 5,
     has_variants: bool = False,
     delivery_days: Optional[int] = None,
+    is_demo: bool = False,
 ) -> Product:
     """
     Persist a new product for the given client.
@@ -317,6 +348,7 @@ async def create_product(
         is_active:        Whether the product is visible to customers.
         low_stock_alert:  Stock count at which a low-stock warning is shown.
         delivery_days:    Per-product delivery override (None = use client default).
+        is_demo:          True for the sample rows seeded into a new account (removed via "Remove samples").
 
     Returns:
         The newly created Product ORM instance.
@@ -334,6 +366,7 @@ async def create_product(
         low_stock_alert=low_stock_alert,
         has_variants=has_variants,
         delivery_days=delivery_days,
+        is_demo=is_demo,
     )
     db.add(product)
     await db.commit()
@@ -414,6 +447,7 @@ async def get_product(
     return result.scalar_one_or_none()
 
 
+@_invalidates_snapshot
 async def update_product(
     db: AsyncSession,
     product: Product,
@@ -487,6 +521,7 @@ class ProductInUseError(Exception):
     """Raised when a product cannot be deleted because an open order holds stock on it."""
 
 
+@_invalidates_snapshot
 async def delete_product(db: AsyncSession, product: Product) -> None:
     """
     Permanently delete a product from the database.
@@ -597,7 +632,8 @@ async def get_stock_history(
 
 # ── Keyword search ────────────────────────────────────────────────────────────
 
-def _tokenize(text: str) -> set[str]:
+@functools.lru_cache(maxsize=50_000)
+def _tokenize(text: str) -> frozenset[str]:
     """
     Lower-case words of `text` in any script, minus stop words, plus the English product words that
     native/Roman spellings stand for ("સાડી" → saree, "लहंगा" → lehenga) — so a Gujarati query finds an
@@ -763,17 +799,31 @@ def search_products_with_scores(
         category_tokens = _tokenize(p.category or "")
         desc_tokens = _tokenize(p.description or "")
         for kw in keywords:
-            if kw in name_tokens or kw in p.name.lower():
+            sub_ok = len(kw) >= _MIN_SUBSTRING_LEN
+            if kw in name_tokens or (sub_ok and kw in p.name.lower()):
                 score += 2
-            if kw in category_tokens or kw in (p.category or "").lower():
+            if kw in category_tokens or (sub_ok and kw in (p.category or "").lower()):
                 score += 2
-            if kw in desc_tokens or kw in (p.description or "").lower():
+            if kw in desc_tokens or (sub_ok and kw in (p.description or "").lower()):
                 score += 1
         if score > 0:
             scored.append((score, p))
 
     scored.sort(key=lambda x: x[0], reverse=True)
     return scored[:top_k]
+
+
+def name_match_score(product: Product, query: str) -> float:
+    """
+    0.0–1.0: the share of the query's meaningful words (4+ letters, not chatter) that appear as WHOLE words in the
+    product's name, category or description. "i cant got it" scores 0 against "Gota Patti Banarasi Saree"; "banarasi saree" scores 1.
+    Used to decide whether a "Did you mean …?" guess is worth showing.
+    """
+    keywords = {k for k in _tokenize(query) if len(k) >= _MIN_SUBSTRING_LEN}
+    if not keywords:
+        return 0.0
+    haystack = _tokenize(f"{product.name} {product.category or ''} {product.description or ''}")
+    return sum(1 for k in keywords if k in haystack) / len(keywords)
 
 
 async def get_product_variant_info(db: AsyncSession, product: Product) -> dict:

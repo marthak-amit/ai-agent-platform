@@ -13,6 +13,8 @@ Endpoints:
 - PUT  /admin/clients/{id}/activate— activate a suspended client account
 - GET  /admin/revenue              — monthly revenue breakdown by plan
 - GET  /admin/usage/llm            — LLM token/cost rollup across all clients (optional client_id)
+- GET  /admin/llm-cost             — the same ledger in ₹ AND $ with cached tokens, per day / purpose / model / conversation / order
+                                     and the cost per order created
 - GET  /admin/plans                — all plans, including inactive ones
 - PUT  /admin/plans/{plan_id}      — update a plan's price/limits/overage rate
 """
@@ -28,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.routers.admin_deps import require_admin, require_perm  # noqa: F401  (require_admin re-exported)
 from app.services.admin_audit import AdminPrincipal
-from app.schemas.llm_usage import LLMUsageReport
+from app.schemas.llm_usage import LLMCostReport, LLMUsageReport
 from app.schemas.plan import PlanAdminOut, PlanUpdateRequest
 from app.services import admin_service, llm_usage_service, plan_cache
 
@@ -258,6 +260,29 @@ async def llm_usage_report(
     """
     report = await llm_usage_service.usage_report(db, client_id=client_id, start=from_date, end=to_date, limit=limit)
     return LLMUsageReport(client_id=client_id, **report)
+
+
+@router.get(
+    "/llm-cost",
+    response_model=LLMCostReport,
+    dependencies=[Depends(require_perm("usage.read"))],
+)
+async def llm_cost_report(
+    client_id: Optional[int] = Query(None, description="Restrict to one client; omit for all clients."),
+    from_date: Optional[date] = Query(None, alias="from", description="Inclusive start date (default: 29 days before `to`)."),
+    to_date: Optional[date] = Query(None, alias="to", description="Inclusive end date (default: today)."),
+    limit: int = Query(100, ge=1, le=500, description="Max rows in per_conversation / per_order."),
+    db: AsyncSession = Depends(get_db),
+) -> LLMCostReport:
+    """
+    What the LLM / Whisper calls cost: totals plus per day, per purpose, per model, per conversation and per order, in ₹ and USD
+    (cached and audio-second columns included), and the average cost per order created in the window.
+
+    Requires an admin credential with the `usage.read` permission.
+    """
+    report = await llm_usage_service.usage_report(db, client_id=client_id, start=from_date, end=to_date, limit=limit)
+    per_client = await llm_usage_service.client_cost_last_7d(db, client_id)       # always the rolling last 7 days, whatever from / to say
+    return LLMCostReport(client_id=client_id, per_client_last_7d=per_client, **report)
 
 
 @router.get(

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -25,6 +25,7 @@ class Lead(Base):
             "client_id", "channel", "phone_number",
             name="uq_leads_client_channel_phone",
         ),
+        Index("ix_leads_client_phone", "client_id", "phone_number"),      # tag_lead looks a lead up by phone WITHOUT the channel
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

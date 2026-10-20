@@ -54,6 +54,7 @@ ENGLISH_TEMPLATES: dict[str, str] = {
     "btn_cancel": "Cancel",
     "btn_yes": "Yes",
     "btn_no": "No",
+    "btn_change_address": "Change",
     "rt_order_open_note": "Your order for {product} is still open — answer the last question to continue, or type 'cancel' to stop it.",
     "rt_card": "{name} [{sku}] — {price}.{options_line}",
     # ── ROUTER_V2 (LLM intent router) replies: deterministic, engine-written ──
@@ -124,6 +125,10 @@ ENGLISH_TEMPLATES: dict[str, str] = {
     "pay_send_screenshot": "After payment, please send the payment screenshot here.",
     "pay_proof_received": "Thanks! Our team will verify your payment shortly and update you here.",
     "pay_proof_more": "Received, verification in progress.",
+    "pay_auto_attached": "Thanks! I've attached your payment screenshot to order #{order_number} ({amount}) — our team will verify it shortly. Wrong order?",
+    "btn_proof_change": "Change order",
+    "pay_image_unreadable": "That picture looks blank or too dark to read 📷 Please send your payment screenshot again.",
+    "pay_proof_change_none": "I couldn't find a screenshot to move. Please send the payment screenshot again.",
     "pay_awaiting_verification": "Your payment screenshot for order #{order_number} is received ✅ Our team is verifying it and will update you here as soon as it is approved. No need to pay again.",
     "pay_ask_screenshot": "Please send the payment screenshot here so we can verify it. 📸",
     "pay_confirmed": "Payment confirmed ✅ Your order #{order_number} is confirmed.",
@@ -145,6 +150,10 @@ ENGLISH_TEMPLATES: dict[str, str] = {
     "ask_color": "Colour? {colors}",
     "ask_size": "Size? {sizes}",
     "ask_material": "Material? {materials}",
+    "ask_color_single": "This comes only in {value}. Would you like {value}? (Yes / No)",
+    "ask_size_single": "This comes only in size {value}. Would you like size {value}? (Yes / No)",
+    "ask_material_single": "This comes only in {value}. Would you like {value}? (Yes / No)",
+    "single_option_declined": "No problem! Send another product name or code, or type 'catalogue' to browse.",
     "ask_variant_mode": "Got it, {color_size}. Same for all {n}, or different for each? (Same/Different)",
     "ask_cart_item_color": "Item {item_num} — which color? Available: {colors}",
     "ask_cart_item_size": "Item {item_num} — which size? Available: {sizes}",
@@ -243,8 +252,7 @@ ENGLISH_TEMPLATES: dict[str, str] = {
         "━━━━━━━━━━━━━━━\n"
         "Reply:\n"
         "1️⃣ Confirm & pay\n"
-        "2️⃣ Add another item\n"
-        "3️⃣ Cancel"
+        "2️⃣ Cancel"
     ),
     "order_confirmed": "Order confirmed! ✅ {qty} × {product} = {total}. Delivery in {delivery_time}.",
     "order_confirmed_cod": (
@@ -374,6 +382,7 @@ HINDI_TEMPLATES: dict[str, str] = {
     "btn_cancel": "Cancel",
     "btn_yes": "Haan",
     "btn_no": "Nahi",
+    "btn_change_address": "Badlo",
     "rt_order_open_note": "{product} ka aapka order abhi khula hai — jaari rakhne ke liye aakhri sawaal ka jawab dein, ya rokne ke liye 'cancel' likhein.",
     "rt_card": "{name} [{sku}] — {price}.{options_line}",
     # ── ROUTER_V2 (LLM intent router) replies: deterministic, engine-written ──
@@ -443,6 +452,10 @@ HINDI_TEMPLATES: dict[str, str] = {
     "pay_send_screenshot": "Payment karne ke baad, kripya payment ka screenshot yahan bhejein.",
     "pay_proof_received": "Shukriya! Hamari team aapka payment jaldi verify karke yahin update degi.",
     "pay_proof_more": "Mil gaya, verification chal raha hai.",
+    "pay_auto_attached": "Shukriya! Maine aapka payment screenshot order #{order_number} ({amount}) se jod diya hai — hamari team jaldi verify karegi. Galat order?",
+    "btn_proof_change": "Order badlein",
+    "pay_image_unreadable": "Yeh photo khali ya bahut andheri lag rahi hai, padhi nahi ja rahi 📷 Kripya payment ka screenshot dobara bhejein.",
+    "pay_proof_change_none": "Mujhe badalne ke liye koi screenshot nahi mila. Kripya payment ka screenshot dobara bhejein.",
     "pay_awaiting_verification": "Order #{order_number} ka payment screenshot mil gaya ✅ Hamari team verify kar rahi hai, approve hote hi yahin update milega. Dobara payment karne ki zaroorat nahi.",
     "pay_ask_screenshot": "Kripya payment ka screenshot yahan bhejein taaki hum verify kar sakein. 📸",
     "pay_confirmed": "Payment confirm ho gaya ✅ Aapka order #{order_number} confirm hai.",
@@ -464,6 +477,10 @@ HINDI_TEMPLATES: dict[str, str] = {
     "ask_color": "Color? {colors}",
     "ask_size": "Size? {sizes}",
     "ask_material": "Material? {materials}",
+    "ask_color_single": "Yeh sirf {value} color mein hai. Kya aapko {value} chahiye? (Haan / Nahi)",
+    "ask_size_single": "Yeh sirf {value} size mein hai. Kya aapko {value} size chahiye? (Haan / Nahi)",
+    "ask_material_single": "Yeh sirf {value} material mein hai. Kya aapko {value} chahiye? (Haan / Nahi)",
+    "single_option_declined": "Koi baat nahi! Doosre product ka naam ya code bhejein, ya 'catalogue' likhein.",
     "ask_variant_mode": "Theek hai, {color_size}. Sabhi {n} same chahiye, ya alag alag? (Same/Different)",
     "ask_cart_item_color": "Item {item_num} — kaunsa color? Available: {colors}",
     "ask_cart_item_size": "Item {item_num} — kaunsa size? Available: {sizes}",
@@ -562,8 +579,7 @@ HINDI_TEMPLATES: dict[str, str] = {
         "━━━━━━━━━━━━━━━\n"
         "Reply karein:\n"
         "1️⃣ Confirm & pay\n"
-        "2️⃣ Ek aur item add karein\n"
-        "3️⃣ Cancel"
+        "2️⃣ Cancel"
     ),
     "order_confirmed": "Order confirm ho gaya! ✅ {qty} × {product} = {total}. {delivery_time} mein delivery.",
     "order_confirmed_cod": (
@@ -694,6 +710,7 @@ GUJARATI_TEMPLATES: dict[str, str] = {
     "btn_cancel": "Cancel",
     "btn_yes": "Ha",
     "btn_no": "Na",
+    "btn_change_address": "Badlo",
     "rt_order_open_note": "{product} no tamaro order hajuy chalu chhe — chalu rakhva chhella sawal no jawab aapo, athva rokva 'cancel' lakho.",
     "rt_card": "{name} [{sku}] — {price}.{options_line}",
     # ── ROUTER_V2 (LLM intent router) replies: deterministic, engine-written ──
@@ -763,6 +780,10 @@ GUJARATI_TEMPLATES: dict[str, str] = {
     "pay_send_screenshot": "Payment karya pachhi, krupa kari ne payment no screenshot ahi moklo.",
     "pay_proof_received": "Aabhar! Amari team tamaru payment jaldi verify kari ne ahi j update api dese.",
     "pay_proof_more": "Mali gayu, verification chaalu chhe.",
+    "pay_auto_attached": "Aabhar! Me tamaro payment screenshot order #{order_number} ({amount}) sathe jodi didho chhe — amari team jaldi verify karse. Khotu order?",
+    "btn_proof_change": "Order badlo",
+    "pay_image_unreadable": "Aa photo khali athva khub andhari lage chhe, vanchi shakati nathi 📷 Krupa kari ne payment no screenshot farithi moklo.",
+    "pay_proof_change_none": "Mane badalva mate koi screenshot na malyo. Krupa kari ne payment no screenshot farithi moklo.",
     "pay_awaiting_verification": "Order #{order_number} no payment screenshot mali gayo ✅ Amari team verify kari rahi chhe, approve thata j ahi update malshe. Pharithi payment karvani jarur nathi.",
     "pay_ask_screenshot": "Krupa kari ne payment no screenshot ahi moklo jethi ame verify kari shakiye. 📸",
     "pay_confirmed": "Payment confirm thai gayu ✅ Tamaro order #{order_number} confirm chhe.",
@@ -784,6 +805,10 @@ GUJARATI_TEMPLATES: dict[str, str] = {
     "ask_color": "Color? {colors}",
     "ask_size": "Size? {sizes}",
     "ask_material": "Material? {materials}",
+    "ask_color_single": "Aa fakt {value} color ma chhe. Shu tamne {value} joiye? (Haa / Naa)",
+    "ask_size_single": "Aa fakt {value} size ma chhe. Shu tamne {value} size joiye? (Haa / Naa)",
+    "ask_material_single": "Aa fakt {value} material ma chhe. Shu tamne {value} joiye? (Haa / Naa)",
+    "single_option_declined": "Koi vaandho nahi! Biji product nu naam ke code moklo, ke 'catalogue' lakho.",
     "ask_variant_mode": "Bhalu, {color_size}. Badha {n} same joiye, ke alag alag? (Same/Different)",
     "ask_cart_item_color": "Item {item_num} — kayo color? Available: {colors}",
     "ask_cart_item_size": "Item {item_num} — kayo size? Available: {sizes}",
@@ -882,8 +907,7 @@ GUJARATI_TEMPLATES: dict[str, str] = {
         "━━━━━━━━━━━━━━━\n"
         "Reply karo:\n"
         "1️⃣ Confirm & pay\n"
-        "2️⃣ Bijo item add karo\n"
-        "3️⃣ Cancel"
+        "2️⃣ Cancel"
     ),
     "order_confirmed": "Order confirm thai gayu! ✅ {qty} × {product} = {total}. {delivery_time} maa delivery.",
     "order_confirmed_cod": (
@@ -1014,6 +1038,7 @@ HINDI_DEVANAGARI_TEMPLATES: dict[str, str] = {
     "btn_cancel": "रद्द करें",
     "btn_yes": "हाँ",
     "btn_no": "नहीं",
+    "btn_change_address": "बदलें",
     "rt_order_open_note": "{product} का आपका ऑर्डर अभी खुला है — जारी रखने के लिए आख़िरी सवाल का जवाब दें, या रोकने के लिए 'रद्द करें' लिखें।",
     "rt_card": "{name} [{sku}] — {price}।{options_line}",
     # ── ROUTER_V2 (LLM intent router) replies: deterministic, engine-written ──
@@ -1083,6 +1108,10 @@ HINDI_DEVANAGARI_TEMPLATES: dict[str, str] = {
     "pay_send_screenshot": "भुगतान के बाद, कृपया पेमेंट का स्क्रीनशॉट यहाँ भेजें।",
     "pay_proof_received": "धन्यवाद! हमारी टीम जल्द ही आपका भुगतान वेरिफ़ाई करके यहीं अपडेट देगी।",
     "pay_proof_more": "मिल गया, वेरिफ़िकेशन जारी है।",
+    "pay_auto_attached": "धन्यवाद! मैंने आपका पेमेंट स्क्रीनशॉट ऑर्डर #{order_number} ({amount}) से जोड़ दिया है — हमारी टीम जल्द वेरिफ़ाई करेगी। गलत ऑर्डर?",
+    "btn_proof_change": "ऑर्डर बदलें",
+    "pay_image_unreadable": "यह फ़ोटो खाली या बहुत अंधेरी लग रही है, पढ़ी नहीं जा रही 📷 कृपया पेमेंट का स्क्रीनशॉट दोबारा भेजें।",
+    "pay_proof_change_none": "मुझे बदलने के लिए कोई स्क्रीनशॉट नहीं मिला। कृपया पेमेंट का स्क्रीनशॉट दोबारा भेजें।",
     "pay_awaiting_verification": "ऑर्डर #{order_number} का पेमेंट स्क्रीनशॉट मिल गया ✅ हमारी टीम वेरिफ़ाई कर रही है, अप्रूव होते ही यहीं अपडेट मिलेगा। दोबारा भुगतान करने की ज़रूरत नहीं।",
     "pay_ask_screenshot": "कृपया पेमेंट का स्क्रीनशॉट यहाँ भेजें ताकि हम वेरिफ़ाई कर सकें। 📸",
     "pay_confirmed": "पेमेंट कन्फर्म हो गया ✅ आपका ऑर्डर #{order_number} कन्फर्म है।",
@@ -1104,6 +1133,10 @@ HINDI_DEVANAGARI_TEMPLATES: dict[str, str] = {
     "ask_color": "कलर? {colors}",
     "ask_size": "साइज़? {sizes}",
     "ask_material": "मटेरियल? {materials}",
+    "ask_color_single": "यह सिर्फ़ {value} कलर में है। क्या आपको {value} चाहिए? (हाँ / नहीं)",
+    "ask_size_single": "यह सिर्फ़ {value} साइज़ में है। क्या आपको {value} साइज़ चाहिए? (हाँ / नहीं)",
+    "ask_material_single": "यह सिर्फ़ {value} मटेरियल में है। क्या आपको {value} चाहिए? (हाँ / नहीं)",
+    "single_option_declined": "कोई बात नहीं! दूसरे प्रोडक्ट का नाम या कोड भेजें, या 'catalogue' लिखें।",
     "ask_variant_mode": "ठीक है, {color_size}। सभी {n} एक जैसे चाहिए, या अलग-अलग? (एक जैसे/अलग-अलग)",
     "ask_cart_item_color": "आइटम {item_num} — कौनसा कलर? उपलब्ध: {colors}",
     "ask_cart_item_size": "आइटम {item_num} — कौनसा साइज़? उपलब्ध: {sizes}",
@@ -1192,8 +1225,7 @@ HINDI_DEVANAGARI_TEMPLATES: dict[str, str] = {
         "━━━━━━━━━━━━━━━\n"
         "रिप्लाई करें:\n"
         "1️⃣ कन्फर्म करें और भुगतान करें\n"
-        "2️⃣ एक और आइटम ऐड करें\n"
-        "3️⃣ रद्द करें"
+        "2️⃣ रद्द करें"
     ),
     "order_confirmed": "ऑर्डर कन्फर्म हो गया! ✅ {qty} × {product} = {total}। {delivery_time} में डिलीवरी।",
     "order_confirmed_cod": (
@@ -1324,6 +1356,7 @@ GUJARATI_SCRIPT_TEMPLATES: dict[str, str] = {
     "btn_cancel": "રદ કરો",
     "btn_yes": "હા",
     "btn_no": "ના",
+    "btn_change_address": "બદલો",
     "rt_order_open_note": "{product} નો તમારો ઓર્ડર હજુ ચાલુ છે — ચાલુ રાખવા છેલ્લા સવાલનો જવાબ આપો, અથવા રોકવા 'રદ કરો' લખો.",
     "rt_card": "{name} [{sku}] — {price}.{options_line}",
     # ── ROUTER_V2 (LLM intent router) replies: deterministic, engine-written ──
@@ -1393,6 +1426,10 @@ GUJARATI_SCRIPT_TEMPLATES: dict[str, str] = {
     "pay_send_screenshot": "ચુકવણી કર્યા પછી, કૃપા કરીને પેમેન્ટનો સ્ક્રીનશૉટ અહીં મોકલો.",
     "pay_proof_received": "આભાર! અમારી ટીમ તમારું પેમેન્ટ જલ્દી વેરિફાય કરીને અહીં જ અપડેટ આપશે.",
     "pay_proof_more": "મળી ગયું, વેરિફિકેશન ચાલુ છે.",
+    "pay_auto_attached": "આભાર! મેં તમારો પેમેન્ટ સ્ક્રીનશોટ ઓર્ડર #{order_number} ({amount}) સાથે જોડી દીધો છે — અમારી ટીમ જલ્દી વેરિફાય કરશે. ખોટો ઓર્ડર?",
+    "btn_proof_change": "ઓર્ડર બદલો",
+    "pay_image_unreadable": "આ ફોટો ખાલી અથવા બહુ અંધારો લાગે છે, વાંચી શકાતો નથી 📷 કૃપા કરીને પેમેન્ટનો સ્ક્રીનશોટ ફરીથી મોકલો.",
+    "pay_proof_change_none": "મને બદલવા માટે કોઈ સ્ક્રીનશોટ મળ્યો નહીં. કૃપા કરીને પેમેન્ટનો સ્ક્રીનશોટ ફરીથી મોકલો.",
     "pay_awaiting_verification": "ઓર્ડર #{order_number} નો પેમેન્ટ સ્ક્રીનશૉટ મળી ગયો ✅ અમારી ટીમ વેરિફાય કરી રહી છે, અપ્રૂવ થતાં જ અહીં અપડેટ મળશે. ફરીથી ચુકવણી કરવાની જરૂર નથી.",
     "pay_ask_screenshot": "કૃપા કરીને પેમેન્ટનો સ્ક્રીનશૉટ અહીં મોકલો જેથી અમે વેરિફાય કરી શકીએ. 📸",
     "pay_confirmed": "પેમેન્ટ કન્ફર્મ થઈ ગયું ✅ તમારો ઓર્ડર #{order_number} કન્ફર્મ છે.",
@@ -1414,6 +1451,10 @@ GUJARATI_SCRIPT_TEMPLATES: dict[str, str] = {
     "ask_color": "કલર? {colors}",
     "ask_size": "સાઈઝ? {sizes}",
     "ask_material": "મટીરીયલ? {materials}",
+    "ask_color_single": "આ ફક્ત {value} કલરમાં છે. શું તમને {value} જોઈએ? (હા / ના)",
+    "ask_size_single": "આ ફક્ત {value} સાઈઝમાં છે. શું તમને {value} સાઈઝ જોઈએ? (હા / ના)",
+    "ask_material_single": "આ ફક્ત {value} મટીરીયલમાં છે. શું તમને {value} જોઈએ? (હા / ના)",
+    "single_option_declined": "કોઈ વાંધો નથી! બીજા પ્રોડક્ટનું નામ કે કોડ મોકલો, અથવા 'catalogue' લખો.",
     "ask_variant_mode": "ભલું, {color_size}. બધા {n} સરખા જોઈએ, કે અલગ અલગ? (સરખા/અલગ)",
     "ask_cart_item_color": "આઇટમ {item_num} — કયો કલર? ઉપલબ્ધ: {colors}",
     "ask_cart_item_size": "આઇટમ {item_num} — કઈ સાઈઝ? ઉપલબ્ધ: {sizes}",
@@ -1502,8 +1543,7 @@ GUJARATI_SCRIPT_TEMPLATES: dict[str, str] = {
         "━━━━━━━━━━━━━━━\n"
         "રિપ્લાય કરો:\n"
         "1️⃣ કન્ફર્મ કરો અને ચુકવણી કરો\n"
-        "2️⃣ બીજી આઇટમ ઉમેરો\n"
-        "3️⃣ રદ કરો"
+        "2️⃣ રદ કરો"
     ),
     "order_confirmed": "ઓર્ડર કન્ફર્મ થઈ ગયું! ✅ {qty} × {product} = {total}. {delivery_time} માં ડિલિવરી.",
     "order_confirmed_cod": (
@@ -1693,6 +1733,449 @@ HINDI_TEMPLATES.update(_SQ_HI)
 GUJARATI_TEMPLATES.update(_SQ_GU)
 HINDI_DEVANAGARI_TEMPLATES.update(_SQ_HI_DEV)
 GUJARATI_SCRIPT_TEMPLATES.update(_SQ_GU_SCRIPT)
+
+# ── Out-of-scope boundary (router action `out_of_scope`) ─────────────────────
+# Fixed replies — the model never writes text for a topic that is not the business's. Placeholders:
+# {business}, {catalogue_url}. `_midorder` is only a prefix: the open order question is re-asked after it.
+# `_repeat` is sent once the customer has gone off-topic `off_topic_threshold` times in a row and offers a human.
+_OOS_EN = {
+    "rt_out_of_scope": (
+        "I can only help with {business}: products or services, orders, delivery and payment 🙂 "
+        "You can browse here: {catalogue_url}\nWhat would you like to see?"
+    ),
+    "rt_out_of_scope_midorder": "I can only help with your order and {business} 🙂",
+    "rt_out_of_scope_repeat": (
+        "I can only help with {business}: products or services, orders, delivery and payment. "
+        "For anything else, type 'talk to someone' and our team will reply."
+    ),
+}
+_OOS_HI = {
+    "rt_out_of_scope": (
+        "Main sirf {business} mein madad kar sakta hoon: products ya services, orders, delivery aur payment 🙂 "
+        "Catalogue yahan dekhein: {catalogue_url}\nAap kya dekhna chahenge?"
+    ),
+    "rt_out_of_scope_midorder": "Main sirf aapke order aur {business} mein madad kar sakta hoon 🙂",
+    "rt_out_of_scope_repeat": (
+        "Main sirf {business} mein madad kar sakta hoon: products ya services, orders, delivery aur payment. "
+        "Kisi aur baat ke liye 'talk to someone' likhein, hamari team jawab degi."
+    ),
+}
+_OOS_GU = {
+    "rt_out_of_scope": (
+        "Hu fakt {business} ma madad kari shaku chhu: products athva services, orders, delivery ane payment 🙂 "
+        "Catalogue ahi juo: {catalogue_url}\nTame shu joso?"
+    ),
+    "rt_out_of_scope_midorder": "Hu fakt tamara order ane {business} ma madad kari shaku chhu 🙂",
+    "rt_out_of_scope_repeat": (
+        "Hu fakt {business} ma madad kari shaku chhu: products athva services, orders, delivery ane payment. "
+        "Biji koi vaat mate 'talk to someone' lakho, amari team jawab aapshe."
+    ),
+}
+_OOS_HI_DEV = {
+    "rt_out_of_scope": (
+        "मैं सिर्फ़ {business} में मदद कर सकता हूँ: प्रोडक्ट्स या सेवाएँ, ऑर्डर, डिलीवरी और पेमेंट 🙂 "
+        "कैटलॉग यहाँ देखें: {catalogue_url}\nआप क्या देखना चाहेंगे?"
+    ),
+    "rt_out_of_scope_midorder": "मैं सिर्फ़ आपके ऑर्डर और {business} में मदद कर सकता हूँ 🙂",
+    "rt_out_of_scope_repeat": (
+        "मैं सिर्फ़ {business} में मदद कर सकता हूँ: प्रोडक्ट्स या सेवाएँ, ऑर्डर, डिलीवरी और पेमेंट। "
+        "किसी और बात के लिए 'किसी से बात करनी है' लिखें, हमारी टीम जवाब देगी।"
+    ),
+}
+_OOS_GU_SCRIPT = {
+    "rt_out_of_scope": (
+        "હું ફક્ત {business} માં મદદ કરી શકું છું: પ્રોડક્ટ્સ અથવા સેવાઓ, ઓર્ડર, ડિલિવરી અને પેમેન્ટ 🙂 "
+        "કેટલોગ અહીં જુઓ: {catalogue_url}\nતમે શું જોશો?"
+    ),
+    "rt_out_of_scope_midorder": "હું ફક્ત તમારા ઓર્ડર અને {business} માં મદદ કરી શકું છું 🙂",
+    "rt_out_of_scope_repeat": (
+        "હું ફક્ત {business} માં મદદ કરી શકું છું: પ્રોડક્ટ્સ અથવા સેવાઓ, ઓર્ડર, ડિલિવરી અને પેમેન્ટ. "
+        "બીજી કોઈ વાત માટે 'કોઈ સાથે વાત કરવી છે' લખો, અમારી ટીમ જવાબ આપશે."
+    ),
+}
+ENGLISH_TEMPLATES.update(_OOS_EN)
+HINDI_TEMPLATES.update(_OOS_HI)
+GUJARATI_TEMPLATES.update(_OOS_GU)
+HINDI_DEVANAGARI_TEMPLATES.update(_OOS_HI_DEV)
+GUJARATI_SCRIPT_TEMPLATES.update(_OOS_GU_SCRIPT)
+
+# ── Search miss: out of stock / not sold ─────────────────────────────────────
+# rt_search_oos names a catalogue product (never the customer's text); rt_not_stocked is generic.
+_NF_EN = {
+    "rt_search_oos": "Sorry, {product} is currently out of stock.",
+    "rt_not_stocked": "Sorry, that item is currently not available in our store.",
+}
+_NF_HI = {
+    "rt_search_oos": "Maaf kijiye, {product} abhi stock mein nahi hai.",
+    "rt_not_stocked": "Maaf kijiye, yeh item abhi hamare store mein available nahi hai.",
+}
+_NF_GU = {
+    "rt_search_oos": "Maaf karjo, {product} hamna stock ma nathi.",
+    "rt_not_stocked": "Maaf karjo, aa item hamna amara store ma available nathi.",
+}
+_NF_HI_DEV = {
+    "rt_search_oos": "क्षमा करें, {product} अभी स्टॉक में नहीं है।",
+    "rt_not_stocked": "क्षमा करें, यह आइटम अभी हमारे स्टोर में उपलब्ध नहीं है।",
+}
+_NF_GU_SCRIPT = {
+    "rt_search_oos": "માફ કરજો, {product} હમણાં સ્ટોકમાં નથી.",
+    "rt_not_stocked": "માફ કરજો, આ આઇટમ હમણાં અમારા સ્ટોરમાં ઉપલબ્ધ નથી.",
+}
+ENGLISH_TEMPLATES.update(_NF_EN)
+HINDI_TEMPLATES.update(_NF_HI)
+GUJARATI_TEMPLATES.update(_NF_GU)
+HINDI_DEVANAGARI_TEMPLATES.update(_NF_HI_DEV)
+GUJARATI_SCRIPT_TEMPLATES.update(_NF_GU_SCRIPT)
+
+# ── Irrelevant-message guard (app/services/spam_guard.py) ────────────────────
+# rt_junk_nudge: a fixed reply to an emoji-only / laughter message (no LLM). rt_spam_final: the ONE last notice before
+# the bot goes quiet for {minutes} minutes. Placeholders: {business}, {catalogue_url}, {minutes}.
+_SPAM_EN = {
+    "rt_junk_nudge": "I didn't understand that 🙂 Please type what you're looking for — a product name or code. Browse here: {catalogue_url}",
+    "rt_spam_final": (
+        "I can only help with {business}: products or services, orders, delivery and payment. "
+        "I'll pause replies for about {minutes} minutes. Meanwhile send a product code or type 'talk to someone' to reach our team. "
+        "Browse here: {catalogue_url}"
+    ),
+}
+_SPAM_HI = {
+    "rt_junk_nudge": "Yeh mujhe samajh nahi aaya 🙂 Aap kya dhoondh rahe hain — product ka naam ya code likhein. Catalogue yahan dekhein: {catalogue_url}",
+    "rt_spam_final": (
+        "Main sirf {business} mein madad kar sakta hoon: products ya services, orders, delivery aur payment. "
+        "Main kuch der ({minutes} minute) jawab nahi dunga. Tab tak product code bhejein ya 'talk to someone' likhkar hamari team se baat karein. "
+        "Catalogue yahan dekhein: {catalogue_url}"
+    ),
+}
+_SPAM_GU = {
+    "rt_junk_nudge": "Aa mane samjayu nahi 🙂 Tame shu shodho chho — product nu naam ke code lakho. Catalogue ahi juo: {catalogue_url}",
+    "rt_spam_final": (
+        "Hu fakt {business} ma madad kari shaku chhu: products athva services, orders, delivery ane payment. "
+        "Hu thodi vaar ({minutes} minute) jawab nahi aapu. Tya sudhi product code moklo athva 'talk to someone' lakhi amari team sathe vaat karo. "
+        "Catalogue ahi juo: {catalogue_url}"
+    ),
+}
+_SPAM_HI_DEV = {
+    "rt_junk_nudge": "यह मुझे समझ नहीं आया 🙂 आप क्या ढूँढ रहे हैं — प्रोडक्ट का नाम या कोड लिखें। कैटलॉग यहाँ देखें: {catalogue_url}",
+    "rt_spam_final": (
+        "मैं सिर्फ़ {business} में मदद कर सकता हूँ: प्रोडक्ट्स या सेवाएँ, ऑर्डर, डिलीवरी और पेमेंट। "
+        "मैं कुछ देर ({minutes} मिनट) जवाब नहीं दूँगा। तब तक प्रोडक्ट कोड भेजें या 'किसी से बात करनी है' लिखकर हमारी टीम से बात करें। "
+        "कैटलॉग यहाँ देखें: {catalogue_url}"
+    ),
+}
+_SPAM_GU_SCRIPT = {
+    "rt_junk_nudge": "આ મને સમજાયું નહીં 🙂 તમે શું શોધી રહ્યા છો — પ્રોડક્ટનું નામ અથવા કોડ લખો. કેટલોગ અહીં જુઓ: {catalogue_url}",
+    "rt_spam_final": (
+        "હું ફક્ત {business} માં મદદ કરી શકું છું: પ્રોડક્ટ્સ અથવા સેવાઓ, ઓર્ડર, ડિલિવરી અને પેમેન્ટ. "
+        "હું થોડી વાર ({minutes} મિનિટ) જવાબ નહીં આપું. ત્યાં સુધી પ્રોડક્ટ કોડ મોકલો અથવા 'કોઈ સાથે વાત કરવી છે' લખીને અમારી ટીમ સાથે વાત કરો. "
+        "કેટલોગ અહીં જુઓ: {catalogue_url}"
+    ),
+}
+ENGLISH_TEMPLATES.update(_SPAM_EN)
+HINDI_TEMPLATES.update(_SPAM_HI)
+GUJARATI_TEMPLATES.update(_SPAM_GU)
+HINDI_DEVANAGARI_TEMPLATES.update(_SPAM_HI_DEV)
+GUJARATI_SCRIPT_TEMPLATES.update(_SPAM_GU_SCRIPT)
+
+# ── Chat-flow hardening (order_recovery.py, router_actions.py, side_questions.py) ─────────────────────────
+# Cancel confirmation, "confused", draft restore, "more like this", 3-way product switch, discount follow-ups.
+_FLOW_EN = {
+    "pay_proof_received_high_value": "Thanks! This is a high-value order, so our team will check your payment manually before confirming it. We'll update you here.",
+    "rt_eta_single": "📦 Expected delivery: {date}.",
+    "summary_upi_only_label": "UPI only",
+    "ask_cart_colors": "Which colours would you like for your {n} pieces, and how many of each? Reply like '1 Red, 1 Pink' (available: {colors})",
+    "rt_cancel_confirm": "Cancel this order? (Yes / No)",
+    "btn_cancel_yes": "Yes, cancel",
+    "btn_cancel_no": "No, keep it",
+    "rt_cancel_kept": "Okay, your order is still on. 👍",
+    "rt_confused_prefix": "Sorry for the confusion — let me ask it more simply.",
+    "rt_confused_split": "Sorry for the confusion — let's keep it simple: the same option for every piece.",
+    "rt_confused_payment": "Sorry for the confusion! To finish your order: pay to the UPI ID I sent, then send the payment screenshot here. Type 'talk to someone' if you need help.",
+    "rt_confused_idle": "Sorry for the confusion! At {business} I can show you products, take an order or check an order's status. Browse here: {catalogue_url}\nWhat would you like to do?",
+    "rt_restored": "Restored your order: {summary}",
+    "rt_restore_unavailable": "Sorry, that item isn't available any more, so I couldn't restore your order. Browse here: {catalogue_url}",
+    "rt_restore_expired": "That cancelled order is too old to restore. Browse here: {catalogue_url} and I'll start a new one with you.",
+    "rt_restore_offer": "Want your cancelled order back? Reply 'continue' to restore it.",
+    "rt_menu_fallback": "I can show you products, take an order or check an order's status. Browse here: {catalogue_url}\nWhat would you like to do?",
+    "rt_pick_header": "Please reply with the number of your choice:",
+    "rt_more_header": "Here are some more options 👇",
+    "rt_more_cheaper_header": "Here are similar options at a lower price 👇",
+    "rt_more_none": "That's everything I have like that right now. You can browse the full catalogue here: {catalogue_url}",
+    "rt_more_cheaper_none": "I don't have anything similar at a lower price right now. You can browse everything here: {catalogue_url}",
+    "switch_offer3": "You're ordering {pinned}. Switch to {product}, add both, or keep {pinned}?",
+    "btn_switch": "Switch",
+    "btn_add_both": "Add both",
+    "btn_keep_current": "Keep current",
+    "switch_kept": "Okay, keeping {pinned}. 👍",
+    "switch_add_both_later": "Okay, I'll add both to this order. Let's finish {pinned} first — {product} comes next.",
+    "switch_add_both_now": "Added to your order. Now let's set up {product}:",
+    "sq_discount": "Our prices are fixed and reflect guaranteed quality.",
+    "sq_discount_repeat": "I understand, and I'm sorry — the price is the same for everyone, so I can't reduce it.",
+    "btn_add_item": "Add {name}",
+}
+_FLOW_HI = {
+    "pay_proof_received_high_value": "Shukriya! Ye high-value order hai, isliye hamari team confirm karne se pehle aapka payment khud check karegi. Yahin update dengi.",
+    "rt_eta_single": "📦 Delivery ka anumaan: {date}.",
+    "summary_upi_only_label": "sirf UPI",
+    "ask_cart_colors": "Aapko apne {n} pieces ke liye kaun se colours chahiye, aur har colour ke kitne? Aise likhein '1 Red, 1 Pink' (available: {colors})",
+    "rt_cancel_confirm": "Is order ko cancel karna hai? (Haan / Nahi)",
+    "btn_cancel_yes": "Haan, cancel",
+    "btn_cancel_no": "Nahi, rakhein",
+    "rt_cancel_kept": "Theek hai, aapka order chalu hai. 👍",
+    "rt_confused_prefix": "Confusion ke liye maaf kijiye — main aasaan tarike se poochta hoon.",
+    "rt_confused_split": "Confusion ke liye maaf kijiye — chaliye simple rakhte hain: har piece ke liye same option.",
+    "rt_confused_payment": "Confusion ke liye maaf kijiye! Order poora karne ke liye: bheje gaye UPI ID par payment karein, phir payment ka screenshot yahin bhejein. Madad chahiye to 'talk to someone' likhein.",
+    "rt_confused_idle": "Confusion ke liye maaf kijiye! {business} mein main products dikha sakta hoon, order le sakta hoon ya order status bata sakta hoon. Yahan dekhein: {catalogue_url}\nAap kya karna chahenge?",
+    "rt_restored": "Aapka order wapas laga diya: {summary}",
+    "rt_restore_unavailable": "Maaf kijiye, ye item ab available nahi hai, isliye order wapas nahi laga paya. Yahan dekhein: {catalogue_url}",
+    "rt_restore_expired": "Wo cancel kiya hua order ab bahut purana ho gaya hai. Yahan dekhein: {catalogue_url}, hum naya order shuru kar denge.",
+    "rt_restore_offer": "Cancel kiya hua order wapas chahiye? 'continue' likhein.",
+    "rt_menu_fallback": "Main products dikha sakta hoon, order le sakta hoon ya order status bata sakta hoon. Yahan dekhein: {catalogue_url}\nAap kya karna chahenge?",
+    "rt_pick_header": "Kripya apne choice ka number likhein:",
+    "rt_more_header": "Ye kuch aur options hain 👇",
+    "rt_more_cheaper_header": "Ye kam daam ke milte-julte options hain 👇",
+    "rt_more_none": "Abhi isse milta-julta aur kuch nahi hai. Poora catalogue yahan dekhein: {catalogue_url}",
+    "rt_more_cheaper_none": "Abhi kam daam mein isse milta-julta kuch nahi hai. Sab kuch yahan dekhein: {catalogue_url}",
+    "switch_offer3": "Aap {pinned} order kar rahe hain. {product} par switch karein, dono add karein, ya {pinned} hi rakhein?",
+    "btn_switch": "Switch karein",
+    "btn_add_both": "Dono add karein",
+    "btn_keep_current": "Abhi wala rakhein",
+    "switch_kept": "Theek hai, {pinned} hi rakhte hain. 👍",
+    "switch_add_both_later": "Theek hai, dono is order mein add karte hain. Pehle {pinned} poora karte hain — phir {product}.",
+    "switch_add_both_now": "Order mein add ho gaya. Ab {product} set karte hain:",
+    "sq_discount": "Hamare prices fixed hain aur guaranteed quality ke hisaab se hain.",
+    "sq_discount_repeat": "Main samajhta hoon, maaf kijiye — price sabke liye same hai, isliye kam nahi kar sakta.",
+    "btn_add_item": "{name} add karein",
+}
+_FLOW_GU = {
+    "pay_proof_received_high_value": "Aabhar! Aa high-value order chhe, etle amari team confirm karta pehla tamaru payment jaate check karse. Ahi j update apishu.",
+    "rt_eta_single": "📦 Delivery no anumaan: {date}.",
+    "summary_upi_only_label": "fakt UPI",
+    "ask_cart_colors": "Tamne tamara {n} pieces mate kya colours joiye ane darek na ketla? Aam lakho '1 Red, 1 Pink' (available: {colors})",
+    "rt_cancel_confirm": "Shu aa order cancel karvo chhe? (Ha / Na)",
+    "btn_cancel_yes": "Ha, cancel",
+    "btn_cancel_no": "Na, rakho",
+    "rt_cancel_kept": "Saru, tamaro order chalu chhe. 👍",
+    "rt_confused_prefix": "Confusion mate maaf karjo — hu saral rite puchhu chhu.",
+    "rt_confused_split": "Confusion mate maaf karjo — chalo saral rakhiye: darek piece mate same option.",
+    "rt_confused_payment": "Confusion mate maaf karjo! Order puro karva: moklela UPI ID par payment karo, pachhi payment no screenshot ahi moklo. Madad joiye to 'talk to someone' lakho.",
+    "rt_confused_idle": "Confusion mate maaf karjo! {business} ma hu products batavi shaku, order lai shaku ke order status kahi shaku. Ahi juo: {catalogue_url}\nTame shu karva mango chho?",
+    "rt_restored": "Tamaro order pacho lagavi didho: {summary}",
+    "rt_restore_unavailable": "Maaf karjo, aa item have available nathi, etle order pacho lagavi shakyo nahi. Ahi juo: {catalogue_url}",
+    "rt_restore_expired": "Aa cancel karelo order have bahu juno thai gayo chhe. Ahi juo: {catalogue_url}, ame navo order sharu kari daishu.",
+    "rt_restore_offer": "Cancel karelo order pacho joiye chhe? 'continue' lakho.",
+    "rt_menu_fallback": "Hu products batavi shaku, order lai shaku ke order status kahi shaku. Ahi juo: {catalogue_url}\nTame shu karva mango chho?",
+    "rt_pick_header": "Krupa kari ne tamari pasand no number lakho:",
+    "rt_more_header": "Aa biji kehvi options chhe 👇",
+    "rt_more_cheaper_header": "Aa ochha bhav na malta-aavta options chhe 👇",
+    "rt_more_none": "Hamna aana jevu biju kai nathi. Puru catalogue ahi juo: {catalogue_url}",
+    "rt_more_cheaper_none": "Hamna ochha bhav ma aana jevu kai nathi. Badhu ahi juo: {catalogue_url}",
+    "switch_offer3": "Tame {pinned} order kari rahya chho. {product} par switch karo, banne add karo, ke {pinned} j rakho?",
+    "btn_switch": "Switch karo",
+    "btn_add_both": "Banne add karo",
+    "btn_keep_current": "Aa j rakho",
+    "switch_kept": "Saru, {pinned} j rakhiye chhie. 👍",
+    "switch_add_both_later": "Saru, banne aa order ma add karishu. Pehla {pinned} puru karie — pachhi {product}.",
+    "switch_add_both_now": "Order ma add thai gayu. Have {product} set karie:",
+    "sq_discount": "Amara bhav fix chhe ane guaranteed quality mujab chhe.",
+    "sq_discount_repeat": "Hu samajhu chhu, maaf karjo — bhav badha mate same chhe, etle ghatadi shakato nathi.",
+    "btn_add_item": "{name} add karo",
+}
+_FLOW_HI_DEV = {
+    "pay_proof_received_high_value": "धन्यवाद! यह हाई-वैल्यू ऑर्डर है, इसलिए हमारी टीम कन्फ़र्म करने से पहले आपका पेमेंट खुद जाँचेगी। यहीं अपडेट देंगे।",
+    "rt_eta_single": "📦 डिलीवरी का अनुमान: {date}।",
+    "summary_upi_only_label": "सिर्फ UPI",
+    "ask_cart_colors": "आपको अपने {n} पीस के लिए कौन से रंग चाहिए, और हर रंग के कितने? ऐसे लिखें '1 Red, 1 Pink' (उपलब्ध: {colors})",
+    "rt_cancel_confirm": "क्या यह ऑर्डर कैंसल करना है? (हाँ / नहीं)",
+    "btn_cancel_yes": "हाँ, कैंसल",
+    "btn_cancel_no": "नहीं, रखें",
+    "rt_cancel_kept": "ठीक है, आपका ऑर्डर चालू है। 👍",
+    "rt_confused_prefix": "कन्फ्यूज़न के लिए माफ़ कीजिए — मैं आसान तरीके से पूछता हूँ।",
+    "rt_confused_split": "कन्फ्यूज़न के लिए माफ़ कीजिए — चलिए सरल रखते हैं: हर पीस के लिए एक ही विकल्प।",
+    "rt_confused_payment": "कन्फ्यूज़न के लिए माफ़ कीजिए! ऑर्डर पूरा करने के लिए: भेजे गए UPI ID पर पेमेंट करें, फिर पेमेंट का स्क्रीनशॉट यहीं भेजें। मदद चाहिए तो 'talk to someone' लिखें।",
+    "rt_confused_idle": "कन्फ्यूज़न के लिए माफ़ कीजिए! {business} में मैं प्रोडक्ट दिखा सकता हूँ, ऑर्डर ले सकता हूँ या ऑर्डर स्टेटस बता सकता हूँ। यहाँ देखें: {catalogue_url}\nआप क्या करना चाहेंगे?",
+    "rt_restored": "आपका ऑर्डर वापस लगा दिया: {summary}",
+    "rt_restore_unavailable": "क्षमा करें, यह आइटम अब उपलब्ध नहीं है, इसलिए ऑर्डर वापस नहीं लगा सका। यहाँ देखें: {catalogue_url}",
+    "rt_restore_expired": "वह कैंसल किया हुआ ऑर्डर अब बहुत पुराना हो गया है। यहाँ देखें: {catalogue_url}, हम नया ऑर्डर शुरू कर देंगे।",
+    "rt_restore_offer": "कैंसल किया हुआ ऑर्डर वापस चाहिए? 'continue' लिखें।",
+    "rt_menu_fallback": "मैं प्रोडक्ट दिखा सकता हूँ, ऑर्डर ले सकता हूँ या ऑर्डर स्टेटस बता सकता हूँ। यहाँ देखें: {catalogue_url}\nआप क्या करना चाहेंगे?",
+    "rt_pick_header": "कृपया अपनी पसंद का नंबर लिखें:",
+    "rt_more_header": "ये कुछ और विकल्प हैं 👇",
+    "rt_more_cheaper_header": "ये कम दाम के मिलते-जुलते विकल्प हैं 👇",
+    "rt_more_none": "अभी इसके जैसा और कुछ नहीं है। पूरा कैटलॉग यहाँ देखें: {catalogue_url}",
+    "rt_more_cheaper_none": "अभी कम दाम में इसके जैसा कुछ नहीं है। सब कुछ यहाँ देखें: {catalogue_url}",
+    "switch_offer3": "आप {pinned} ऑर्डर कर रहे हैं। {product} पर स्विच करें, दोनों जोड़ें, या {pinned} ही रखें?",
+    "btn_switch": "स्विच करें",
+    "btn_add_both": "दोनों जोड़ें",
+    "btn_keep_current": "अभी वाला रखें",
+    "switch_kept": "ठीक है, {pinned} ही रखते हैं। 👍",
+    "switch_add_both_later": "ठीक है, दोनों इस ऑर्डर में जोड़ते हैं। पहले {pinned} पूरा करते हैं — फिर {product}।",
+    "switch_add_both_now": "ऑर्डर में जुड़ गया। अब {product} सेट करते हैं:",
+    "sq_discount": "हमारे दाम तय हैं और बेहतरीन क्वालिटी के अनुसार हैं।",
+    "sq_discount_repeat": "मैं समझता हूँ, माफ़ कीजिए — दाम सबके लिए एक जैसा है, इसलिए कम नहीं कर सकता।",
+    "btn_add_item": "{name} जोड़ें",
+}
+_FLOW_GU_SCRIPT = {
+    "pay_proof_received_high_value": "આભાર! આ હાઈ-વેલ્યુ ઓર્ડર છે, એટલે અમારી ટીમ કન્ફર્મ કરતાં પહેલાં તમારું પેમેન્ટ જાતે ચકાસશે. અહીં જ અપડેટ આપીશું.",
+    "rt_eta_single": "📦 ડિલિવરીનો અંદાજ: {date}.",
+    "summary_upi_only_label": "ફક્ત UPI",
+    "ask_cart_colors": "તમને તમારા {n} પીસ માટે કયા રંગ જોઈએ, અને દરેકના કેટલા? આમ લખો '1 Red, 1 Pink' (ઉપલબ્ધ: {colors})",
+    "rt_cancel_confirm": "શું આ ઓર્ડર કેન્સલ કરવો છે? (હા / ના)",
+    "btn_cancel_yes": "હા, કેન્સલ",
+    "btn_cancel_no": "ના, રાખો",
+    "rt_cancel_kept": "સારું, તમારો ઓર્ડર ચાલુ છે. 👍",
+    "rt_confused_prefix": "કન્ફ્યુઝન માટે માફ કરજો — હું સરળ રીતે પૂછું છું.",
+    "rt_confused_split": "કન્ફ્યુઝન માટે માફ કરજો — ચાલો સરળ રાખીએ: દરેક પીસ માટે એક જ વિકલ્પ.",
+    "rt_confused_payment": "કન્ફ્યુઝન માટે માફ કરજો! ઓર્ડર પૂરો કરવા: મોકલેલા UPI ID પર પેમેન્ટ કરો, પછી પેમેન્ટનો સ્ક્રીનશોટ અહીં મોકલો. મદદ જોઈએ તો 'talk to someone' લખો.",
+    "rt_confused_idle": "કન્ફ્યુઝન માટે માફ કરજો! {business} માં હું પ્રોડક્ટ બતાવી શકું, ઓર્ડર લઈ શકું કે ઓર્ડર સ્ટેટસ કહી શકું. અહીં જુઓ: {catalogue_url}\nતમે શું કરવા માંગો છો?",
+    "rt_restored": "તમારો ઓર્ડર પાછો લગાવી દીધો: {summary}",
+    "rt_restore_unavailable": "માફ કરજો, આ આઇટમ હવે ઉપલબ્ધ નથી, એટલે ઓર્ડર પાછો લગાવી શક્યો નહીં. અહીં જુઓ: {catalogue_url}",
+    "rt_restore_expired": "તે કેન્સલ કરેલો ઓર્ડર હવે બહુ જૂનો થઈ ગયો છે. અહીં જુઓ: {catalogue_url}, અમે નવો ઓર્ડર શરૂ કરી દઈશું.",
+    "rt_restore_offer": "કેન્સલ કરેલો ઓર્ડર પાછો જોઈએ છે? 'continue' લખો.",
+    "rt_menu_fallback": "હું પ્રોડક્ટ બતાવી શકું, ઓર્ડર લઈ શકું કે ઓર્ડર સ્ટેટસ કહી શકું. અહીં જુઓ: {catalogue_url}\nતમે શું કરવા માંગો છો?",
+    "rt_pick_header": "કૃપા કરીને તમારી પસંદનો નંબર લખો:",
+    "rt_more_header": "આ બીજા કેટલાક વિકલ્પો છે 👇",
+    "rt_more_cheaper_header": "આ ઓછા ભાવના મળતા-આવતા વિકલ્પો છે 👇",
+    "rt_more_none": "હમણાં આના જેવું બીજું કંઈ નથી. પૂરો કેટલોગ અહીં જુઓ: {catalogue_url}",
+    "rt_more_cheaper_none": "હમણાં ઓછા ભાવમાં આના જેવું કંઈ નથી. બધું અહીં જુઓ: {catalogue_url}",
+    "switch_offer3": "તમે {pinned} ઓર્ડર કરી રહ્યા છો. {product} પર સ્વિચ કરો, બંને ઉમેરો, કે {pinned} જ રાખો?",
+    "btn_switch": "સ્વિચ કરો",
+    "btn_add_both": "બંને ઉમેરો",
+    "btn_keep_current": "આ જ રાખો",
+    "switch_kept": "સારું, {pinned} જ રાખીએ છીએ. 👍",
+    "switch_add_both_later": "સારું, બંને આ ઓર્ડરમાં ઉમેરીશું. પહેલા {pinned} પૂરું કરીએ — પછી {product}.",
+    "switch_add_both_now": "ઓર્ડરમાં ઉમેરાઈ ગયું. હવે {product} સેટ કરીએ:",
+    "sq_discount": "અમારા ભાવ નિશ્ચિત છે અને ગેરંટીવાળી ક્વોલિટી મુજબ છે.",
+    "sq_discount_repeat": "હું સમજું છું, માફ કરજો — ભાવ બધા માટે સરખો છે, એટલે ઘટાડી શકતો નથી.",
+    "btn_add_item": "{name} ઉમેરો",
+}
+ENGLISH_TEMPLATES.update(_FLOW_EN)
+HINDI_TEMPLATES.update(_FLOW_HI)
+GUJARATI_TEMPLATES.update(_FLOW_GU)
+HINDI_DEVANAGARI_TEMPLATES.update(_FLOW_HI_DEV)
+GUJARATI_SCRIPT_TEMPLATES.update(_FLOW_GU_SCRIPT)
+
+# ── payment-proof classification (an image sent while an order awaits payment is classified, not assumed) ──
+_PROOF_EN = {
+    "pay_ask_image_kind": "Is this image your payment screenshot, or a product photo?",
+    "btn_proof_payment": "Payment screenshot",
+    "btn_proof_product": "Product photo",
+    "pay_which_order": "Which order is this payment for?",
+    "pay_proof_received_order": "Thanks! Payment screenshot received for order #{order_number}. Our team will verify it shortly and update you here.",
+    "pay_proof_withdrawn": "Okay — I've taken that image out of your payment for order #{order_number}. It is still waiting for your payment screenshot.",
+    "pay_product_photo_ask": "Nice! Want me to find something similar? Share a product code or tell me what you're looking for."
+}
+_PROOF_HI = {
+    "pay_ask_image_kind": "Ye image payment ka screenshot hai ya product ki photo?",
+    "btn_proof_payment": "Payment screenshot",
+    "btn_proof_product": "Product photo",
+    "pay_which_order": "Ye payment kaunse order ka hai?",
+    "pay_proof_received_order": "Shukriya! Order #{order_number} ka payment screenshot mil gaya. Hamari team jaldi verify karke yahin update degi.",
+    "pay_proof_withdrawn": "Theek hai — maine order #{order_number} ke payment se wo image hata di. Ab bhi payment screenshot ka intezaar hai.",
+    "pay_product_photo_ask": "Achhi photo! Kya main isse milta-julta kuch dhoondhu? Product code bhejein ya batayein ki aap kya dhoondh rahe hain."
+}
+_PROOF_GU = {
+    "pay_ask_image_kind": "Aa image payment no screenshot chhe ke product no photo?",
+    "btn_proof_payment": "Payment screenshot",
+    "btn_proof_product": "Product photo",
+    "pay_which_order": "Aa payment kaya order nu chhe?",
+    "pay_proof_received_order": "Aabhar! Order #{order_number} no payment screenshot mali gayo. Amari team jaldi verify kari ne ahi j update api dese.",
+    "pay_proof_withdrawn": "Saru — me order #{order_number} na payment mathi te image kadhi nakhi. Haji payment screenshot ni raah chhe.",
+    "pay_product_photo_ask": "Saras photo! Shu hu aani jevu kai shodhu? Product code moklo ke tame shu shodho chho te kaho."
+}
+_PROOF_HI_DEV = {
+    "pay_ask_image_kind": "क्या यह इमेज पेमेंट का स्क्रीनशॉट है या प्रोडक्ट की फ़ोटो?",
+    "btn_proof_payment": "पेमेंट स्क्रीनशॉट",
+    "btn_proof_product": "प्रोडक्ट फ़ोटो",
+    "pay_which_order": "यह पेमेंट किस ऑर्डर का है?",
+    "pay_proof_received_order": "धन्यवाद! ऑर्डर #{order_number} का पेमेंट स्क्रीनशॉट मिल गया। हमारी टीम जल्द ही वेरिफ़ाई करके यहीं अपडेट देगी।",
+    "pay_proof_withdrawn": "ठीक है — मैंने ऑर्डर #{order_number} के पेमेंट से वह इमेज हटा दी है। अभी भी पेमेंट स्क्रीनशॉट का इंतज़ार है।",
+    "pay_product_photo_ask": "बढ़िया फ़ोटो! क्या मैं इससे मिलता-जुलता कुछ ढूँढूँ? प्रोडक्ट कोड भेजें या बताएँ कि आप क्या ढूँढ रहे हैं।"
+}
+_PROOF_GU_SCRIPT = {
+    "pay_ask_image_kind": "શું આ ઇમેજ પેમેન્ટનો સ્ક્રીનશૉટ છે કે પ્રોડક્ટનો ફોટો?",
+    "btn_proof_payment": "પેમેન્ટ સ્ક્રીનશૉટ",
+    "btn_proof_product": "પ્રોડક્ટ ફોટો",
+    "pay_which_order": "આ પેમેન્ટ કયા ઓર્ડરનું છે?",
+    "pay_proof_received_order": "આભાર! ઓર્ડર #{order_number} નો પેમેન્ટ સ્ક્રીનશૉટ મળી ગયો. અમારી ટીમ જલ્દી વેરિફાય કરીને અહીં જ અપડેટ આપશે.",
+    "pay_proof_withdrawn": "સારું — મેં ઓર્ડર #{order_number} ના પેમેન્ટમાંથી તે ઇમેજ કાઢી નાખી છે. હજી પેમેન્ટ સ્ક્રીનશૉટની રાહ છે.",
+    "pay_product_photo_ask": "સરસ ફોટો! શું હું આના જેવું કંઈ શોધું? પ્રોડક્ટ કોડ મોકલો અથવા તમે શું શોધો છો તે કહો."
+}
+ENGLISH_TEMPLATES.update(_PROOF_EN)
+HINDI_TEMPLATES.update(_PROOF_HI)
+GUJARATI_TEMPLATES.update(_PROOF_GU)
+HINDI_DEVANAGARI_TEMPLATES.update(_PROOF_HI_DEV)
+GUJARATI_SCRIPT_TEMPLATES.update(_PROOF_GU_SCRIPT)
+
+ENGLISH_TEMPLATES["pay_denial_nothing"] = "Okay — no payment screenshot is attached to order #{order_number} right now. Send it once you've paid, or tell me what you're looking for."
+HINDI_TEMPLATES["pay_denial_nothing"] = "Theek hai — abhi order #{order_number} par koi payment screenshot juda nahi hai. Payment karke bhej dein, ya batayein ki aap kya dhoondh rahe hain."
+GUJARATI_TEMPLATES["pay_denial_nothing"] = "Saru — hamna order #{order_number} par koi payment screenshot jodayelo nathi. Payment kari ne moklo, ke tame shu shodho chho te kaho."
+HINDI_DEVANAGARI_TEMPLATES["pay_denial_nothing"] = "ठीक है — अभी ऑर्डर #{order_number} पर कोई पेमेंट स्क्रीनशॉट जुड़ा नहीं है। पेमेंट करके भेज दें, या बताएँ कि आप क्या ढूँढ रहे हैं।"
+GUJARATI_SCRIPT_TEMPLATES["pay_denial_nothing"] = "સારું — હમણાં ઓર્ડર #{order_number} પર કોઈ પેમેન્ટ સ્ક્રીનશૉટ જોડાયેલો નથી. પેમેન્ટ કરીને મોકલો, અથવા તમે શું શોધો છો તે કહો."
+
+# ── payment-image round (v1.6): stale picker, payment status, unsupported message type ──
+_PAY16 = {
+    "english": {
+        "pay_stale_pick": "Your last screenshot is linked to {linked}. Please send a separate screenshot for {wanted} 📸",
+        "pay_already_linked": "That screenshot is already linked to {order}.",
+        "pay_status_header": "Here is where your payments stand:",
+        "pay_status_pending": "• {order} ({amount}) — not paid yet. Please send the payment screenshot 📸",
+        "pay_status_submitted": "• {order} ({amount}) — screenshot received, waiting for verification",
+        "pay_status_paid": "• {order} ({amount}) — payment confirmed ✅",
+        "pay_status_none": "I can't see any recent order with a payment to check. Tell me what you're looking for and I'll help.",
+        "pay_pick_order_button": "Choose order",
+        "unsupported_message": "Sorry, I can't open that type of message. Please send text, a photo or a voice note.",
+    },
+    "hindi_roman": {
+        "pay_stale_pick": "Aapka aakhri screenshot {linked} se juda hai. {wanted} ke liye alag screenshot bhejein 📸",
+        "pay_already_linked": "Ye screenshot pehle se {order} se juda hai.",
+        "pay_status_header": "Aapke payments ka haal ye hai:",
+        "pay_status_pending": "• {order} ({amount}) — payment abhi nahi hua. Kripya payment ka screenshot bhejein 📸",
+        "pay_status_submitted": "• {order} ({amount}) — screenshot mil gaya, verification baaki hai",
+        "pay_status_paid": "• {order} ({amount}) — payment confirm ho gaya ✅",
+        "pay_status_none": "Mujhe check karne layak koi recent order nahi dikh raha. Batayein aap kya dhoondh rahe hain.",
+        "pay_pick_order_button": "Order chunein",
+        "unsupported_message": "Maaf kijiye, main is tarah ka message nahi khol sakta. Kripya text, photo ya voice note bhejein.",
+    },
+    "gujarati_roman": {
+        "pay_stale_pick": "Tamaro chhello screenshot {linked} sathe jodayelo chhe. {wanted} mate alag screenshot moklo 📸",
+        "pay_already_linked": "Aa screenshot pehla thi j {order} sathe jodayelo chhe.",
+        "pay_status_header": "Tamara payments ni sthiti:",
+        "pay_status_pending": "• {order} ({amount}) — payment haju thayu nathi. Krupa kari ne payment no screenshot moklo 📸",
+        "pay_status_submitted": "• {order} ({amount}) — screenshot mali gayo, verification baki chhe",
+        "pay_status_paid": "• {order} ({amount}) — payment confirm thai gayu ✅",
+        "pay_status_none": "Mane check karva jevo koi taajo order dekhato nathi. Tame shu shodho chho te kaho.",
+        "pay_pick_order_button": "Order pasand karo",
+        "unsupported_message": "Maaf karjo, hu aa prakar no message kholi shakto nathi. Krupa kari ne text, photo ke voice note moklo.",
+    },
+    "hindi_devanagari": {
+        "pay_stale_pick": "आपका आख़िरी स्क्रीनशॉट {linked} से जुड़ा है। {wanted} के लिए अलग स्क्रीनशॉट भेजें 📸",
+        "pay_already_linked": "यह स्क्रीनशॉट पहले से {order} से जुड़ा है।",
+        "pay_status_header": "आपके पेमेंट की स्थिति:",
+        "pay_status_pending": "• {order} ({amount}) — पेमेंट अभी नहीं हुआ। कृपया पेमेंट का स्क्रीनशॉट भेजें 📸",
+        "pay_status_submitted": "• {order} ({amount}) — स्क्रीनशॉट मिल गया, वेरिफ़िकेशन बाक़ी है",
+        "pay_status_paid": "• {order} ({amount}) — पेमेंट कन्फ़र्म हो गया ✅",
+        "pay_status_none": "मुझे जाँचने लायक कोई हालिया ऑर्डर नहीं दिख रहा। बताएँ आप क्या ढूँढ रहे हैं।",
+        "pay_pick_order_button": "ऑर्डर चुनें",
+        "unsupported_message": "माफ़ कीजिए, मैं इस तरह का मैसेज नहीं खोल सकता। कृपया टेक्स्ट, फ़ोटो या वॉइस नोट भेजें।",
+    },
+    "gujarati_script": {
+        "pay_stale_pick": "તમારો છેલ્લો સ્ક્રીનશૉટ {linked} સાથે જોડાયેલો છે. {wanted} માટે અલગ સ્ક્રીનશૉટ મોકલો 📸",
+        "pay_already_linked": "આ સ્ક્રીનશૉટ પહેલેથી {order} સાથે જોડાયેલો છે.",
+        "pay_status_header": "તમારા પેમેન્ટની સ્થિતિ:",
+        "pay_status_pending": "• {order} ({amount}) — પેમેન્ટ હજી થયું નથી. કૃપા કરીને પેમેન્ટનો સ્ક્રીનશૉટ મોકલો 📸",
+        "pay_status_submitted": "• {order} ({amount}) — સ્ક્રીનશૉટ મળી ગયો, વેરિફિકેશન બાકી છે",
+        "pay_status_paid": "• {order} ({amount}) — પેમેન્ટ કન્ફર્મ થઈ ગયું ✅",
+        "pay_status_none": "મને તપાસવા જેવો કોઈ તાજો ઓર્ડર દેખાતો નથી. તમે શું શોધો છો તે કહો.",
+        "pay_pick_order_button": "ઓર્ડર પસંદ કરો",
+        "unsupported_message": "માફ કરજો, હું આ પ્રકારનો મેસેજ ખોલી શકતો નથી. કૃપા કરીને ટેક્સ્ટ, ફોટો અથવા વૉઇસ નોટ મોકલો.",
+    },
+}
+ENGLISH_TEMPLATES.update(_PAY16["english"])
+HINDI_TEMPLATES.update(_PAY16["hindi_roman"])
+GUJARATI_TEMPLATES.update(_PAY16["gujarati_roman"])
+HINDI_DEVANAGARI_TEMPLATES.update(_PAY16["hindi_devanagari"])
+GUJARATI_SCRIPT_TEMPLATES.update(_PAY16["gujarati_script"])
+
 
 TEMPLATES: dict[str, dict[str, str]] = {
     "english": ENGLISH_TEMPLATES,

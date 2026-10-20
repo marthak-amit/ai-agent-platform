@@ -1,0 +1,14 @@
+name: planner_invalid_action_repair
+description: 'The live INVALID_ACTION@0 case: a bare {"type":"split_line"} (every field null) is an invalid action, the repair round gets the error, and "2 xxl and 3 M" ends as two lines. (The cause was the flat schema; see the unit tests for the typed-union schema.)'
+turns:
+  - user: "I want a blue lehenga"
+    plan: {actions: [{type: add_line, sku: LH10042, variant: {color: Blue}}]}
+  - user: "I want to buy 2 xxl and 3 M size"
+    plan: {actions: [{type: split_line}]}
+    repair:
+      - actions:
+          - {type: add_line, sku: LH10042, variant: {color: Blue, size: XXL}, qty: 2}
+          - {type: add_line, sku: LH10042, variant: {color: Blue, size: M}, qty: 3}
+    expect:
+      repairs: 1
+      cart: {lines: [{sku: LH10042, color: Blue, size: XXL, qty: 2}, {sku: LH10042, color: Blue, size: M, qty: 3}]}

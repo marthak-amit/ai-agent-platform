@@ -1,0 +1,14 @@
+name: multi_variant_quantity
+description: 'conv=60 ORD-2026-0075: "2 maroon and one gold and one green" with the saree in the cart (Maroon, qty open): Maroon × 2 and Gold × 1 are applied, Green is reported as unavailable with what IS available — no planner call, no generic question, no example values the customer could copy'
+turns:
+  - user: "I want the banarasi saree in maroon"
+    plan: {actions: [{type: add_line, sku: SR20001, variant: {color: Maroon}}]}
+    expect: {cart: {lines: [{sku: SR20001, color: Maroon, qty: null}]}, reply_contains: ["How many"]}
+  - user: "2 maroon and one gold and one green"
+    expect:
+      fast_path: multi_variant
+      planner_calls: 0
+      cart: {lines: [{sku: SR20001, color: Maroon, qty: 2}, {sku: SR20001, color: Gold, qty: 1}]}
+      reply_contains: ["Green isn't available for Banarasi Silk Saree", "Available: Maroon, Gold"]
+      reply_not_contains: ["e.g.", "Which colours and how many of each", "Red"]
+      ends_with_question: true

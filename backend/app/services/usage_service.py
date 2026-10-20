@@ -65,8 +65,7 @@ async def record_message(db: AsyncSession, client: Client) -> UsageLog:
     old_count = log.message_count or 0
     log.message_count = old_count + 1
 
-    await db.commit()
-    await db.refresh(log)
+    await db.commit()          # the row is locked and was updated in memory: no refresh round trip needed
     new_count = log.message_count
 
     # 80% boundary — fire warning exactly once

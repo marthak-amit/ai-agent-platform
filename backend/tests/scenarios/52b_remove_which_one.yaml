@@ -1,0 +1,22 @@
+name: remove_which_one
+description: 'A removal that names only a shared word ("remove cotton") matches two cart products: the engine asks which one (numbered text + one button per line, ids carry the line), and the tap removes exactly that line.'
+turns:
+  - user: "I want a red cotton kurti"
+    plan: {actions: [{type: add_line, sku: KU10001, variant: {color: Red}}]}
+  - user: "LH10042"
+    expect: {fast_path: sku}
+  - user: "yes"
+    expect: {fast_path: offer_yes}
+  - user: "remove cotton"
+    expect:
+      fast_path: remove_which
+      planner_calls: 0
+      reply_contains: ["Which one should I remove?", "1. Cotton Kurti (Red)", "2. Cotton Lehenga"]
+      buttons_contain: [v3_rm_1, v3_rm_2]
+      cart: {lines: [{sku: KU10001, color: Red, qty: null}, {sku: LH10042}]}
+  - tap: v3_rm_1
+    expect:
+      fast_path: btn_remove
+      planner_calls: 0
+      cart: {lines: [{sku: LH10042}]}
+      reply_contains: ["Removed Cotton Kurti (Red)", "Cotton Lehenga"]

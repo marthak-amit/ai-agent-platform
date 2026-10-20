@@ -144,7 +144,7 @@ async def test_skips_when_idle_under_6h(mock_db):
 
 @pytest.mark.asyncio
 async def test_skips_and_flags_when_idle_over_24h(mock_db, caplog):
-    """Idle past 24h is outside Meta's free-form window — skip and flag, don't send."""
+    """Idle 24–72 h is outside Meta's free-form window — skip and flag once (INFO), don't send."""
     from app.scheduler import _send_abandoned_intent_followups
 
     conv = _conv()
@@ -158,11 +158,12 @@ async def test_skips_and_flags_when_idle_over_24h(mock_db, caplog):
     with patch(
         "app.services.outbound.send_text",
         new=AsyncMock(),
-    ) as send_mock, caplog.at_level("WARNING"):
+    ) as send_mock, caplog.at_level("INFO"):
         await _send_abandoned_intent_followups(mock_db)
 
     send_mock.assert_not_called()
     assert "event=nudge_needs_template" in caplog.text
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]      # expected state, not a fault: INFO
     assert f"conv={conv.id}" in caplog.text
 
 
@@ -294,3 +295,44 @@ async def test_same_sku_repeat_skipped(mock_db):
         await _send_abandoned_intent_followups(mock_db)
 
     send_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_idle_24_to_72h_is_flagged_once_then_marked_so_the_next_run_stays_silent(mock_db, caplog):
+    """24–72 h idle: one nudge_needs_template line, the conversation is marked (last_followup_sku), the next run does not repeat it."""
+    from app.scheduler import _send_abandoned_intent_followups
+
+    conv = _conv()
+    last_inbound = datetime.now(timezone.utc) - timedelta(hours=30)
+    mock_db.execute.side_effect = [_candidates_result([conv]), _scalar_result(_message(last_inbound))]
+    with patch("app.services.outbound.send_text", new=AsyncMock()) as send_mock, caplog.at_level("INFO"):
+        await _send_abandoned_intent_followups(mock_db)
+    assert caplog.text.count("event=nudge_needs_template") == 1 and conv.last_followup_sku == "PR100"
+    send_mock.assert_not_called()
+
+    caplog.clear()
+    mock_db.execute.side_effect = [_candidates_result([conv])]          # the same SKU is skipped before any other query
+    with caplog.at_level("INFO"):
+        await _send_abandoned_intent_followups(mock_db)
+    assert "nudge_needs_template" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_idle_72h_or_more_is_marked_stale_without_a_warning(mock_db, caplog):
+    """72 h+ idle: no send, no WARNING (no spam every 6 h), marked stale so it is never examined again."""
+    from app.scheduler import _send_abandoned_intent_followups
+
+    conv = _conv()
+    last_inbound = datetime.now(timezone.utc) - timedelta(hours=100)
+    mock_db.execute.side_effect = [_candidates_result([conv]), _scalar_result(_message(last_inbound))]
+    with patch("app.services.outbound.send_text", new=AsyncMock()) as send_mock, caplog.at_level("INFO"):
+        await _send_abandoned_intent_followups(mock_db)
+    send_mock.assert_not_called()
+    assert not [r for r in caplog.records if r.levelname in ("WARNING", "ERROR")]
+    assert conv.last_followup_sku == "PR100" and "event=nudge_stale" in caplog.text
+
+    caplog.clear()
+    mock_db.execute.side_effect = [_candidates_result([conv])]
+    with caplog.at_level("INFO"):
+        await _send_abandoned_intent_followups(mock_db)
+    assert "nudge_stale" not in caplog.text

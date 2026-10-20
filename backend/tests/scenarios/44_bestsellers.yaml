@@ -1,0 +1,25 @@
+name: bestsellers
+description: '"best product" / "best seller" / "saru shu che" browse the catalogue sorted by units actually sold (cancelled and simulator orders excluded) with the categories; a shop with no sales never claims "best sellers".'
+setup:
+  orders:
+    - {number: ORD-2026-0001, status: paid, sku: KU10001, product: Cotton Kurti, qty: 5, total: 2495}
+    - {number: ORD-2026-0002, status: paid, sku: TB30001, product: Handmade Tote Bag, qty: 3, total: 750}
+    - {number: ORD-2026-0003, status: paid, sku: LH10042, product: Cotton Lehenga, qty: 1, total: 1299}
+    - {number: ORD-2026-0004, status: cancelled, sku: SR20001, product: Banarasi Silk Saree, qty: 50, total: 124950}
+    - {number: ORD-2026-0005, status: paid, sku: SR20001, product: Banarasi Silk Saree, qty: 40, total: 99960, sandbox: true}
+turns:
+  - user: "best product"
+    expect:
+      fast_path: bestseller
+      planner_calls: 0
+      actions_contains: [browse_catalog]
+      reply_contains: ["best sellers", "Categories:", "1. Cotton Kurti", "2. Handmade Tote Bag", "3. Cotton Lehenga"]
+      reply_not_contains: ["Banarasi"]
+      ends_with_question: true
+  - user: "2"
+    expect: {fast_path: product_number, reply_contains: ["Handmade Tote Bag"]}
+  - user: "saru shu che"
+    expect: {fast_path: bestseller, planner_calls: 0, reply_contains: ["Cotton Kurti"]}
+  - user: "what are people buying the most"
+    plan: {actions: [{type: browse_catalog, sort: bestseller}]}
+    expect: {reply_contains: ["best sellers", "1. Cotton Kurti"]}

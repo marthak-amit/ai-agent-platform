@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -25,6 +25,7 @@ class Product(Base):
     """
 
     __tablename__ = "products"
+    __table_args__ = (Index("ix_products_client_active", "client_id", "is_active"),)      # migration 0076
 
     id: Mapped[int] = mapped_column(primary_key=True)
     client_id: Mapped[int] = mapped_column(
@@ -42,6 +43,9 @@ class Product(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     low_stock_alert: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
     has_variants: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    # Sample row seeded for a new account (migration 0070); removed in one click via "Remove samples".
+    is_demo: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
 
     # Per-product delivery override (migration 0036); None → use client default
     delivery_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=None)

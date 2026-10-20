@@ -84,6 +84,8 @@ async def build_subscription_state(
     entitlement = EntitlementOut(
         state=ent.state.value, grace_ends_at=ent.grace_ends_at, enforced=enforced,
         restricted=enforced and ent.restricted, over_limit=ent.over_limit,
+        trial_ends_at=ent.trial_ends_at, trial_conversations_used=ent.trial_conversations_used,
+        trial_conversation_limit=ent.trial_conversation_limit,
     )
     if active is None:
         return SubscriptionStateOut(status="none", entitlement=entitlement, seller_state_code=settings.seller_state_code)

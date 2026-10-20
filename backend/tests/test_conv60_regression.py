@@ -281,7 +281,7 @@ async def test_D_ensure_reply_leaves_intentional_silence_and_real_replies_alone(
     from app.services import order_pipeline as op
 
     ctx = types.SimpleNamespace(db=None, client=None, conv=types.SimpleNamespace(id=1), message=None)
-    silent = op.PipelineResult(text=None, skip_send=True)
+    silent = op.PipelineResult(text=None, skip_send=True, skip_reason="ai_paused")
     real = op.PipelineResult(text="hello")
     with caplog.at_level(logging.ERROR, logger=op.logger.name):
         assert await op.ensure_reply(silent, ctx) is silent
@@ -565,9 +565,14 @@ async def test_conv60_transcript_replay_turn_by_turn(replay_http, replay_session
         assert conv.current_stage == "payment" and conv.pending_product_sku == "SR31045"       # not detached/reset
         assert (await orders_of(replay_session, conv_id))[-1].status == "pending_payment"
 
-    # T11 — the review message appears only for a real screenshot
+    # T11 — the review message appears only for a real screenshot (a receipt for ₹3,300: of the three unpaid orders the amount picks the new one)
+    async def _receipt_for_3300(_bytes):
+        """OCR of a UPI receipt showing this order's total."""
+        return "Google Pay\nPayment successful\n₹3,300\nUPI transaction ID 412345678901"
+
+    monkeypatch.setattr("app.services.payment_proof_classifier.ocr_text", _receipt_for_3300)
     ev = await turn(replay_http, outbox, image=True)
-    assert "verify your payment" in body(ev)
+    assert "ORD-2026-0048" in body(ev) and "verify it shortly" in body(ev)        # with several unpaid orders the ack names the one it was filed under
     order_now = (await orders_of(replay_session, conv_id))[-1]
     assert order_now.status == "payment_submitted"
 
@@ -790,7 +795,7 @@ async def test_D_intentional_silence_is_respected(replay_http, replay_session, r
     from app.services.order_pipeline import PipelineResult
 
     monkeypatch.setattr("app.routers.webhook.handle_inbound_message",
-                        mock.AsyncMock(return_value=PipelineResult(text=None, skip_send=True)))
+                        mock.AsyncMock(return_value=PipelineResult(text=None, skip_send=True, skip_reason="ai_paused")))
     assert await turn(replay_http, outbox, "hello?", phone=phone, pnid=pnid) == []
 
 
@@ -945,7 +950,8 @@ async def test_G_reply_path_failure_mid_order_re_asks_the_open_question(replay_h
 async def test_H_open_order_note_only_when_the_draft_is_live_and_the_reply_is_about_it(replay_http, replay_session, router, outbox):
     """
     The 'your order for X is still open' line is dropped for a payment-stage/stale pin and for a list of OTHER
-    products, and kept when the customer asks about the very product being ordered.
+    products. Asking about the very product being ordered (just-opened draft) shows the ordinary browse card +
+    "Would you like to order? (Yes / No)" — never the canned "answer the last question or type cancel" line.
     """
     phone, pnid = "919500006019", "7776019"
     client = await seed_store(replay_session, phone=phone, pnid=pnid)
@@ -958,7 +964,9 @@ async def test_H_open_order_note_only_when_the_draft_is_live_and_the_reply_is_ab
     assert "Cotton Printed Saree [SR33210]" in body(other) and "still open" not in body(other)
 
     same = await turn(replay_http, outbox, "tell me about this dress", phone=phone, pnid=pnid)
-    assert "Georgette Party Wear [SR31045]" in body(same) and "still open" in body(same)
+    assert "Georgette Party Wear [SR31045]" in body(same) and "Would you like to order? (Yes / No)" in body(same)
+    assert "still open" not in body(same) and "type 'cancel'" not in body(same)
+    assert same[-1][0] == "buttons" and same[-1][3] == ["Yes", "No"], same      # Yes / No buttons, like any product card
 
     # a pin left behind at the payment stage never produces the note
     from app.services import conversation_service
@@ -966,6 +974,25 @@ async def test_H_open_order_note_only_when_the_draft_is_live_and_the_reply_is_ab
     router.when("any other sarees", "search_catalog", {"query": "saree"})
     stale = await turn(replay_http, outbox, "any other sarees", phone=phone, pnid=pnid)
     assert "Cotton Printed Saree [SR33210]" in body(stale) and "still open" not in body(stale)
+
+
+@needs_pg
+async def test_H_own_product_question_in_a_real_order_shows_the_card_and_re_asks_the_open_question(
+    replay_http, replay_session, router, outbox,
+):
+    """Quantity already given: asking about the product being ordered keeps the order and re-asks the open step."""
+    phone, pnid = "919500006020", "7776020"
+    client = await seed_store(replay_session, phone=phone, pnid=pnid)
+    conv_id = await prime_conv(replay_session, phone=phone, client_id=client.id, stage="order_collection",
+                               pending_product_sku="SR31045", customer_name="Amit", pending_order_quantity=2)
+    router.when("tell me about this dress", "show_product", {"sku": "SR31045"})
+
+    same = await turn(replay_http, outbox, "tell me about this dress", phone=phone, pnid=pnid)
+
+    assert "Georgette Party Wear [SR31045]" in body(same), body(same)
+    assert "still open" not in body(same) and "type 'cancel'" not in body(same) and "Would you like to order?" not in body(same)
+    assert body(same).rstrip().endswith("Colour? Black / Blue / Red"), f"open question not re-asked: {body(same)}"
+    assert (await get_conv(replay_session, conv_id)).pending_order_quantity == 2     # the order itself is untouched
 
 
 @needs_pg
@@ -1038,14 +1065,14 @@ async def test_J_question_about_another_product_mid_order_offers_a_switch_and_ye
     card = await turn(replay_http, outbox, "SR31045 price please", phone=phone, pnid=pnid)
     one_reply(card)
     assert "Georgette Party Wear [SR31045] — ₹1,100" in body(card)
-    assert "Would you like to order Georgette Party Wear instead of Cotton Printed Saree? (Yes / No)" in body(card)
+    assert "Switch to Georgette Party Wear, add both, or keep Cotton Printed Saree?" in body(card)
     conv = await get_conv(replay_session, conv_id)
     assert conv.current_stage == "awaiting_order_switch_confirm" and conv.interrupted_sku == "SR31045"
 
     ans = await turn(replay_http, outbox, "is Red available?", phone=phone, pnid=pnid)
     one_reply(ans)
     assert "Yes, Red is available for Georgette Party Wear" in body(ans) and "Quantity?" not in body(ans)
-    assert "instead of Cotton Printed Saree" in body(ans)
+    assert "Switch to Georgette Party Wear, add both, or keep Cotton Printed Saree?" in body(ans)
     assert (await get_conv(replay_session, conv_id)).interrupted_sku == "SR31045"
     assert [c["message"] for c in router.calls] == ["SR31045 price please"]
 
@@ -1068,7 +1095,7 @@ async def test_J_declining_the_switch_resumes_the_original_question(replay_http,
                 {"sku": "SR31045", "filters": {"color": "red"}})
 
     ans = await turn(replay_http, outbox, "is red georgette party wear available?", phone=phone, pnid=pnid)
-    assert "Yes, Red is available for Georgette Party Wear" in body(ans) and "(Yes / No)" in body(ans)
+    assert "Yes, Red is available for Georgette Party Wear" in body(ans) and "add both" in body(ans)
     assert "Want to order it?" not in body(ans)
 
     back = await turn(replay_http, outbox, "no", phone=phone, pnid=pnid)
@@ -1076,3 +1103,102 @@ async def test_J_declining_the_switch_resumes_the_original_question(replay_http,
     conv = await get_conv(replay_session, conv_id)
     assert conv.pending_product_sku == "SR33210" and conv.current_stage == "order_collection"
     assert conv.interrupted_sku is None
+
+
+@needs_pg
+@pytest.mark.parametrize("text", ["Cotton Printed Saree", "SR33210"])
+async def test_K_naming_the_product_at_an_empty_order_shows_details_and_the_order_offer(replay_http, replay_session, router, outbox, text):
+    """
+    The order has just opened (first question asked, nothing chosen). The customer types the product's name or
+    SKU -> product card with price + "Would you like to order?" (not a bare "Color? ..." re-ask), and "yes" then
+    re-enters the order at the first question.
+    """
+    phone, pnid = ("919500006040", "7776040") if text[0] == "C" else ("919500006041", "7776041")
+    client = await seed_store(replay_session, phone=phone, pnid=pnid)
+    conv_id = await prime_conv(replay_session, phone=phone, client_id=client.id, stage="order_collection",
+                               pending_product_sku="SR33210", customer_name="Amit")
+
+    card = await turn(replay_http, outbox, text, phone=phone, pnid=pnid)
+    assert "Cotton Printed Saree" in body(card) and "₹" in body(card)
+    assert "Color?" not in body(card) and "Quantity?" not in body(card)
+    conv = await get_conv(replay_session, conv_id)
+    assert conv.current_stage != "order_collection" and conv.pending_product_sku == "SR33210"
+
+    await turn(replay_http, outbox, "yes", phone=phone, pnid=pnid)
+    conv = await get_conv(replay_session, conv_id)
+    assert conv.current_stage == "order_collection"
+
+
+@needs_pg
+async def test_L_exact_name_of_a_product_outside_the_open_menu_is_not_resolved_to_a_menu_item(replay_http, replay_session, router, outbox):
+    """
+    A "which one?" menu is open (Banarasi Silk Saree / Cotton Printed Saree). The customer types the exact name of a
+    product that is NOT on it — "Kanjivaram Silk Saree" shares "silk saree" with a menu item. They get the Kanjivaram
+    card (₹4,200), never the lookalike menu item.
+    """
+    phone, pnid = "919500006050", "7776050"
+    client = await seed_store(replay_session, phone=phone, pnid=pnid)
+    conv_id = await prime_conv(replay_session, phone=phone, client_id=client.id, stage="product_inquiry",
+                               pending_choice_skus='["SR27754", "SR33210"]')
+
+    card = await turn(replay_http, outbox, "Kanjivaram Silk Saree", phone=phone, pnid=pnid)
+
+    assert "Kanjivaram Silk Saree [SR29821] — ₹4,200" in body(card)
+    assert "SR27754" not in body(card)
+    conv = await get_conv(replay_session, conv_id)
+    assert conv.pending_product_sku == "SR29821" and not conv.pending_choice_skus
+
+
+async def _add_single_colour_product(session, client):
+    """SR50001 'Festive Banarasi Silk Saree' ₹3,849 — one colour (Grey), 1 in stock."""
+    from app.models.product import Product
+    from app.models.product_variant import ProductVariant
+
+    p = Product(client_id=client.id, name="Festive Banarasi Silk Saree", sku="SR50001", price=3849.0, stock=5,
+                is_active=True, has_variants=True, category="Saree")
+    session.add(p)
+    await session.flush()
+    session.add(ProductVariant(product_id=p.id, client_id=client.id, color="Grey", size=None, stock=5,
+                               is_active=True, price=3849.0))
+    await session.commit()
+
+
+@needs_pg
+async def test_M_single_colour_is_asked_as_a_yes_no_question_and_yes_takes_it(replay_http, replay_session, router, outbox):
+    """
+    Product has ONE colour. After "Would you like to order? → yes" the customer is asked "This comes only in Grey. Would
+    you like Grey? (Yes / No)" (not a bare "Colour? Grey"); "yes" selects Grey and the next question follows.
+    """
+    phone, pnid = "919500006060", "7776060"
+    client = await seed_store(replay_session, phone=phone, pnid=pnid)
+    await _add_single_colour_product(replay_session, client)
+    conv_id = await prime_conv(replay_session, phone=phone, client_id=client.id, stage="greeting")
+
+    card = await turn(replay_http, outbox, "SR50001", phone=phone, pnid=pnid)
+    assert "Would you like to order" in body(card)
+
+    ask = await turn(replay_http, outbox, "yes", phone=phone, pnid=pnid)
+    assert "only in Grey" in body(ask) and "(Yes / No)" in body(ask)
+    assert "Colour? Grey" not in body(ask)
+
+    nxt = await turn(replay_http, outbox, "yes", phone=phone, pnid=pnid)
+    assert "not available" not in body(nxt) and "available nahi" not in body(nxt)
+    conv = await get_conv(replay_session, conv_id)
+    assert conv.selected_color == "Grey"
+
+
+@needs_pg
+async def test_M_single_colour_no_goes_back_to_browsing(replay_http, replay_session, router, outbox):
+    """'No' at the single-colour question drops the draft and invites another product."""
+    phone, pnid = "919500006061", "7776061"
+    client = await seed_store(replay_session, phone=phone, pnid=pnid)
+    await _add_single_colour_product(replay_session, client)
+    conv_id = await prime_conv(replay_session, phone=phone, client_id=client.id, stage="greeting")
+
+    await turn(replay_http, outbox, "SR50001", phone=phone, pnid=pnid)
+    await turn(replay_http, outbox, "yes", phone=phone, pnid=pnid)
+    out = await turn(replay_http, outbox, "no", phone=phone, pnid=pnid)
+
+    assert "another product" in body(out)
+    conv = await get_conv(replay_session, conv_id)
+    assert conv.current_stage == "product_inquiry" and conv.selected_color is None and conv.pending_product_sku is None

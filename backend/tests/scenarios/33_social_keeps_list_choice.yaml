@@ -1,0 +1,12 @@
+name: social_keeps_list_choice
+description: 'A greeting / thanks between a product list and the customer''s number must not forget the list: "2" still picks the second product for ₹0.'
+turns:
+  - user: "show me products"
+    plan: {actions: [{type: browse_catalog}]}
+    expect: {reply_contains: ["Cotton Kurti"]}
+  - user: "hi"
+    expect: {fast_path: greeting, planner_calls: 0}
+  - user: "thanks"
+    expect: {fast_path: thanks, planner_calls: 0}
+  - user: "2"
+    expect: {fast_path: product_number, planner_calls: 0, actions_contains: [show_product], reply_contains: ["Cotton Kurti", "Red, Green, Blue"]}

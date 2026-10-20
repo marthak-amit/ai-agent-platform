@@ -1,4 +1,5 @@
 import { api } from "./client";
+import { askHighValueConfirmation } from "../utils/highValueConfirm";
 import type {
   ApiErrorDetail,
   ApprovedTemplate,
@@ -91,8 +92,26 @@ export async function fetchPendingCount() {
 }
 
 export async function approvePayment(orderId: number) {
-  const { data } = await api.post<DecisionResult>(`/orders/${orderId}/payment/approve`);
-  return data;
+  try {
+    const { data } = await api.post<DecisionResult>(`/orders/${orderId}/payment/approve`);
+    return data;
+  } catch (err) {
+    // High-value orders are never approved by a plain click: the server answers 409 high_value_confirmation_required until
+    // the seller confirms they checked the payment themselves; the confirmation is then recorded in the order's audit trail.
+    const e = apiError(err) as ApiErrorDetail & { total?: number; threshold?: number; order_number?: string };
+    if (e.code === "high_value_confirmation_required") {
+      const ok = await askHighValueConfirmation({
+        orderNumber: e.order_number ?? String(orderId),
+        total: typeof e.total === "number" ? e.total : null,
+        threshold: typeof e.threshold === "number" ? e.threshold : null,
+      });
+      if (ok) {
+        const { data } = await api.post<DecisionResult>(`/orders/${orderId}/payment/approve`, { confirm_high_value: true });
+        return data;
+      }
+    }
+    throw err;
+  }
 }
 
 export async function rejectPayment(orderId: number, reason?: string) {

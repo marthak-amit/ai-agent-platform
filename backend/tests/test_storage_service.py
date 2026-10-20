@@ -8,7 +8,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from botocore.exceptions import ClientError
 from PIL import Image
 
+import pytest
+
 from app.services import storage_service as svc
+
+
+@pytest.fixture(autouse=True)
+def _fresh_watermark_cache():
+    """The process-wide watermark URL cache (v1.7) must not leak a URL from one test into the next."""
+    svc._watermark_url_cache.clear()
+    yield
+    svc._watermark_url_cache.clear()
 
 
 def _png_bytes(size=(2000, 1000), color=(120, 60, 200)) -> bytes:

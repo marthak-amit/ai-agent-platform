@@ -60,6 +60,11 @@ class Conversation(Base):
     # throttle stamp for the "verification in progress" proof acknowledgement.
     last_read_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     last_proof_ack_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Payment-image context (migration 0075): the first image of an unanswered "payment screenshot or product photo?" question, the
+    # stamp of the last reply to an image (a burst of images gets one reply) and when payment instructions were last sent.
+    pending_proof_image_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    image_batch_reply_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_payment_instruction_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -165,6 +170,9 @@ class Conversation(Base):
 
     # Improvement 2: off-topic abuse counter (migration 0042)
     off_topic_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default="0")
+    # Irrelevant-message mute (migration 0069): after `irrelevant_streak_limit` consecutive irrelevant messages the
+    # bot stops answering free text (no LLM) until this time. NULL = not muted. See app/services/spam_guard.py.
+    spam_muted_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Improvement 3: per-phone/day LLM budget (migration 0042)
     llm_calls_today: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default="0")
@@ -212,6 +220,17 @@ class Conversation(Base):
     # (used when an LLM-inferred quantity split must be confirmed before
     # being committed to cart_items — never committed silently).
     cart_pending_confirmation: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+
+    # ── Chat-flow memory (migration 0071) ───────────────────────────────────
+    # Snapshot of the order draft taken when it was cancelled in chat: {"ts": iso, "fields": {column: value}}.
+    # "continue" / "yes" within DRAFT_RESTORE_TTL_MINUTES restores it (app/services/order_recovery.py).
+    last_cancelled_draft: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    # Set while the bot waits for Yes/No on "Cancel this order?" (a router cancel_order that was not explicit).
+    cancel_confirm_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Last catalogue search {query, filters, shown_skus, ts}: "another one?" continues it instead of re-pinning.
+    last_search: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    # Last side question {topic, n, ts}: lets "please" after a discount refusal be a discount follow-up.
+    last_side_topic: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
 
     @property
     def bot_paused(self) -> bool:

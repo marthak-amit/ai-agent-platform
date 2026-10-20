@@ -337,7 +337,7 @@ async def customer_pays_and_seller_approves(
     resp = await send_image(http, phone, phone_number_id=pnid)
     assert resp.status_code == 200, resp.text
     client = await session.get(Client, client_id)
-    return await pvs.approve(session, client, order_id, None)
+    return await pvs.approve(session, client, order_id, None, confirm_high_value=True)
 
 
 async def pay_latest_order(http, session, monkeypatch, *, phone: str, pnid: str):

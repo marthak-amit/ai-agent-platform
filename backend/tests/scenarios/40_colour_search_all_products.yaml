@@ -1,0 +1,26 @@
+name: colour_search_all_products
+description: 'A colour word filters on variant colours across EVERY product that matches the other words — not only the first 8 by name — and synonyms (kala / kalo / laal) work. Colour words never match product names ("Block Print" is not "black").'
+turns:
+  - user: "black saree"
+    expect:
+      fast_path: catalogue_search
+      planner_calls: 0
+      reply_contains: ["Zari Silk Saree", "Black"]
+      reply_not_contains: ["No black saree", "Block Print", "Closest"]
+      ends_with_question: true
+  - user: "kalo saree"
+    plan: {actions: [{type: search_catalog, query: kalo saree}]}
+    expect:
+      reply_contains: ["Zari Silk Saree"]
+      reply_not_contains: ["No black", "Block Print"]
+  - user: "kala saree"
+    plan: {actions: [{type: search_catalog, query: kala saree}]}
+    expect: {reply_contains: ["Zari Silk Saree"], reply_not_contains: ["Block Print"]}
+  - user: "cream saree"
+    expect:
+      fast_path: catalogue_search
+      reply_contains: ["Zari Block Print Saree 1", "(Cream)"]
+      reply_not_contains: ["Banarasi", "No cream"]
+  - user: "laal saree"
+    plan: {actions: [{type: search_catalog, query: laal saree}]}
+    expect: {reply_contains: ["No red saree right now.", "Closest: Maroon", "Banarasi Silk Saree"]}

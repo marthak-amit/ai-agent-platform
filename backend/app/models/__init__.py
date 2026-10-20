@@ -46,6 +46,8 @@ from app.models.product_variant import ProductVariant
 from app.models.photo_generation_log import PhotoGenerationLog
 from app.models.restock_notification import RestockNotification
 from app.models.stock_log import StockLog
+from app.models.trial_claim import TrialClaim
+from app.models.conversation_cart import ConversationCart
 from app.models.knowledge_base import KnowledgeBase
 from app.models.usage_log import UsageLog
 from app.models.user import User
@@ -55,8 +57,8 @@ __all__ = [
     "BillingAdminLog", "BillingAlert", "BillingPlan", "ClientSubscription", "ConversationUsageLog",
     "BillingJobRun", "BillingOpsEvent", "CreditNote", "CreditNoteCounter",
     "Invoice", "InvoiceCounter", "PaymentEvent", "PaymentOrder",
-    "Campaign", "CampaignRecipient", "Client", "ClientMonthlyUsage", "Conversation", "CostLogEntry",
+    "Campaign", "CampaignRecipient", "Client", "ClientMonthlyUsage", "Conversation", "ConversationCart", "CostLogEntry",
     "Customer", "FollowUp", "IgCommentReply", "KnowledgeBase", "LLMUsage", "Lead", "Message", "MessageTemplate", "Order", "OrderAuditLog", "OrderLineItem", "PaymentProof", "StockReservation",
-    "Payment", "PhotoGenerationLog", "Plan", "Product", "ProductVariant", "RestockNotification", "StockLog",
+    "Payment", "PhotoGenerationLog", "Plan", "Product", "ProductVariant", "RestockNotification", "StockLog", "TrialClaim",
     "StyleReference", "UsageLog", "User",
 ]

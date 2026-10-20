@@ -45,6 +45,7 @@ from app.schemas.webhook import AudioContent, ImageContent, TextContent, WhatsAp
 from app.services import (
     conversation_service,
     ig_comment_service,
+    message_batcher,
     outbound,
     plan_service,
     vision_service,
@@ -264,6 +265,9 @@ async def _handle_dm(
 
     # Meta retries webhooks on timeout — skip if already processed (mirrors
     # webhook.py's wamid dedup; IG's mid serves the same purpose).
+    if mid and message_batcher.seen_recently(mid):
+        logger.info("Duplicate Instagram message %s (already in a batch) — skipping.", mid)
+        return {"status": "ok"}
     if mid:
         dup_result = await db.execute(
             select(MessageModel).where(MessageModel.wamid == mid).limit(1)
@@ -320,29 +324,58 @@ async def _handle_dm(
         logger.info("Skipping unsupported Instagram message type '%s'.", msg_type)
         return {"status": "ok"}
 
-    ctx = InboundContext(
-        db=db,
-        client=client,
-        conv=conv,
-        sender_phone=sender_igsid,
-        message=message,
-        user_text=user_text,
-        wamid=mid,
-        btn_nonce_parsed=None,
-        download_media=_ig_media_downloader(getattr(client, "instagram_access_token", None)),
-        is_whatsapp=False,
-    )
-    result = await handle_inbound_message(ctx)
-
-    try:
-        await send_pipeline_result(
-            result, ig_user_id=ig_user_id, recipient_igsid=sender_igsid,
-            db=db, conv=conv,
+    # Message batching (see app/services/message_batcher.py): a burst of typed DMs is answered once. Postback taps,
+    # images and voice notes are never batched.
+    settings = get_settings()
+    batch_key = ("instagram", client.id, sender_igsid)
+    batch_window = float(getattr(settings, "message_batch_window_seconds", 0) or 0)
+    is_plain_text = msg_type == "text"
+    if batch_window > 0 and is_plain_text and message_batcher.try_join(
+        batch_key, user_text, mid, max_messages=settings.message_batch_max_messages,
+    ):
+        return {"status": "batched"}
+    lead = batch_window > 0 and is_plain_text and message_batcher.eligible(conv, user_text)
+    async with message_batcher.turn(
+        batch_key, enabled=batch_window > 0, lead=lead, text=user_text, wamid=mid, window=batch_window,
+        short_window=float(settings.message_batch_short_window_seconds),
+        extended_window=float(settings.message_batch_extended_window_seconds),
+        max_wait=float(settings.message_batch_max_wait_seconds), max_messages=int(settings.message_batch_max_messages),
+    ) as batch_turn:
+        if batch_turn.waited > 0.05:
+            try:
+                await db.refresh(conv)      # an earlier turn of this sender may have changed the conversation meanwhile
+            except Exception as exc:
+                logger.warning("conv refresh after batching failed conv=%s: %s", getattr(conv, "id", None), exc)
+        if batch_turn.text != user_text:
+            user_text = batch_turn.text
+            try:
+                message.text.body = user_text
+            except Exception:
+                pass
+        ctx = InboundContext(
+            db=db,
+            client=client,
+            conv=conv,
+            sender_phone=sender_igsid,
+            message=message,
+            user_text=user_text,
+            wamid=mid,
+            btn_nonce_parsed=None,
+            download_media=_ig_media_downloader(getattr(client, "instagram_access_token", None)),
+            is_whatsapp=False,
+            reply_delay_credit=batch_turn.waited,
         )
-    except Exception as exc:
-        logger.error("Instagram send error: %s", exc)
+        result = await handle_inbound_message(ctx)
 
-    return {"status": result.status}
+        try:
+            await send_pipeline_result(
+                result, ig_user_id=ig_user_id, recipient_igsid=sender_igsid,
+                db=db, conv=conv,
+            )
+        except Exception as exc:
+            logger.error("Instagram send error: %s", exc)
+
+        return {"status": result.status}
 
 
 async def _handle_comment(
@@ -395,7 +428,7 @@ async def _handle_comment(
         logger.info("Duplicate Instagram comment %s — skipping.", comment_id)
         return {"status": "ok"}
 
-    if not client.ig_comment_autoreply_enabled:
+    if not client.ig_comment_autoreply_enabled or getattr(client, "bot_active", True) is False:   # not live yet: no auto-replies
         logger.info(
             "Comment auto-reply disabled for client=%s — skipping comment %s.",
             client.id, comment_id,

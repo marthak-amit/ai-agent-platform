@@ -1,0 +1,16 @@
+name: qty_minimum
+description: 'conv=60 v1.6: "0000", "0" and "-2" at the quantity question are "Quantity must be at least 1." (then the quantity question again) — no planner, nothing changed.'
+turns:
+  - user: "I want a blue xxl lehenga"
+    plan: {actions: [{type: add_line, sku: LH10042, variant: {color: Blue, size: XXL}}]}
+    expect: {reply_contains: ["How many"]}
+  - user: "0000"
+    expect:
+      fast_path: qty_min
+      planner_calls: 0
+      reply_contains: ["Quantity must be at least 1.", "How many"]
+      cart: {lines: [{sku: LH10042, color: Blue, size: XXL, qty: null}]}
+  - user: "-2"
+    expect: {fast_path: qty_min, planner_calls: 0, reply_contains: ["Quantity must be at least 1."]}
+  - user: "2"
+    expect: {fast_path: quantity, cart: {lines: [{sku: LH10042, color: Blue, size: XXL, qty: 2}]}}

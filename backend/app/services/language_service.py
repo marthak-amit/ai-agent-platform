@@ -144,6 +144,7 @@ bata batao bataiye kar karo karna karni karein karenge mera meri mere aap aapka
 aapki aapke apka apki tum tumhara tumhari hum hamara hamare wala wali vala vali mein bhejo bhej bhejiye
 bhijwao hoga hogi honge milega milegi milta milti rahe raha rahi kaun kahan kaha kyun kyu kidhar kuch
 sirf pasand liye liya diya diye gaya gayi
+dekh dekho dekhna dekhiye dekhe deke dikhaiye dikhado dikhade dekhao de
 """.split())
 
 # Weak Hindi cues: count half, so a stronger Gujarati/Marathi cue in the same message wins ("ahe ka").

@@ -2,8 +2,14 @@
 Onboarding router.
 
 Endpoints:
-- POST /onboarding/setup-agent : configure the AI agent for the authenticated client
-- GET  /onboarding/status      : return setup completion percentage and step checklist
+- POST   /onboarding/setup-agent   : configure the AI agent for the authenticated client
+- GET    /onboarding/status        : return setup completion percentage and step checklist
+- POST   /onboarding/quick-start   : the one screen after first login (business name + language) + sample products
+- GET    /onboarding/checklist     : dashboard setup checklist, derived from real state
+- DELETE /onboarding/demo-products : one-click "Remove samples"
+- POST   /onboarding/go-live       : switch the bot on for real customers and start the trial
+
+PATCH /onboarding/progress (the old wizard's step counter) is kept for old clients but gates nothing.
 """
 
 import logging
@@ -16,7 +22,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.models.client import BUSINESS_TYPES, Client
 from app.routers.auth import get_owner_client as get_current_client
-from app.services import onboarding_service
+from app.schemas.onboarding import (
+    ChecklistOut,
+    GoLiveOut,
+    GoLiveRequest,
+    QuickStartOut,
+    QuickStartRequest,
+    RemoveDemoOut,
+)
+from app.services import account_lifecycle, onboarding_service
+from app.services.catalogue_service import ProductInUseError
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/onboarding", tags=["onboarding"])
@@ -208,4 +223,83 @@ async def update_progress(
     return ProgressResponse(
         onboarding_step=current_client.onboarding_step,
         onboarding_completed=current_client.onboarding_completed,
+    )
+
+
+# ── dashboard-first onboarding ────────────────────────────────────────────────
+
+@router.post("/quick-start", response_model=QuickStartOut, status_code=status.HTTP_200_OK)
+async def quick_start(
+    body: QuickStartRequest,
+    current_client: Annotated[Client, Depends(get_current_client)],
+    db: AsyncSession = Depends(get_db),
+) -> QuickStartOut:
+    """
+    Save business name + dashboard language and, the first time, seed three sample products.
+
+    Returns:
+        The saved values and how many sample products this call created (0 when re-submitted).
+    """
+    created = await account_lifecycle.quick_start(db, current_client, body.business_name, body.language)
+    return QuickStartOut(
+        business_name=current_client.business_name, language=current_client.dashboard_language,
+        demo_products_created=created,
+    )
+
+
+@router.get("/checklist", response_model=ChecklistOut, status_code=status.HTTP_200_OK)
+async def get_checklist(
+    current_client: Annotated[Client, Depends(get_current_client)],
+    db: AsyncSession = Depends(get_db),
+) -> ChecklistOut:
+    """
+    Return the setup checklist. Every item's status comes from real state (product count, agent config, channel
+    credentials, a passed simulator test, bot_active) — nothing is ticked manually.
+    """
+    return ChecklistOut(**await account_lifecycle.build_checklist(db, current_client))
+
+
+@router.delete("/demo-products", response_model=RemoveDemoOut, status_code=status.HTTP_200_OK)
+async def remove_demo_products(
+    current_client: Annotated[Client, Depends(get_current_client)],
+    db: AsyncSession = Depends(get_db),
+) -> RemoveDemoOut:
+    """Delete the sample products in one click. Products the owner added themselves are never touched."""
+    try:
+        removed = await account_lifecycle.remove_demo_products(db, current_client)
+    except ProductInUseError as exc:    # an open order still references a sample product
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "PRODUCT_IN_USE", "message": str(exc)},
+        ) from exc
+    return RemoveDemoOut(removed=removed)
+
+
+@router.post("/go-live", response_model=GoLiveOut, status_code=status.HTTP_200_OK)
+async def go_live(
+    body: GoLiveRequest,
+    current_client: Annotated[Client, Depends(get_current_client)],
+    db: AsyncSession = Depends(get_db),
+) -> GoLiveOut:
+    """
+    Switch the assistant on for real customers. The free trial starts NOW (not at signup).
+
+    Raises:
+        HTTPException 409: SETUP_INCOMPLETE (with `missing`), DEMO_PRODUCTS_PRESENT, or TRIAL_ALREADY_USED
+            (the WhatsApp number already had its one trial — pick a plan instead).
+    """
+    try:
+        result = await account_lifecycle.go_live(db, current_client.id, remove_demo=body.remove_demo_products)
+    except account_lifecycle.LifecycleError as exc:
+        status_code = status.HTTP_404_NOT_FOUND if exc.code == "NOT_FOUND" else status.HTTP_409_CONFLICT
+        raise HTTPException(
+            status_code=status_code, detail={"code": exc.code, "message": exc.message, **exc.extra},
+        ) from exc
+    await db.refresh(current_client)
+    return GoLiveOut(
+        account_status=current_client.account_status,
+        bot_active=bool(current_client.bot_active),
+        go_live_at=current_client.go_live_at,
+        trial=await account_lifecycle.trial_summary(db, current_client),
+        demo_products_removed=result.demo_removed,
     )

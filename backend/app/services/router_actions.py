@@ -32,7 +32,8 @@ from app.config import get_settings
 from app.schemas.router import RouterAction, RouterDecision, RouterTrace
 from app.services import (
     catalogue_service, conversation_control, conversation_flow, conversation_service, customer_service,
-    intent_router, knowledge_service, llm_health, payment_verification_service,
+    intent_router, knowledge_service, llm_health, order_recovery, payment_verification_service, shop_context_service,
+    spam_guard,
 )
 from app.services import language_service as _lang_svc
 from app.services import order_pipeline as op
@@ -59,8 +60,17 @@ _PASSTHROUGH_SLOTS = frozenset({"name", "address", "phone", "breakdown"})   # fr
 _PII_SLOTS = frozenset({"name", "address", "phone"})
 _ORDER_DRAFT_STAGES = frozenset({"order_collection", "awaiting_final_confirmation", "awaiting_switch_confirm"})
 _MAX_LIST = 5
+# "Did you mean A or B?" is only shown for guesses whose name matches at least this share of the customer's words.
+_CLARIFY_MIN_MATCH_SCORE = 0.6
+# The model's verdicts that a deterministic "I'm lost" phrase overrules (a complaint/handoff or a real request is left alone).
+_CONFUSION_OVERRIDES = frozenset({
+    RouterAction.CANCEL_ORDER, RouterAction.SMALLTALK, RouterAction.GENERAL_ANSWER, RouterAction.OUT_OF_SCOPE,
+    RouterAction.FAQ, RouterAction.GREETING,
+})
 # Invalid answers to the same colour/size question before the reply also offers the catalogue / a human.
 _INVALID_OPTION_ESCAPE_AT = 2
+# While a free-text slot (name/address/phone) is open, an out_of_scope verdict needs at least this confidence.
+_OUT_OF_SCOPE_FREE_TEXT_MIN = 0.9
 
 # General-answer guard: the model must not state facts the engine owns.
 _UNSAFE_HINT_RE = re.compile(
@@ -124,6 +134,13 @@ def _fmt_date(d, lang: str = "english") -> str:
     """'12 Oct' — month names in the customer's own script where we have them (other languages: English abbreviation)."""
     months = _MONTHS.get(lang)
     return f"{d:%d} {months[d.month - 1]}" if months else f"{d:%d %b}"
+
+
+def eta_window_line(lang: str, date_from, date_to) -> str:
+    """"Expected delivery: 20 Oct – 24 Oct." — or just "20 Oct" when both ends are the same day (never "20 Oct – 20 Oct")."""
+    if date_from == date_to:
+        return _t(lang, "rt_eta_single", date=_fmt_date(date_from, lang))
+    return _t(lang, "rt_eta_window", date_from=_fmt_date(date_from, lang), date_to=_fmt_date(date_to, lang))
 
 
 def _catalogue_url(client) -> str:
@@ -238,7 +255,7 @@ async def render_order_status(db, order, client, focus: str, lang: str) -> str:
             return _t(lang, "rt_eta_awaiting", days=days)
         if eta["state"] == "overdue":
             return _t(lang, "rt_eta_overdue", days=days)
-        return _t(lang, "rt_eta_window", date_from=_fmt_date(eta["from"], lang), date_to=_fmt_date(eta["to"], lang))
+        return eta_window_line(lang, eta["from"], eta["to"])
 
     def _tracking_line() -> str:
         """Courier/tracking line for dispatched orders (empty when the seller hasn't entered it)."""
@@ -384,6 +401,8 @@ def closest_alternatives(all_products: list, query: str, f, k: int = 3) -> list:
     if not live:
         return []
     scores = {id(p): s for s, p in catalogue_service.search_products_with_scores(live, query, top_k=len(live))} if query.strip() else {}
+    if query.strip() and not scores:
+        return []     # the shop sells nothing like what was asked ("shoes" at a kurti shop): never suggest unrelated items
     pool = [p for p in live if id(p) in scores] or live
     target = f.max_price if f.max_price is not None else f.min_price
 
@@ -403,6 +422,23 @@ def closest_alternatives(all_products: list, query: str, f, k: int = 3) -> list:
         return (-_soft_matches(p), gap, -scores.get(id(p), 0))
 
     return sorted(pool, key=_key)[:k]
+
+
+def out_of_stock_matches(all_products: list, query: str, k: int = 2) -> list:
+    """
+    Sold-out catalogue products the query names — only when they match it better than anything in stock does
+    ("red silk saree" with that saree sold out), so a colour/price miss on in-stock products is never reported as "out of stock".
+    """
+    if not query.strip():
+        return []
+    live = [p for p in all_products if intent_router.product_in_stock(p)]
+    sold_out = [p for p in all_products if not intent_router.product_in_stock(p)]
+    dead_hits = catalogue_service.search_products_with_scores(sold_out, query, top_k=k)
+    if not dead_hits:
+        return []
+    live_hits = catalogue_service.search_products_with_scores(live, query, top_k=1)
+    best_live = live_hits[0][0] if live_hits else 0
+    return [p for score, p in dead_hits if score > best_live]
 
 
 _PHOTO_WORDS = ("image", "images", "photo", "photos", "picture", "pictures", "foto", "fotos")
@@ -487,7 +523,7 @@ async def _switch_offer(rc, lang: str, product) -> str:
     except Exception as exc:  # noqa: BLE001 — without the stash the offer would be a lie
         logger.error("router switch-offer stash error conv=%s: %s", rc.conv.id, exc)
         return ""
-    return _t(lang, "switch_offer", product=product.name, pinned=pinned.name)
+    return _t(lang, "switch_offer3", product=product.name, pinned=pinned.name)
 
 
 def extract_variant_filters(product, text: str):
@@ -515,11 +551,83 @@ def _product_card(lang: str, product) -> str:
     return _t(lang, "rt_card", name=product.name, sku=product.sku, price=format_price(product.price or 0), options_line=options_line)
 
 
+def _order_is_just_opened(rc) -> bool:
+    """True while the draft has nothing committed yet (first questions only: no quantity / payment / summary)."""
+    conv = rc.conv
+    return (
+        rc.stage == "order_collection"
+        and not getattr(conv, "pending_order_quantity", None)
+        and not getattr(conv, "payment_method", None)
+        and not getattr(conv, "summary_shown", False)
+        and not getattr(conv, "interrupted_sku", None)
+    )
+
+
+async def _own_product_reply(rc, lang: str, product, route: str, *, answer: str | None = None, images: list | None = None):
+    """
+    The customer asked about the product they are ALREADY ordering ("DP73950 is available?", its name, its photo).
+
+    Never the canned "your order is still open — answer the last question or type cancel" line. A draft that
+    has only just opened (no quantity yet) shows the ordinary browse card + "Would you like to order? (Yes / No)"
+    with its buttons, exactly like a product the customer had not started ordering (the stage goes back to
+    product_inquiry — the same demotion as `order_pipeline.run_empty_order_product_reference_guard`; a "yes"
+    re-enters the order with colour / size kept). A real order (quantity given or beyond) keeps its state: the
+    reply is the card (or the answer) followed by the open question itself, re-asked with its buttons.
+
+    `answer` is a ready reply to a specific question (a colour / size check) — it is sent instead of the plain
+    card. Returns None when the draft is not live / nothing applies, so the caller keeps its own reply.
+    """
+    if not _order_note(rc, lang, [product.sku]):
+        return None                                    # not a live draft (payment stage, stale, nothing pinned)
+    cta = f"\n{_t(lang, 'rt_order_cta')}"
+    try:
+        variant_info = await catalogue_service.get_product_variant_info(rc.db, product)
+        if _order_is_just_opened(rc):
+            await conversation_service.update_stage(rc.db, rc.conv.id, "product_inquiry")
+            rc.conv.current_stage = "product_inquiry"
+            await conversation_service.set_last_shown_sku(rc.db, rc.conv.id, product.sku)
+            rc.conv.last_shown_sku = product.sku
+            text = answer if answer else op.render_product_card(lang, product, variant_info, ask_order=True)
+            if cta.strip() not in text:
+                text = f"{text}\n{cta}"
+            result = await _send_with_buttons(rc.db, rc.conv, rc.client, "product_inquiry", text, None, product, variant_info)
+            if images:
+                result.pre_images = images
+            return await rc.reply(text, route, lang, result=result)
+        body = (answer or op.render_product_card(lang, product, variant_info, ask_order=False)).replace(cta, "")
+        if rc.next_slot:
+            outcome = await _reask(rc, lang, None, route, prefix_text=body)
+        elif rc.stage == "awaiting_final_confirmation":
+            summary = await op._render_order_reply(
+                action="show_summary", conv=rc.conv, db=rc.db, client=rc.client, next_slot=None, variant_info=variant_info,
+                customer_profile=rc.profile, available_stock=None, declined_saved_address=False, lang=lang,
+            )
+            text = f"{body}\n\n{summary}"
+            result = await _send_with_buttons(rc.db, rc.conv, rc.client, rc.stage, text, None, product, variant_info)
+            outcome = await rc.reply(text, route, lang, result=result)
+        else:
+            return None
+        if images and outcome.early_result is not None:
+            outcome.early_result.pre_images = images
+        return outcome
+    except Exception as exc:  # noqa: BLE001 — the caller's own reply is the fallback
+        logger.warning("router own-product reply failed conv=%s: %s", rc.conv.id, exc)
+        return None
+
+
 async def _photo_reply(rc, lang: str, product):
     """One product's photo + card; says so (instead of repeating the card) when no photo is on file."""
     images = await _photo_images(rc, [product], captions=False)
     card = _product_card(lang, product)
     text = card if images else f"{_t(lang, 'rt_no_photo', product=product.name)}\n\n{card}"
+    if rc.stage in intent_router.ORDER_ACTIVE_STAGES and product.sku == rc.conv.pending_product_sku:
+        no_photo = None if images else _t(lang, "rt_no_photo", product=product.name)
+        own = await _own_product_reply(
+            rc, lang, product, "show_product_photo", images=images or None,
+            answer=f"{no_photo}\n\n{_product_card(lang, product)}" if no_photo else None,
+        )
+        if own is not None:
+            return own
     if rc.stage in intent_router.ORDER_ACTIVE_STAGES:
         note = _order_note(rc, lang, [product.sku]) or await _switch_offer(rc, lang, product)
         text = f"{text}\n\n{note}" if note else text
@@ -536,10 +644,10 @@ async def _photo_reply(rc, lang: str, product):
 
 async def _list_reply(
     rc, lang: str, header_keys: list[str], products: list, *, route: str, footer: bool = True,
-    images: list | None = None,
+    images: list | None = None, lead_lines: list[str] | None = None,
 ):
     """Numbered product list + an open pick-menu (outside an order) + the pipeline's button/list rules."""
-    lines = []
+    lines = list(lead_lines or [])
     for key in header_keys:
         lines.append(_t(lang, key))
     lines.append("")
@@ -564,12 +672,163 @@ async def _list_reply(
     return await rc.reply(text, route, lang, result=result)
 
 
+# ── "show me more" / "another one?" — the next items of the SAME search, never the product already in play ──────────
+
+_MORE_PHRASES: tuple[str, ...] = (
+    "more products", "more like", "some more", "show more", "show me more", "more options", "more designs", "more items",
+    "more of these", "any more products", "another one", "another product", "another design", "another item", "another option",
+    "similar", "like that", "like this", "like it", "other options", "other products", "other designs", "other items",
+    "something else", "other one", "aur dikhao", "aur batao", "aur dikhana", "aur kuch", "aur products", "aur options",
+    "kuch aur", "dusra dikhao", "dusre dikhao", "doosra dikhao", "biju batavo", "biju joiye", "bija batavo", "bija joiye", "biju kai",
+    "और दिखाओ", "और बताओ", "कुछ और", "दूसरा दिखाओ", "બીજું બતાવો", "બીજું કંઈક", "બીજા બતાવો", "બીજું જોઈએ",
+)
+
+
+def is_more_request(text: str) -> bool:
+    """"show me some more products like that", "another one?", "aur dikhao" — wants further items, not the current one."""
+    from app.services import command_words as cw
+
+    norm = cw.normalize((text or "").replace("'", ""))
+    if not norm:
+        return False
+    padded = f" {norm} "
+    return any(f" {cw.normalize(p)} " in padded for p in _MORE_PHRASES)
+
+
+def _ordered_skus(rc) -> set[str]:
+    """SKUs of this customer's recent orders (header row + every line item), upper-case."""
+    skus: set[str] = set()
+    rows = list(rc.ctx.order_rows) if rc.ctx is not None and rc.ctx.order_rows else []
+    for order in rows:
+        if getattr(order, "product_sku", None):
+            skus.add(order.product_sku.upper())
+        for li in getattr(order, "line_items", None) or []:
+            if getattr(li, "product_sku", None):
+                skus.add(li.product_sku.upper())
+    return skus
+
+
+async def _recent_order_skus(rc) -> set[str]:
+    """`_ordered_skus`, loading the customer's newest orders when the router context is not available."""
+    skus = _ordered_skus(rc)
+    if skus or rc.ctx is not None:
+        return skus
+    try:
+        rows = await intent_router.fetch_recent_orders(rc.db, rc.client, rc.conv, rc.sender_phone)
+    except Exception:  # noqa: BLE001
+        return skus
+    for order in rows:
+        if getattr(order, "product_sku", None):
+            skus.add(order.product_sku.upper())
+        for li in getattr(order, "line_items", None) or []:
+            if getattr(li, "product_sku", None):
+                skus.add(li.product_sku.upper())
+    return skus
+
+
+async def _remember_search(rc, query: str, f, shown: list, *, replace: bool) -> None:
+    """Store {query, filters, shown_skus, ts} so "another one?" continues this search (shown SKUs accumulate)."""
+    previous = rc.conv.last_search if isinstance(getattr(rc.conv, "last_search", None), dict) else {}
+    shown_skus = [] if replace else list(previous.get("shown_skus") or [])
+    shown_skus += [p.sku for p in shown if p.sku and p.sku not in shown_skus]
+    memo = {
+        "query": query, "filters": f.model_dump(exclude_none=True) if f is not None else {},
+        "shown_skus": shown_skus[-30:], "ts": op.datetime.now(op.timezone.utc).isoformat(),
+    }
+    try:
+        await conversation_service.update_order_field(rc.db, rc.conv.id, "last_search", memo)
+        rc.conv.last_search = memo
+    except Exception as exc:  # noqa: BLE001 - a search memo is a nicety
+        logger.error("last_search write error conv=%s: %s", rc.conv.id, exc)
+
+
+async def _reference_product(rc, all_products: list):
+    """The product "that" / "this" / "another one" is relative to: pinned, last shown, else the last ordered one."""
+    by_sku = {(p.sku or "").upper(): p for p in all_products if p.sku}
+    for sku in (rc.conv.pending_product_sku, rc.conv.last_shown_sku):
+        if sku and sku.upper() in by_sku:
+            return by_sku[sku.upper()]
+    for sku in sorted(await _recent_order_skus(rc)):
+        if sku in by_sku:
+            return by_sku[sku]
+    return None
+
+
+async def handle_more_like_this(
+    rc, lang: str, *, query: str = "", filters=None, cheaper_than: float | None = None, route: str = "search_more",
+    header_key: str = "rt_more_header", none_key: str = "rt_more_none", prefix_text: str | None = None,
+):
+    """
+    The next 3–5 items of the customer's search, without the product already in play.
+
+    Excluded: the pinned product, the last shown one, the customer's recent orders and everything this search has
+    already shown. The query is the customer's own (`last_search`, then the model's), falling back to the category of
+    the product "that" refers to. Never re-pins anything: the reply is a list (WhatsApp list / buttons) whose taps
+    pick a product the normal way. `cheaper_than` keeps only cheaper items (the discount follow-up).
+    """
+    from app.schemas.router import RouterFilters
+
+    all_products = rc.all_products or await catalogue_service.list_products(rc.db, rc.client.id, is_active=True)
+    last = rc.conv.last_search if isinstance(getattr(rc.conv, "last_search", None), dict) else {}
+    f = filters if filters is not None and not filters.is_empty() else RouterFilters(**(last.get("filters") or {}))
+    q = (query or last.get("query") or "").strip()
+    ref = await _reference_product(rc, all_products)
+    exclude = {(x or "").upper() for x in (last.get("shown_skus") or [])} | await _recent_order_skus(rc)
+    exclude |= {(x or "").upper() for x in (rc.conv.pending_product_sku, rc.conv.last_shown_sku) if x}
+    if ref is not None:
+        exclude.add((ref.sku or "").upper())
+
+    def _pick(pool: list) -> list:
+        """In-stock, not excluded, (cheaper), best first."""
+        out = [p for p in pool if (p.sku or "").upper() not in exclude]
+        if cheaper_than is not None:
+            out = [p for p in out if (p.price or 0) < cheaper_than]
+        return out
+
+    hits = _pick(search_products(all_products, q, f)) if q else []
+    if not hits and ref is not None and ref.category:
+        hits = _pick(search_products(all_products, ref.category, RouterFilters()))
+    if not hits and cheaper_than is not None:
+        hits = sorted(_pick([p for p in all_products if intent_router.product_in_stock(p)]), key=lambda p: -(p.price or 0))
+    if not hits and not q and ref is None:
+        hits = _pick([p for p in all_products if intent_router.product_in_stock(p)])
+    shown = hits[:_MAX_LIST]
+    if not shown:
+        text = _t(lang, none_key, catalogue_url=_catalogue_url(rc.client))
+        text = f"{prefix_text}\n\n{text}" if prefix_text else text
+        return await rc.reply(text, f"{route}_none", lang)
+    await _remember_search(rc, q or (ref.category if ref is not None and ref.category else ""), f, shown, replace=False)
+    return await _list_reply(
+        rc, lang, [header_key], shown, route=route, lead_lines=[prefix_text, ""] if prefix_text else None,
+    )
+
+
 async def handle_search_catalog(rc, decision: RouterDecision):
-    """search_catalog(query, filters): DB filter + fuzzy; 0 hits → generic not-found + closest alternatives."""
+    """
+    search_catalog(query, filters): DB filter + fuzzy.
+
+    A sold-out product that matches the query better than anything in stock → "<product> is currently out of
+    stock" (+ similar in-stock items, if any); 0 hits and nothing alike in the catalogue → "not available" + the
+    catalogue link; 0 hits on filters only → generic not-found + the closest in-stock alternatives.
+    """
     lang = template_language(decision, rc.user_text, rc.conv)
     args = decision.args
     query = args.query or ""
+    if is_more_request(rc.user_text) and rc.stage not in intent_router.ORDER_ACTIVE_STAGES:
+        # "show me some more products like that": the next items of the same search — never the product already in play.
+        return await handle_more_like_this(rc, lang, query=query, filters=args.filters)
     hits = search_products(rc.all_products, query, args.filters)
+    browse = _t(lang, "rt_browse_more", catalogue_url=_catalogue_url(rc.client))
+    sold_out = out_of_stock_matches(rc.all_products, query)
+    if sold_out:
+        # The shop does sell it, it is just out of stock right now → say so (catalogue names only, never the customer's text).
+        oos_line = _t(lang, "rt_search_oos", product=", ".join(p.name for p in sold_out))
+        similar = hits[:_MAX_LIST] or closest_alternatives(rc.all_products, query, args.filters)
+        if not similar:
+            return await rc.reply(f"{oos_line}\n{browse}", "search_out_of_stock", lang)
+        return await _list_reply(
+            rc, lang, ["rt_alternatives_header"], similar, route="search_out_of_stock", lead_lines=[oos_line],
+        )
     mid_order = rc.stage in intent_router.ORDER_ACTIVE_STAGES
     photo = wants_photo(decision, rc.user_text)
     if len(hits) == 1 and photo:
@@ -580,11 +839,13 @@ async def handle_search_catalog(rc, decision: RouterDecision):
     if hits:
         shown = hits[:_MAX_LIST]
         images = await _photo_images(rc, shown, captions=True) if photo else None
+        if not mid_order:
+            await _remember_search(rc, query, args.filters, shown, replace=True)
         return await _list_reply(rc, lang, ["rt_search_header"], shown, route="search", images=images)
     alternatives = closest_alternatives(rc.all_products, query, args.filters)
     if not alternatives:
-        reply = f"{_t(lang, 'rt_not_found')}\n{_t(lang, 'rt_browse_more', catalogue_url=_catalogue_url(rc.client))}"
-        return await rc.reply(reply, "search_none", lang)
+        # Nothing like it in the catalogue at all: "not available" + the catalogue link, no unrelated suggestions.
+        return await rc.reply(f"{_t(lang, 'rt_not_stocked')}\n{browse}", "search_none", lang)
     return await _list_reply(
         rc, lang, ["rt_not_found", "rt_alternatives_header"], alternatives, route="search_alternatives",
     )
@@ -645,8 +906,10 @@ async def handle_show_product(rc, decision: RouterDecision):
         return await _photo_reply(rc, lang, product)
     if answer is not None:
         if mid_order and product.sku == rc.conv.pending_product_sku:
-            note = _order_note(rc, lang, [product.sku])
-            answer = f"{answer}\n\n{note}" if note else answer
+            images = await _photo_images(rc, [product], captions=False) if photo else []
+            own = await _own_product_reply(rc, lang, product, "show_product_variant", answer=answer, images=images or None)
+            if own is not None:
+                return own
         elif mid_order:
             # A different product than the one being ordered: answer, then offer to switch (its own "order it?"
             # prompt is replaced — a bare "yes" must mean "switch", not an answer to the open question).
@@ -661,11 +924,21 @@ async def handle_show_product(rc, decision: RouterDecision):
                 logger.error("router last_shown_sku error: %s", exc)
         images = await _photo_images(rc, [product], captions=False) if photo else []
         result = op.PipelineResult(text=answer, pre_images=images) if images else None
+        if mid_order and rc.conv.interrupted_sku:
+            # A switch offer is part of the answer: give it its Switch / Add both / Keep current buttons.
+            result = result or op.PipelineResult(text=answer)
+            result.buttons = op.switch_offer_buttons(lang, rc.conv)
         return await rc.reply(answer, "show_product_variant", lang, result=result)
     if mid_order:
+        if product.sku == rc.conv.pending_product_sku:
+            own = await _own_product_reply(rc, lang, product, "show_product_card")
+            if own is not None:
+                return own
         card = _product_card(lang, product)
         note = _order_note(rc, lang, [product.sku]) or await _switch_offer(rc, lang, product)
-        return await rc.reply(f"{card}\n\n{note}" if note else card, "show_product_card", lang)
+        buttons = op.switch_offer_buttons(lang, rc.conv) if rc.conv.interrupted_sku and not _order_note(rc, lang, [product.sku]) else None
+        text = f"{card}\n\n{note}" if note else card
+        return await rc.reply(text, "show_product_card", lang, result=op.PipelineResult(text=text, buttons=buttons) if buttons else None)
     return RouterOutcomeHandled.passthrough(rc, canonical_product_text(product, rc.all_products))
 
 
@@ -836,6 +1109,16 @@ async def handle_change_slot(rc, decision: RouterDecision):
     stored_value = None if clearing else new_value
     await conversation_service.update_order_field(rc.db, conv.id, column, stored_value)
     setattr(conv, column, stored_value)
+    if (
+        slot == "quantity" and new_value and new_value > 1 and getattr(product, "has_variants", False)
+        and not conv.cart_variant_mode and rc.next_slot != "variant_mode"
+        and all((not vi.get(f"needs_{k}") or v) for k, v in (("color", color), ("size", size), ("material", material)))
+    ):
+        # "sorry i want 2 quantity" (order already past the split question) with the colour/size already chosen:
+        # keep that choice for every piece and go straight back to the summary. The "same or different for each?"
+        # question is for a customer who is deciding that, or who asks for different colours/sizes themselves.
+        await conversation_service.update_order_field(rc.db, conv.id, "cart_variant_mode", "same")
+        conv.cart_variant_mode = "same"
     if clear_qty:
         await conversation_service.update_order_field(rc.db, conv.id, "pending_order_quantity", None)
         conv.pending_order_quantity = None
@@ -895,7 +1178,9 @@ async def handle_cancel_order(rc, decision: RouterDecision):
     await _clear_menu(db, conv)
 
     async def _reset_and_ok(route: str):
-        """Clear the draft slots, back to greeting, 'order cancelled'."""
+        """Snapshot the draft (so "continue" can restore it), clear the slots, back to greeting, 'order cancelled'."""
+        await order_recovery.close_cancel_confirm(db, conv)
+        await order_recovery.save_cancelled_draft(db, conv)
         for field_name, field_value in op.CANCEL_RESET_FIELDS:
             try:
                 await conversation_service.update_order_field(db, conv.id, field_name, field_value)
@@ -931,6 +1216,215 @@ async def handle_cancel_order(rc, decision: RouterDecision):
             "cancel_not_allowed", lang,
         )
     return await rc.reply(_t(lang, "rt_cancel_none"), "cancel_none", lang)
+
+
+def has_cancellable_order(rc) -> bool:
+    """True when there is a draft or an unpaid order that a cancel would actually act on."""
+    if rc.stage in _ORDER_DRAFT_STAGES and rc.conv.pending_product_sku:
+        return True
+    latest = rc.ctx.order_rows[0] if rc.ctx is not None and rc.ctx.order_rows else None
+    return latest is not None and latest.status in ("pending_payment", "payment_submitted")
+
+
+async def ask_cancel_confirmation(rc, decision: RouterDecision | None):
+    """
+    "Cancel this order? (Yes / No)" — the router *thought* the customer wants to cancel but they did not say so in
+    explicit words (or the model was not sure). Nothing changes: stage and slots stay, `cancel_confirm_at` opens the
+    question and the next Yes/No is read by `order_recovery.run_recovery_guard`.
+    """
+    lang = template_language(decision, rc.user_text, rc.conv)
+    await _clear_menu(rc.db, rc.conv)
+    await order_recovery.open_cancel_confirm(rc.db, rc.conv)
+    text = _t(lang, "rt_cancel_confirm")
+    result = op.PipelineResult(
+        text=text,
+        buttons=[
+            op.ButtonSpec(id="cancel_yes", title=_t(lang, "btn_cancel_yes")),
+            op.ButtonSpec(id="cancel_no", title=_t(lang, "btn_cancel_no")),
+        ] if rc.conv.channel == "whatsapp" else None,
+    )
+    return await rc.reply(text, "cancel_confirm_ask", lang, result=result)
+
+
+async def handle_cancel_declined(rc):
+    """The customer said No to "Cancel this order?": nothing was cancelled, carry on where the order was."""
+    lang = template_language(None, rc.user_text, rc.conv)
+    resumed = await resume_open_step(rc, lang, prefix_key="rt_cancel_kept", route="cancel_kept")
+    if resumed is not None:
+        return resumed
+    return await rc.reply(_t(lang, "rt_cancel_kept"), "cancel_kept", lang)
+
+
+async def render_summary_text(rc, lang: str, product=None, vi: dict | None = None) -> str | None:
+    """
+    The order summary for a complete draft (and mark it shown), or None when something is still missing.
+
+    Same renderer the slot machine uses, so wording, totals, ETA and payment line are identical everywhere.
+    """
+    from app.services.order_state_machine import RenderError
+
+    conv = rc.conv
+    product = product or rc.pinned_product
+    vi = vi if vi is not None else (rc.variant_info or {})
+    available_stock = None
+    try:
+        saved = rc.pinned_product
+        rc.pinned_product = product
+        ok, available_stock = await _variant_stock(rc, conv.selected_color, conv.selected_size, conv.selected_material)
+        rc.pinned_product = saved
+    except Exception:  # noqa: BLE001
+        available_stock = None
+    try:
+        body = await op._render_order_reply(
+            action="show_summary", conv=conv, db=rc.db, client=rc.client, next_slot=None, variant_info=vi,
+            customer_profile=rc.profile, available_stock=available_stock, declined_saved_address=False, lang=lang,
+        )
+    except RenderError as exc:
+        logger.warning("render_summary_text conv=%s: %s", conv.id, exc)
+        return None
+    await conversation_service.update_order_field(rc.db, conv.id, "summary_shown", True)
+    conv.summary_shown = True
+    return body
+
+
+async def resume_open_step(rc, lang: str, *, prefix_key: str | None = None, prefix_text: str | None = None, route: str = "resume_step"):
+    """
+    Re-send the question the customer was last asked, with its buttons, optionally after a one-line prefix.
+
+    * an order slot is open  -> that slot question (`_reask`);
+    * the order summary is waiting for Confirm -> the summary again;
+    * a product card is on offer ("Would you like to order X?") -> that question;
+    * an open "which one?" menu -> the menu again.
+    Returns None when there is nothing to resume (the caller then sends its own text). Order state is never changed.
+    """
+    conv, db, client = rc.conv, rc.db, rc.client
+    pinned, vi = rc.pinned_product, rc.variant_info or {}
+    prefix = prefix_text or (_t(lang, prefix_key) if prefix_key else "")
+    if pinned is not None and rc.stage in intent_router.ORDER_SLOT_STAGES:
+        if rc.next_slot:
+            return await _reask(rc, lang, None, route, prefix_text=prefix or None)
+        if rc.stage == "awaiting_final_confirmation":
+            body = await render_summary_text(rc, lang)
+            if body:
+                text = f"{prefix}\n\n{body}" if prefix else body
+                result = await _send_with_buttons(db, conv, client, "awaiting_final_confirmation", text, None, pinned, vi)
+                return await rc.reply(text, route, lang, result=result)
+    if getattr(conv, "pending_choice_skus", None):
+        try:
+            skus = json.loads(conv.pending_choice_skus)
+        except (TypeError, ValueError):
+            skus = []
+        products = [p for p in [await catalogue_service.find_product_by_sku(db, client.id, k) for k in skus] if p]
+        if products:
+            lines = ([prefix, ""] if prefix else []) + [_t(lang, "rt_pick_header")] + [f"{i}. {_product_line(p)}" for i, p in enumerate(products, 1)]
+            text = "\n".join(lines)
+            result = await _send_with_buttons(db, conv, client, rc.stage, text, None, None, {})
+            return await rc.reply(text, route, lang, result=result)
+    if pinned is not None and rc.stage not in intent_router.ORDER_ACTIVE_STAGES and conv.pending_product_sku:
+        ask = _t(lang, "would_you_like_to_order_named", name=pinned.name, sku=pinned.sku)
+        text = f"{prefix}\n\n{ask}" if prefix else ask
+        result = await _send_with_buttons(db, conv, client, rc.stage, text, None, pinned, vi)
+        return await rc.reply(text, route, lang, result=result)
+    return None
+
+
+_SPLIT_SLOTS = frozenset({
+    "variant_mode", "cart_item_qty", "cart_item_color", "cart_item_size", "cart_item_material", "cart_breakdown",
+    "cart_breakdown_confirm",
+})
+
+
+async def _abort_variant_split(rc) -> bool:
+    """
+    Drop a "different colours/sizes for each piece" split of the PINNED product and go back to the single-variant
+    path (`cart_variant_mode = "same"`). Items of other products in the cart (an "Add X too" order) are kept untouched.
+    Returns True when a split was actually aborted.
+    """
+    conv = rc.conv
+    pinned_sku = (conv.pending_product_sku or "").upper()
+    items = list(conv.cart_items or [])
+    foreign = [i for i in items if (i.get("sku") or "").upper() != pinned_sku]
+    splitting = (
+        conv.cart_variant_mode == "different" or rc.next_slot in _SPLIT_SLOTS
+        or any((i.get("sku") or "").upper() == pinned_sku for i in items)
+    )
+    if not splitting or rc.pinned_product is None or rc.stage not in intent_router.ORDER_SLOT_STAGES:
+        return False
+    for name, value in (
+        ("cart_items", foreign or None), ("cart_collection_mode", None), ("cart_wip_item", None),
+        ("cart_pending_confirmation", None), ("cart_variant_mode", "same"), ("summary_shown", False),
+    ):
+        await conversation_service.update_order_field(rc.db, conv.id, name, value)
+        setattr(conv, name, value)
+    rc.next_slot = conversation_flow.get_next_required_slot(conv, rc.variant_info or {})
+    stage = "order_collection" if rc.next_slot else "awaiting_final_confirmation"
+    if stage != (conv.current_stage or ""):
+        await conversation_service.update_stage(rc.db, conv.id, stage)
+        conv.current_stage = stage
+    rc.stage = stage
+    return True
+
+
+async def handle_confused(rc, decision: RouterDecision | None):
+    """
+    confused: the customer does not follow ("I can't get it", "what are you trying to say", "samjh nahi aaya", "?").
+
+    Nothing is cancelled and no answer is guessed. The last question goes out again in its simplest form with its
+    buttons; a "different colour for each piece" split is abandoned in favour of the single-variant path.
+    """
+    lang = template_language(decision, rc.user_text, rc.conv)
+    if order_recovery.cancel_confirm_open(rc.conv):
+        await order_recovery.close_cancel_confirm(rc.db, rc.conv)
+    aborted = await _abort_variant_split(rc)
+    if rc.stage == "payment":
+        return await rc.reply(_t(lang, "rt_confused_payment"), "confused_payment", lang)
+    resumed = await resume_open_step(
+        rc, lang, prefix_key="rt_confused_split" if aborted else "rt_confused_prefix", route="confused",
+    )
+    if resumed is not None:
+        return resumed
+    business = getattr(rc.client, "business_name", None) or "our shop"
+    return await rc.reply(
+        _t(lang, "rt_confused_idle", business=business, catalogue_url=_catalogue_url(rc.client)), "confused_idle", lang,
+    )
+
+
+async def handle_restore_draft(rc):
+    """
+    The customer wants the order they cancelled a moment ago ("I want to continue this", "yes"): put the saved draft
+    back and carry on from its next open step ("Restored your order: …"). Expired / sold out -> an honest message.
+    """
+    lang = template_language(None, rc.user_text, rc.conv)
+    conv, db, client = rc.conv, rc.db, rc.client
+    snap = order_recovery.restorable_draft(conv)
+    sku = (snap or {}).get("fields", {}).get("pending_product_sku")
+    product = await catalogue_service.find_product_by_sku(db, client.id, sku) if sku else None
+    if product is None or product.is_active is False or await op._is_product_out_of_stock(db, product):
+        await order_recovery.clear_cancelled_draft(db, conv)
+        return await rc.reply(_t(lang, "rt_restore_unavailable", catalogue_url=_catalogue_url(client)), "restore_unavailable", lang)
+    line = order_recovery.summary_line(snap, product.name)
+    fields = await order_recovery.restore_draft_fields(db, conv)
+    if fields is None:
+        return await rc.reply(_t(lang, "rt_restore_expired", catalogue_url=_catalogue_url(client)), "restore_expired", lang)
+    vi = await catalogue_service.get_product_variant_info(db, product)
+    if rc.profile is None:
+        try:
+            rc.profile = await customer_service.get_customer(db, client_id=client.id, phone=rc.sender_phone)
+        except Exception:  # noqa: BLE001
+            rc.profile = None
+    rc.pinned_product, rc.variant_info = product, vi
+    if conv.channel == "whatsapp" and not getattr(conv, "mobile_number", None):
+        conv.mobile_number = rc.sender_phone
+    rc.next_slot = conversation_flow.get_next_required_slot(conv, vi)
+    stage = "order_collection" if rc.next_slot else "awaiting_final_confirmation"
+    await conversation_service.update_stage(db, conv.id, stage)
+    conv.current_stage = rc.stage = stage
+    prefix = _t(lang, "rt_restored", summary=line)
+    logger.info("DRAFT restored conv=%s sku=%s next_slot=%s", conv.id, product.sku, rc.next_slot)
+    resumed = await resume_open_step(rc, lang, prefix_text=prefix, route="restore_draft")
+    if resumed is not None:
+        return resumed
+    return await rc.reply(prefix, "restore_draft", lang)
 
 
 # ── faq / handoff / greeting / free text ─────────────────────────────────────
@@ -1006,23 +1500,125 @@ def guard_reply_hint(hint: str | None, candidates: list) -> str | None:
     return hint if guarded == hint else None
 
 
+def is_pure_ack(text: str | None) -> bool:
+    """A reply that carries no information and asks nothing: fewer than 6 words, no question mark, no number, no link."""
+    t = " ".join((text or "").split())
+    if not t:
+        return True
+    return len(t.split()) < 6 and "?" not in t and "؟" not in t and not any(ch.isdigit() for ch in t) and "http" not in t.lower()
+
+
+def _is_social_message(text: str) -> bool:
+    """Thanks / goodbye / a compliment: a short friendly reply is the right answer to these."""
+    from app.services import side_questions
+
+    return cw_matches_social(text) or side_questions.detect_topic(text) in ("thanks", "bye", "positive")
+
+
+def cw_matches_social(text: str) -> bool:
+    """command_words thanks/bye (kept separate so tests can reach it without side_questions)."""
+    from app.services import command_words as cw
+
+    return cw.matches("thanks", text) or cw.matches("bye", text)
+
+
+async def _last_bot_asked_question(rc) -> bool:
+    """True when the shop's last message was a question the customer has not answered (so small talk must not bury it)."""
+    try:
+        rows = await conversation_service.get_history(rc.db, rc.conv.id, limit=4)
+    except Exception:  # noqa: BLE001
+        return False
+    last = next((m for m in reversed(rows) if m.role in ("assistant", "model") and (m.content or "").strip()), None)
+    return bool(last is not None and ("?" in last.content or "؟" in last.content))
+
+
 async def handle_free_text(rc, decision: RouterDecision):
-    """general_answer / smalltalk: the model's one-liner after the guard; otherwise a fixed friendly template."""
+    """
+    general_answer / smalltalk: the model's one-liner after the guard; otherwise a fixed friendly template.
+
+    Small talk never buries an open question: when a cancelled draft can be restored, a product is pinned or the shop's
+    last message was a question, the customer gets that step back (or their order restored on "continue"), not a bare
+    "Sure, let's continue!". Replies that are pure acknowledgements are not sent for small talk at all.
+    """
     lang = template_language(decision, rc.user_text, rc.conv)
-    await _clear_menu(rc.db, rc.conv)
+    conv = rc.conv
+    social = _is_social_message(rc.user_text)
+    if decision.action == RouterAction.SMALLTALK and not social:
+        draft = order_recovery.restorable_draft(conv) is not None and not conv.pending_product_sku
+        if draft and rc.stage not in intent_router.ORDER_ACTIVE_STAGES and order_recovery.is_resume_request(rc.user_text):
+            return await handle_restore_draft(rc)
+        if draft or conv.pending_product_sku or getattr(conv, "pending_choice_skus", None) or await _last_bot_asked_question(rc):
+            resumed = await resume_open_step(rc, lang, route="smalltalk_resume")
+            if resumed is not None:
+                return resumed
+            if draft:
+                return await rc.reply(_t(lang, "rt_restore_offer"), "smalltalk_restore_offer", lang)
+    await _clear_menu(rc.db, conv)
     safe = guard_reply_hint(decision.reply_hint, rc.ctx.candidate_products)
     # The hint must be in the customer's own language and script; the claim guard above only knows
     # English / Hindi / Gujarati / Marathi words, so any other language gets the (localised) template.
     if safe and not (
         _lang_svc.reply_matches_language(safe, lang) and _lang_svc.has_claim_guard(lang)
     ):
-        logger.info("router: reply_hint dropped (language/script mismatch, lang=%s conv=%s)", lang, rc.conv.id)
+        logger.info("router: reply_hint dropped (language/script mismatch, lang=%s conv=%s)", lang, conv.id)
         safe = None
+    ack_dropped = False
+    if safe and decision.action == RouterAction.SMALLTALK and not social and is_pure_ack(safe):
+        logger.info("router: pure-ack reply_hint dropped (conv=%s)", conv.id)
+        safe, ack_dropped = None, True
     if safe:
         return await rc.reply(safe, f"{decision.action.value}_hint", lang, path="LLM", model=get_settings().llm_model_classifier)
     if decision.reply_hint:
-        logger.info("router: reply_hint rejected by guard (conv=%s)", rc.conv.id)
+        logger.info("router: reply_hint rejected by guard (conv=%s)", conv.id)
+    if ack_dropped:
+        # "Sure, let's continue!" tells the customer nothing: send the menu of what we can do instead.
+        return await rc.reply(
+            _t(lang, "rt_menu_fallback", catalogue_url=_catalogue_url(rc.client)), "smalltalk_menu", lang,
+        )
     return await rc.reply(_t(lang, "rt_general_fallback"), f"{decision.action.value}_fallback", lang)
+
+
+async def _reset_off_topic(db, conv) -> None:
+    """
+    The customer is back on topic: clear the consecutive irrelevant counter (one write, only when it was set).
+
+    A running mute is left alone — an exact SKU or a menu number must not lift it (it ends by time, or when staff resume).
+    """
+    if spam_guard.is_muted(conv):
+        return
+    await spam_guard.clear(db, conv)
+
+
+async def handle_out_of_scope(rc, decision: RouterDecision):
+    """
+    out_of_scope: the message has nothing to do with this business → a FIXED template, never model text.
+
+    Counts toward the shared consecutive-irrelevant counter (`spam_guard`). At the limit the reply is the ONE final
+    notice and the conversation is muted for a while (no router call, no LLM, no reply — see spam_guard); during an
+    order the reply instead offers a human (nothing is ever muted mid-order). Mid-order the open question is re-asked
+    after a one-line prefix, and no order state is touched.
+    """
+    conv, client = rc.conv, rc.client
+    lang = template_language(decision, rc.user_text, conv)
+    await _clear_menu(rc.db, conv)
+    order_active = rc.stage in spam_guard.ORDER_STAGES
+    strike = await spam_guard.register_strike(rc.db, conv, client, may_mute=not order_active)
+    business = getattr(client, "business_name", None) or "our shop"
+    url = _catalogue_url(client)
+    if strike.reached:
+        logger.warning(
+            "OFF_TOPIC streak (router): conv=%s count=%d muted=%s — final notice.", conv.id, strike.count, strike.muted,
+        )
+    if rc.next_slot and rc.stage in intent_router.ORDER_SLOT_STAGES:
+        key = "rt_out_of_scope_repeat" if strike.reached else "rt_out_of_scope_midorder"
+        return await _reask(rc, lang, None, "out_of_scope", prefix_text=_t(lang, key, business=business))
+    if strike.muted:
+        text = _t(lang, "rt_spam_final", business=business, catalogue_url=url, minutes=spam_guard.mute_minutes())
+    elif strike.reached:
+        text = f"{_t(lang, 'rt_out_of_scope_repeat', business=business)}\n{_t(lang, 'rt_browse_more', catalogue_url=url)}"
+    else:
+        text = _t(lang, "rt_out_of_scope", business=business, catalogue_url=url)
+    return await rc.reply(text, "out_of_scope", lang)
 
 
 async def handle_clarify(rc, decision: RouterDecision | None):
@@ -1032,7 +1628,12 @@ async def handle_clarify(rc, decision: RouterDecision | None):
         # Mid-order and the customer's reply made no sense: say so and ask the SAME question again —
         # "what are you looking for?" would read as if the order had been forgotten.
         return await _reask(rc, lang, "rt_clarify_slot", "clarify_slot")
-    cands = [p for p in rc.ctx.candidate_products if intent_router.product_in_stock(p)][:2]
+    # Only guess when the customer's words really name the product ("i cant got it" must not suggest "Gota Patti ...").
+    cands = [
+        p for p in rc.ctx.candidate_products
+        if intent_router.product_in_stock(p)
+        and catalogue_service.name_match_score(p, rc.user_text) >= _CLARIFY_MIN_MATCH_SCORE
+    ][:2]
     if len(cands) == 2:
         reply = _t(lang, "rt_clarify_two", a=_product_line(cands[0]), b=_product_line(cands[1]))
     else:
@@ -1099,6 +1700,8 @@ _HANDLERS = {
     RouterAction.HANDOFF_HUMAN: handle_handoff,
     RouterAction.GENERAL_ANSWER: handle_free_text,
     RouterAction.SMALLTALK: handle_free_text,
+    RouterAction.OUT_OF_SCOPE: handle_out_of_scope,
+    RouterAction.CONFUSED: handle_confused,
 }
 
 
@@ -1192,6 +1795,7 @@ async def run_router_front_door(
     )
     if fast:
         trace.fast_path = fast
+        await _reset_off_topic(db, conv)     # button taps / exact SKUs / slot answers are on-topic by definition
         return _done(outcome)
 
     # A short, not-quite-exact answer to an open colour/size question ("pinkk", "gulabi", "medium", or a
@@ -1245,10 +1849,11 @@ async def run_router_front_door(
     except Exception:  # noqa: BLE001
         pass
     history = await conversation_service.get_history(db, conv.id, limit=10)
+    shop_profile = await shop_context_service.ensure_fresh(db, client, all_products)
     ctx = await intent_router.build_context(
         db, conv, client, user_text, sender_phone=sender_phone, stage=stored_stage, pinned_product=pinned,
         variant_info=variant_info, all_products=all_products, profile=profile, history_rows=history,
-        next_slot=next_slot,
+        next_slot=next_slot, shop_profile=shop_profile,
     )
     call = await intent_router.call_router(ctx, user_text, client_id=client.id, conversation_id=conv.id)
     try:
@@ -1271,6 +1876,40 @@ async def run_router_front_door(
         decision.args.sku, decision.args.want_photo = pinned.sku, True
         decision.confidence = max(decision.confidence, 0.9)
         notes.append("photo_request->show_product")
+    if (
+        decision.action in _CONFUSION_OVERRIDES and order_recovery.is_confused(user_text)
+    ) or (decision.action == RouterAction.CONFUSED):
+        # "sorry i cant get it!" is never a cancel, and "what are you trying to say" is never small talk: the model's
+        # reading is overruled by the deterministic confusion lexicon (and a CONFUSED verdict is trusted as such).
+        if decision.action != RouterAction.CONFUSED:
+            notes.append(f"{decision.action.value}->confused")
+        decision.action = RouterAction.CONFUSED
+        decision.confidence = max(decision.confidence, 0.9)
+        decision.args.sku = None
+    if (
+        decision.action == RouterAction.SHOW_PRODUCT and not decision.args.filters.size and not decision.args.filters.color
+        and is_more_request(user_text) and stored_stage not in intent_router.ORDER_ACTIVE_STAGES
+    ):
+        # "show me some more products like that" is a search for OTHER items, never the product card already shown.
+        decision.action = RouterAction.SEARCH_CATALOG
+        decision.args.sku = None
+        notes.append("more_request->search_catalog")
+    if decision.action == RouterAction.OUT_OF_SCOPE:
+        # Never refuse a customer on a guess: a shaky call, or a message that shares a word with this shop's own
+        # vocabulary (product / category / KB topic), becomes a clarifying question instead of the boundary reply.
+        if decision.confidence < settings.router_out_of_scope_threshold:
+            decision.confidence = min(decision.confidence, 0.3)
+            notes.append("out_of_scope_low_conf->clarify")
+        elif shop_context_service.matches(shop_profile, user_text):
+            decision.confidence = min(decision.confidence, 0.3)
+            notes.append("out_of_scope_shop_word->clarify")
+        elif next_slot in intent_router.FREE_TEXT_SLOTS and decision.confidence < _OUT_OF_SCOPE_FREE_TEXT_MIN:
+            # A name / address / phone answer is open: only a very sure verdict may override "it is the answer"
+            # (low confidence there already means slot passthrough).
+            decision.confidence = min(decision.confidence, 0.3)
+            notes.append("out_of_scope_at_free_text_slot->passthrough")
+    elif decision.action != RouterAction.SMALLTALK and decision.confidence >= settings.router_confidence_threshold:
+        await _reset_off_topic(db, conv)     # a real on-topic request ends the off-topic streak (thanks/ok don't)
     trace.action, trace.confidence, trace.args = decision.action.value, decision.confidence, _args_for_log(decision)
     if notes:
         trace.args = {**trace.args, "repaired": notes}
@@ -1283,7 +1922,18 @@ async def run_router_front_door(
         profile=profile,
     )
     try:
-        if decision.confidence < settings.router_confidence_threshold:
+        if (
+            decision.action == RouterAction.CANCEL_ORDER and decision.confidence >= settings.router_confidence_threshold
+            and has_cancellable_order(rc)
+            and not (
+                order_recovery.has_explicit_cancel_keyword(user_text)
+                and decision.confidence >= settings.router_cancel_min_confidence
+            )
+        ):
+            # A cancel is destructive: without explicit cancel wording AND a very sure model, ask first.
+            trace.action = "cancel_order->confirm"
+            handled = await ask_cancel_confirmation(rc, decision)
+        elif decision.confidence < settings.router_confidence_threshold:
             if next_slot in intent_router.FREE_TEXT_SLOTS:
                 # Unsure while a free-text answer (name/address) is expected: it is most likely that answer.
                 trace.action = f"{trace.action}->slot_passthrough"

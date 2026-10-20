@@ -12,9 +12,11 @@ Two interchangeable implementations behind one interface:
 `get_billing_gateway()` picks one from settings. Rules it enforces:
   * mock mode is on when SELLERTALK24_BILLING_MOCK says so, or automatically when the
     Razorpay key id/secret are empty;
+  * the billing mode follows the key: rzp_test_ keys = test mode, rzp_live_ keys = live mode
+    (RAZORPAY_MODE=auto, the default). Setting RAZORPAY_MODE=test|live is an optional lock;
   * mock mode is REFUSED when RAZORPAY_MODE=live (a missing key in production must fail
     loudly, never silently accept fake payments);
-  * a key whose prefix contradicts RAZORPAY_MODE (rzp_live_ vs rzp_test_) is refused.
+  * a key whose prefix contradicts an explicit RAZORPAY_MODE (rzp_live_ vs rzp_test_) is refused.
 
 The mock is stateless on purpose (the app runs several workers): the amount is encoded
 in the fake ids, so any worker can answer fetch_order / fetch_payment.
@@ -99,12 +101,20 @@ def mode_for_key(key_id: str) -> str:
     return "live" if (key_id or "").startswith("rzp_live_") else "test"
 
 
+def resolve_mode(settings: Settings) -> str:
+    """An explicit RAZORPAY_MODE=test|live wins; "auto" (default) follows the key prefix."""
+    if settings.razorpay_mode in ("test", "live"):
+        return settings.razorpay_mode
+    return mode_for_key(settings.razorpay_key_id)
+
+
 def mode_for_settings(settings: Settings) -> str:
     """
-    The billing mode these settings select: 'live' only when mock is off AND RAZORPAY_MODE=live; the mock gateway
-    and test keys are 'test'. (get_billing_gateway refuses mock + live, so this never disagrees with gateway.mode.)
+    The billing mode these settings select: 'live' only when mock is off AND the resolved mode is live (an
+    rzp_live_ key, or RAZORPAY_MODE=live); the mock gateway and test keys are 'test'.
+    (get_billing_gateway refuses mock + live, so this never disagrees with gateway.mode.)
     """
-    return "live" if (not settings.billing_mock_enabled and settings.razorpay_mode == "live") else "test"
+    return "live" if (not settings.billing_mock_enabled and resolve_mode(settings) == "live") else "test"
 
 
 class BillingGateway(Protocol):
@@ -318,7 +328,7 @@ def _real_client(key_id: str, key_secret: str, webhook_secret: str) -> RazorpayC
 
 
 def _check_key_matches_mode(key_id: str, mode: str) -> None:
-    """Refuse an rzp_live_/rzp_test_ key that contradicts RAZORPAY_MODE."""
+    """Refuse an rzp_live_/rzp_test_ key that contradicts the resolved mode (only possible with an explicit RAZORPAY_MODE)."""
     prefix = "rzp_live_" if mode == "live" else "rzp_test_"
     if key_id.startswith(("rzp_live_", "rzp_test_")) and not key_id.startswith(prefix):
         raise BillingConfigError(
@@ -355,7 +365,7 @@ def get_billing_gateway(settings: Settings | None = None) -> BillingGateway:
         _warn_mock_once()
         return MockRazorpayClient()
 
-    _check_key_matches_mode(settings.razorpay_key_id, settings.razorpay_mode)
+    _check_key_matches_mode(settings.razorpay_key_id, resolve_mode(settings))
     return _real_client(
         settings.razorpay_key_id, settings.razorpay_key_secret, settings.razorpay_webhook_secret
     )

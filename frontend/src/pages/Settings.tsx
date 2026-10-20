@@ -4,9 +4,8 @@ import { Link, useNavigate } from "react-router-dom";
 import { api, getTeam, inviteTeamMember, updateProfile, updateTeamMember } from "../api/client";
 import Layout from "../components/Layout";
 import { useAuth } from "../context/AuthContext";
-import { User, Bot, Globe, CheckCircle2, Store, Copy, ExternalLink, FileDown, Palette, Award, FlaskConical, X, ChevronRight, CreditCard, AlertTriangle, UsersRound, Receipt } from "lucide-react";
+import { User, Bot, Globe, CheckCircle2, Store, Copy, ExternalLink, FileDown, Palette, Award, FlaskConical, ChevronRight, CreditCard, AlertTriangle, UsersRound, Receipt } from "lucide-react";
 import QRCode from "qrcode";
-import { SandboxUI } from "./Sandbox";
 import type { PermissionKey, TeamMember } from "../types";
 
 const LANG_OPTIONS = [
@@ -66,7 +65,6 @@ export default function Settings() {
   const [briefingSending, setBriefingSending] = useState(false);
   const [briefingResult, setBriefingResult] = useState<string | null>(null);
   const [langSaved, setLangSaved] = useState(false);
-  const [showSandbox, setShowSandbox] = useState(false);
 
   // Team tab state
   const [team, setTeam] = useState<TeamMember[]>([]);
@@ -433,42 +431,6 @@ export default function Settings() {
             </form>
           )}
 
-          {/* Setup Guide — shown on profile tab when onboarding incomplete */}
-          {activeTab === "profile" && client && !client.onboarding_completed && (
-            <div className="bg-amber-50 border border-amber-200 rounded-xl p-5 max-w-xl mt-4">
-              <h3 className="text-sm font-semibold text-amber-900 mb-1">Setup Guide</h3>
-              <p className="text-xs text-amber-700 mb-3">
-                Complete these steps to get your agent live.
-              </p>
-              <div className="flex flex-col gap-2 mb-4">
-                {[
-                  { step: 1, label: "Business profile", done: client.onboarding_step >= 1 },
-                  { step: 2, label: "Products added", done: client.onboarding_step >= 2 },
-                  { step: 3, label: "Agent configured", done: client.onboarding_step >= 3 },
-                  { step: 4, label: "WhatsApp connected", done: client.onboarding_step >= 4 },
-                  { step: 5, label: "Agent tested", done: client.onboarding_step >= 5 },
-                ].map((item) => (
-                  <div key={item.step} className="flex items-center gap-2 text-xs">
-                    {item.done ? (
-                      <CheckCircle2 size={14} className="text-green-500 shrink-0" />
-                    ) : (
-                      <div className="w-3.5 h-3.5 rounded-full border-2 border-amber-400 shrink-0" />
-                    )}
-                    <span className={item.done ? "text-gray-600 line-through" : "text-amber-800 font-medium"}>
-                      {item.label}
-                    </span>
-                  </div>
-                ))}
-              </div>
-              <button
-                onClick={() => navigate("/onboarding")}
-                className="flex items-center gap-2 bg-amber-500 hover:bg-amber-600 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
-              >
-                Resume Setup <ChevronRight size={13} />
-              </button>
-            </div>
-          )}
-
           {/* Agent Config tab */}
           {activeTab === "agent" && (
             <form onSubmit={handleSave} className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 max-w-xl flex flex-col gap-5">
@@ -603,37 +565,19 @@ export default function Settings() {
           )}
 
           {/* Test Agent section — shown inline under Agent Config */}
-          {activeTab === "agent" && !showSandbox && (
+          {activeTab === "agent" && (
             <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 max-w-xl mt-4 flex items-center justify-between">
               <div>
                 <p className="text-sm font-semibold text-gray-800">Test Your Agent</p>
                 <p className="text-xs text-gray-400 mt-0.5">Preview how your agent responds before going live.</p>
               </div>
               <button
-                onClick={() => setShowSandbox(true)}
+                onClick={() => navigate("/sandbox")}
                 className="flex items-center gap-2 bg-brand-primaryDark text-white rounded-lg px-4 py-2 text-sm font-semibold hover:bg-brand-primary/90 transition-colors"
               >
                 <FlaskConical size={15} />
                 Test Your Agent
               </button>
-            </div>
-          )}
-
-          {activeTab === "agent" && showSandbox && (
-            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 max-w-2xl mt-4">
-              <div className="flex items-center justify-between mb-4">
-                <p className="text-sm font-semibold text-gray-800 flex items-center gap-2">
-                  <FlaskConical size={15} className="text-brand-primaryDark" />
-                  Agent Sandbox
-                </p>
-                <button
-                  onClick={() => setShowSandbox(false)}
-                  className="text-gray-400 hover:text-gray-600 transition-colors"
-                >
-                  <X size={16} />
-                </button>
-              </div>
-              <SandboxUI />
             </div>
           )}
 

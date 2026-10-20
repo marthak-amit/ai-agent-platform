@@ -1,0 +1,11 @@
+name: multi_variant_gujarati_digits
+description: 'Gujarati digits and number words in Gujarati script ("૨ maroon ane એક gold"): read at ₹0.'
+turns:
+  - user: "mane banarasi saree joiye maroon ma"
+    plan: {actions: [{type: add_line, sku: SR20001, variant: {color: Maroon}}]}
+    expect: {cart: {lines: [{sku: SR20001, color: Maroon, qty: null}]}}
+  - user: "૨ maroon ane એક gold"
+    expect:
+      fast_path: multi_variant
+      planner_calls: 0
+      cart: {lines: [{sku: SR20001, color: Maroon, qty: 2}, {sku: SR20001, color: Gold, qty: 1}]}

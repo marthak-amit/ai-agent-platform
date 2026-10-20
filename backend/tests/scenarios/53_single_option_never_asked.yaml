@@ -1,0 +1,19 @@
+name: single_option_never_asked
+description: 'conv=60 bug 2: a product whose attribute has exactly one value (Travel Mug — White only) selects it itself, and a planner ask_clarify for that slot is dropped (logged as a repair) — the next question is the quantity.'
+turns:
+  - user: "TM70001"
+    expect: {fast_path: sku, reply_contains: ["Travel Mug"]}
+  - user: "yes"
+    expect:
+      fast_path: offer_yes
+      cart: {lines: [{sku: TM70001, color: White, qty: null}]}
+      reply_contains: ["Only White is available", "How many"]
+      reply_not_contains: ["Which colour"]
+  - user: "tell me about the colours"
+    plan: {actions: [{type: ask_clarify, question: "Which colour would you like?", options: [White], slot: color}]}
+    expect:
+      planner_calls: 1
+      reply_contains: ["How many"]
+      reply_not_contains: ["Which colour", "Available: White"]
+      log_contains: ["fixes=[\"slot=color has the single option 'White'"]
+      cart: {lines: [{sku: TM70001, color: White, qty: null}]}

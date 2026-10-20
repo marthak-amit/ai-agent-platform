@@ -1,0 +1,29 @@
+name: search_variant_filters
+description: 'search_catalog parses colour / size / material out of the query and filters on in-stock variants; no exact match says so and offers the closest real option (nearest colour family, nearest size).'
+turns:
+  - user: "red kurti"
+    expect:
+      fast_path: catalogue_search
+      planner_calls: 0
+      reply_contains: ["Cotton Kurti", "Red"]
+      reply_not_contains: ["Lehenga", "Banarasi", "No red"]
+      ends_with_question: true
+  - user: "red saree"
+    expect:
+      fast_path: catalogue_search
+      reply_contains: ["No red saree right now.", "Closest: Maroon", "Banarasi Silk Saree", "₹2,499"]
+      reply_not_contains: ["Cotton Kurti"]
+      ends_with_question: true
+  - user: "xl lehenga"
+    plan: {actions: [{type: search_catalog, query: xl lehenga}]}
+    expect:
+      reply_contains: ["No XL lehenga right now.", "Closest: XXL", "Cotton Lehenga"]
+  - user: "pink kurti"
+    expect:
+      fast_path: catalogue_search
+      reply_contains: ["No pink kurti right now.", "Closest: Red, Green, Blue", "Cotton Kurti"]
+  - user: "blue m lehenga"
+    plan: {actions: [{type: search_catalog, query: blue m lehenga}]}
+    expect:
+      reply_contains: ["Cotton Lehenga", "Blue / M"]
+      reply_not_contains: ["No blue"]

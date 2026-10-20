@@ -1,0 +1,10 @@
+name: taps_and_numbers_keep_language
+description: 'A Gujarati conversation stays Gujarati through a colour tap, a Roman number word as the quantity ("be" = 2) and a bare "1"; replies use the Gujarati wording (no English leftovers: working days → divas ma).'
+turns:
+  - user: "mare Cotton Kurti joiye"
+    plan: {actions: [{type: add_line, sku: KU10001}]}
+    expect: {reply_contains: ["Kayo rang joiye"]}
+  - tap: v3_opt_1
+    expect: {fast_path: option, planner_calls: 0, cart: {lines: [{sku: KU10001, color: Red}]}, reply_contains: ["Ketla joiye"]}
+  - user: "be"
+    expect: {fast_path: quantity, planner_calls: 0, cart: {lines: [{sku: KU10001, color: Red, qty: 2}]}, reply_contains: ["tamaru naam"]}

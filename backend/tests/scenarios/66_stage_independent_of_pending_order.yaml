@@ -1,0 +1,19 @@
+name: stage_independent_of_pending_order
+description: 'An old order under payment review does not pin the conversation to "payment": a customer who greets, browses and fills a new cart is greeting → product_inquiry → order_collection, and the TURN header shows the activity next to the pending order.'
+setup:
+  stage: payment
+  orders: [{number: ORD-2026-0068, status: payment_submitted, total: 998}]
+turns:
+  - user: "hi"
+    expect:
+      conv_stage: greeting
+      turn_contains: ["stage=browsing pending_orders=[ORD-2026-0068:payment_submitted]"]
+  - user: "show me the tote bag"
+    expect:
+      fast_path: product_name
+      conv_stage: product_inquiry
+      turn_contains: ["stage=browsing pending_orders=[ORD-2026-0068:payment_submitted]"]
+  - tap: v3_order_tb30001
+    expect:
+      conv_stage: order_collection
+      turn_contains: ["stage=collecting pending_orders=[ORD-2026-0068:payment_submitted]"]

@@ -1,0 +1,13 @@
+name: side_question_resume
+description: 'A side question mid-order is answered for ₹0 from the shop''s facts and the open question is asked again; the cart is untouched and the question is not counted as a failed clarify.'
+turns:
+  - user: "I want 2 kurtis"
+    plan: {actions: [{type: add_line, sku: KU10001, variant: {}, qty: 2}]}
+  - user: "is COD available?"
+    expect: {fast_path: side_topic, planner_calls: 0, reply_contains: ["Cash on Delivery", "Which colour"], cart: {lines: [{sku: KU10001, color: null, qty: 2}]}}
+  - user: "return policy?"
+    expect: {fast_path: side_topic, handoff: false, reply_contains: ["talk to someone", "Which colour"]}
+  - user: "delivery time?"
+    expect: {fast_path: side_topic, handoff: false, reply_contains: ["3–7 business days", "Which colour"]}
+  - user: "green"
+    expect: {fast_path: option, cart: {lines: [{sku: KU10001, color: Green, qty: 2}]}, reply_contains: ["your name"]}

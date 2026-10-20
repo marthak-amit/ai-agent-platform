@@ -30,6 +30,7 @@ OUT = Path(__file__).parent / "out"
 async def run(args) -> int:
     """Create DB, wire the app, play the conversations, write the report."""
     mp = pytest.MonkeyPatch()
+    mp.setenv("LLM_RATE_LIMITS", "{}")      # the fake LLM answers instantly; the client-side Groq token bucket would only queue the simulated customers
     harness.create_database()
     outbox = harness.Outbox()
     outbox.install(mp)

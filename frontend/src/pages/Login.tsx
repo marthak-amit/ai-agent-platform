@@ -1,16 +1,19 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { login, register } from "../api/client";
+import { googleLogin, login, register } from "../api/client";
 import { useAuth } from "../context/AuthContext";
+import { useToast } from "../context/ToastContext";
 import { CheckCircle2 } from "lucide-react";
 import Logo from "../components/Logo";
+import GoogleSignInButton from "../components/GoogleSignInButton";
 
 type Mode = "login" | "register";
 
 export default function Login() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { signIn } = useAuth();
+  const toast = useToast();
   const navigate = useNavigate();
 
   // The marketing site links here with ?mode=register so "Get started" opens the create-account form.
@@ -19,10 +22,10 @@ export default function Login() {
   );
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [businessName, setBusinessName] = useState("");
   const [phone, setPhone] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [googleAvailable, setGoogleAvailable] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -30,10 +33,11 @@ export default function Login() {
     setLoading(true);
     try {
       if (mode === "register") {
-        await register(email, password, businessName, phone || undefined);
+        // No forced wizard: the dashboard's quick-start screen asks for the business name and language.
+        await register(email, password, undefined, phone || undefined);
         const token = await login(email, password);
         await signIn(token);
-        navigate("/onboarding");
+        navigate("/dashboard");
       } else {
         const token = await login(email, password);
         await signIn(token);
@@ -50,6 +54,22 @@ export default function Login() {
       } else {
         setError(t("auth.invalid"));
       }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleGoogle(credential: string) {
+    setError("");
+    setLoading(true);
+    try {
+      const res = await googleLogin(credential);
+      await signIn(res.access_token);
+      if (res.password_login_disabled) toast.show(t("auth.password_login_disabled"), { kind: "info", duration: 9000 });
+      navigate("/dashboard");
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+      setError(typeof detail === "string" ? detail : t("auth.google_failed"));
     } finally {
       setLoading(false);
     }
@@ -109,26 +129,19 @@ export default function Login() {
           <p className="text-sm text-gray-500 mb-8">
             {mode === "login"
               ? "Sign in to your SellerTalk24 dashboard"
-              : "Set up your AI sales agent in minutes"}
+              : t("auth.start_free")}
           </p>
 
-          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-            {mode === "register" && (
-              <div>
-                <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">
-                  {t("auth.business_name")}
-                </label>
-                <input
-                  type="text"
-                  value={businessName}
-                  onChange={(e) => setBusinessName(e.target.value)}
-                  required
-                  className="w-full border border-gray-200 rounded-lg px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-primary focus:border-transparent transition-all"
-                  placeholder="Raj's Electronics"
-                />
-              </div>
-            )}
+          <GoogleSignInButton onCredential={handleGoogle} locale={i18n.language} onAvailabilityChange={setGoogleAvailable} />
+          {googleAvailable && (
+            <div className="flex items-center gap-3 my-5 text-xs text-gray-300" aria-hidden="true">
+              <span className="flex-1 h-px bg-gray-100" />
+              {t("auth.or")}
+              <span className="flex-1 h-px bg-gray-100" />
+            </div>
+          )}
 
+          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
             <div>
               <label className="block text-xs font-medium uppercase tracking-wide text-gray-400 mb-1.5">
                 {t("auth.email")}

@@ -97,6 +97,33 @@ async def reserve_lines(
     return created
 
 
+async def replace_lines(
+    db: AsyncSession,
+    order_id: int,
+    lines: list[tuple[int | None, str | None, str | None, str | None, int]],
+) -> int:
+    """
+    Swap an order's ACTIVE reservations for new ones (the customer changed the lines before paying).
+
+    The old rows are marked released (history kept), new active rows are created. Unlike ``reserve_lines`` this does not stop at "this
+    order already has reservations". Only flushes — the caller owns the transaction. Returns the number of rows created.
+    """
+    await db.execute(
+        update(StockReservation)
+        .where(StockReservation.order_id == order_id, StockReservation.status == RESERVATION_ACTIVE)
+        .values(status=RESERVATION_RELEASED, resolved_at=datetime.now(timezone.utc))
+    )
+    created = 0
+    for product_id, color, size, material, qty in lines:
+        if not product_id:
+            continue
+        variant_id = await _find_variant_id(db, product_id, color, size, material)
+        db.add(StockReservation(order_id=order_id, product_id=product_id, variant_id=variant_id, quantity=qty, status=RESERVATION_ACTIVE))
+        created += 1
+    await db.flush()
+    return created
+
+
 async def reserve_for_order(db: AsyncSession, order: Order) -> int:
     """Reserve stock for an already-loaded order (line_items must be loaded)."""
     return await reserve_lines(db, order.id, _order_lines(order))

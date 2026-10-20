@@ -12,7 +12,7 @@ invite flow returns a one-time signed link for the Owner to share manually
 rather than dispatching an email.
 """
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -289,6 +289,7 @@ async def accept_invite(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This invite has already been accepted.")
 
     member.hashed_password = auth_service.hash_password(body.password)
+    member.email_verified_at = member.email_verified_at or datetime.now(timezone.utc)   # the invite link was emailed to them
     await db.commit()
 
     token = auth_service.create_access_token({"sub": member.email})

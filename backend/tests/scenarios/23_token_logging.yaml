@@ -1,0 +1,18 @@
+name: token_logging
+description: 'Every planner call''s input / cached / output tokens and its cost ($0.15 in, $0.075 cached, $0.60 out per 1M) are in the AGENT line, read from the llm_usage ledger (no per-conversation counter in the line); ₹0 turns log zeros.'
+turns:
+  - user: "show me products"
+    plan: {actions: [{type: browse_catalog}]}
+    usage: {input: 4000, cached: 1000, output: 200}
+    expect:
+      log_contains: ["tok=4000/1000/200", "cost_usd=0.000645"]
+      log_not_contains: ["conv_tok", "conv_cost_usd"]
+  - user: "what else do you have"
+    plan: {actions: [{type: browse_catalog}]}
+    usage: {input: 2000, cached: 0, output: 100}
+    expect:
+      log_contains: ["tok=2000/0/100", "cost_usd=0.000360"]
+  - user: "hi"
+    expect:
+      fast_path: greeting
+      log_contains: ["tok=0/0/0", "cost_usd=0.000000"]

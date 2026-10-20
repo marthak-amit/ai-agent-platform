@@ -1,0 +1,20 @@
+name: generic_browse
+description: 'A generic "show products" browses the catalogue (never a search), lists only in-stock items, and a number picks one.'
+turns:
+  - user: "show me products"
+    plan: {actions: [{type: browse_catalog, category: null}], reply_intent: none}
+    expect:
+      actions_contains: [browse_catalog]
+      actions_absent: [search_catalog]
+      reply_contains: ["Cotton Kurti", "₹499", "Cotton Lehenga", "Banarasi Silk Saree", "Categories:", "riya-01"]
+      reply_not_contains: ["Silk Scarf"]
+      ends_with_question: true
+      stage: browsing
+  - user: "2"
+    expect:
+      fast_path: product_number
+      planner_calls: 0
+      actions_contains: [show_product]
+      reply_contains: ["Cotton Kurti", "Red, Green, Blue", "Would you like to order this"]
+      reply_not_contains: ["Pink"]
+      buttons_contain: [v3_order_ku10001]

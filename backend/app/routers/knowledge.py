@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.routers.auth import get_owner_client as get_current_client
-from app.services import knowledge_service
+from app.services import knowledge_service, shop_context_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
@@ -147,6 +147,7 @@ async def create_entry(
         language=payload.language,
     )
     await db.commit()
+    await shop_context_service.invalidate(db, client.id)
     await db.refresh(entry)
     return KBEntryOut.from_orm_safe(entry)
 
@@ -173,6 +174,7 @@ async def update_entry(
         entry.language = payload.language
 
     await db.commit()
+    await shop_context_service.invalidate(db, client.id)
     await db.refresh(entry)
     return KBEntryOut.from_orm_safe(entry)
 
@@ -189,6 +191,7 @@ async def delete_entry(
         raise HTTPException(status_code=404, detail="Entry not found")
     await db.delete(entry)
     await db.commit()
+    await shop_context_service.invalidate(db, client.id)
 
 
 @router.patch("/{entry_id}/toggle", response_model=KBEntryOut)
@@ -203,5 +206,6 @@ async def toggle_entry(
         raise HTTPException(status_code=404, detail="Entry not found")
     entry.is_active = not entry.is_active
     await db.commit()
+    await shop_context_service.invalidate(db, client.id)
     await db.refresh(entry)
     return KBEntryOut.from_orm_safe(entry)

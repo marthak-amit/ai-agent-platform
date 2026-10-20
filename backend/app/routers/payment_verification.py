@@ -42,6 +42,12 @@ class ReasonBody(BaseModel):
     reason: Optional[str] = Field(default=None, max_length=300)
 
 
+class ApproveBody(BaseModel):
+    """Optional body of an approve call: the seller's explicit OK for a high-value order."""
+
+    confirm_high_value: bool = False
+
+
 class DecisionOut(BaseModel):
     """Result of approve/reject/cancel."""
 
@@ -140,11 +146,21 @@ def _http_error(exc: Exception) -> HTTPException:
 
 @router.post("/orders/{order_id}/payment/approve", response_model=DecisionOut)
 async def approve_payment(
-    order_id: int, user: User = Depends(_perm), db: AsyncSession = Depends(get_db),
+    order_id: int, body: ApproveBody | None = None, user: User = Depends(_perm), db: AsyncSession = Depends(get_db),
 ) -> DecisionOut:
-    """Approve the customer's payment: order → paid, stock deducted once, customer told."""
+    """
+    Approve the customer's payment: order → paid, stock deducted once, customer told.
+
+    A high-value order answers 409 `high_value_confirmation_required` ({order_number, total, threshold, message}) until the
+    request repeats with `confirm_high_value: true`.
+    """
     try:
-        return _decision_out(await pvs.approve(db, user.client, order_id, user))
+        extra = {"confirm_high_value": True} if body and body.confirm_high_value else {}
+        return _decision_out(await pvs.approve(db, user.client, order_id, user, **extra))
+    except pvs.ManualReviewRequired as exc:
+        payload = exc.payload()           # plain values, taken BEFORE the rollback below expires every ORM instance
+        await db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=payload)
     except (pvs.OrderNotFound, InvalidOrderTransition) as exc:
         await db.rollback()
         raise _http_error(exc)

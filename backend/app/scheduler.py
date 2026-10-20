@@ -19,6 +19,7 @@ Jobs:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -29,7 +30,9 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 logger = logging.getLogger(__name__)
 
-scheduler = AsyncIOScheduler(timezone="Asia/Kolkata")
+# A job whose tick is late (the loop was busy for a moment) still runs: the default grace of 1 s turned every short stall into
+# "Run time of job … was missed" and a skipped run. coalesce = several missed ticks run once.
+scheduler = AsyncIOScheduler(timezone="Asia/Kolkata", job_defaults={"misfire_grace_time": 60, "coalesce": True})
 
 
 async def _daily_briefing_job() -> None:
@@ -83,6 +86,7 @@ async def _auto_learn_from_conversations(db) -> None:
                 select(Conversation).where(
                     Conversation.client_id == client.id,
                     Conversation.created_at > since,
+                    Conversation.is_sandbox.is_(False),
                 )
             )
             conversations = conv_result.scalars().all()
@@ -146,6 +150,7 @@ async def _auto_learn_from_conversations(db) -> None:
                 select(Order.conversation_id).where(
                     Order.client_id == client.id,
                     Order.created_at > since,
+                    Order.is_sandbox.is_(False),
                 )
             )
             order_conv_ids = {row[0] for row in order_result if row[0] is not None}
@@ -230,7 +235,9 @@ async def _weekly_quality_job() -> None:
     script = os.path.join(backend_dir, "scripts", "test_agent_quality.py")
 
     try:
-        result = subprocess.run(
+        # In a worker thread: a synchronous subprocess.run inside this coroutine held the whole event loop (every customer) for up to 120 s.
+        result = await asyncio.to_thread(
+            subprocess.run,
             [sys.executable, script],
             capture_output=True,
             text=True,
@@ -266,6 +273,8 @@ _FOLLOWUP_MIN_IDLE_HOURS = 6
 _FOLLOWUP_WINDOW_HOURS = 24
 # No repeat follow-up for the same SKU within this many days.
 _FOLLOWUP_COOLDOWN_DAYS = 7
+# A draft idle this long is dead: no nudge, no per-run noise — it is marked stale once and never examined again.
+_FOLLOWUP_STALE_HOURS = 72
 
 
 async def _abandoned_intent_followup_job() -> None:
@@ -323,6 +332,7 @@ async def _expire_abandoned_order_drafts(db) -> int:
         select(Conversation).where(
             Conversation.current_stage.in_(["order_collection", "awaiting_final_confirmation"]),
             Conversation.pending_product_sku.isnot(None),
+            Conversation.is_sandbox.is_(False),
         )
     )
     expired = 0
@@ -362,6 +372,7 @@ async def _send_abandoned_intent_followups(db) -> None:
     now = datetime.now(_tz.utc)
     min_idle = timedelta(hours=_FOLLOWUP_MIN_IDLE_HOURS)
     window = timedelta(hours=_FOLLOWUP_WINDOW_HOURS)
+    stale_after = timedelta(hours=_FOLLOWUP_STALE_HOURS)
     cooldown = timedelta(days=_FOLLOWUP_COOLDOWN_DAYS)
 
     # Load all eligible conversations (stage + has pending SKU)
@@ -370,10 +381,11 @@ async def _send_abandoned_intent_followups(db) -> None:
             Conversation.current_stage.in_(list(_FOLLOWUP_ELIGIBLE_STAGES)),
             Conversation.pending_product_sku.isnot(None),
             Conversation.ai_enabled == True,  # noqa: E712
+            Conversation.is_sandbox.is_(False),
         )
     )
     candidates = result.scalars().all()
-    sent_count = 0
+    sent_count = needs_template = stale_count = 0
 
     for conv in candidates:
         try:
@@ -405,12 +417,18 @@ async def _send_abandoned_intent_followups(db) -> None:
             if idle < min_idle:
                 continue
             if idle > window:
-                # Outside Meta's 24h free-form window — flag for a manual/
-                # template follow-up instead of sending (would be rejected).
-                logger.warning(
-                    "event=nudge_needs_template conv=%s sku=%s idle_hours=%.1f",
-                    conv.id, sku, idle.total_seconds() / 3600,
-                )
+                # Outside Meta's 24h free-form window a nudge would be rejected. Never send, and never repeat the line every
+                # run: the conversation is MARKED (last_followup_sku, the same "already handled" flag a sent nudge sets), so
+                # the next run skips it at condition b. 24–72 h: flagged once for a template follow-up (INFO — expected, not a
+                # fault); 72 h+: the draft is dead — marked stale, one INFO line.
+                conv.last_followup_sku = sku
+                await db.commit()
+                if idle >= stale_after:
+                    stale_count += 1
+                    logger.info("event=nudge_stale conv=%s sku=%s idle_hours=%.1f", conv.id, sku, idle.total_seconds() / 3600)
+                else:
+                    needs_template += 1
+                    logger.info("event=nudge_needs_template conv=%s sku=%s idle_hours=%.1f", conv.id, sku, idle.total_seconds() / 3600)
                 continue
 
             client_result = await db.execute(
@@ -529,8 +547,10 @@ async def _send_abandoned_intent_followups(db) -> None:
         except Exception as exc:
             logger.error("Follow-up processing error for conv=%s: %s", conv.id, exc)
 
-    if sent_count:
-        logger.info("Abandoned-intent follow-up job complete — sent %d messages.", sent_count)
+    if sent_count or needs_template or stale_count:
+        logger.info(
+            "event=nudge_run examined=%d sent=%d needs_template=%d stale=%d", len(candidates), sent_count, needs_template, stale_count,
+        )
 
 
 async def _refresh_instagram_tokens_job() -> None:

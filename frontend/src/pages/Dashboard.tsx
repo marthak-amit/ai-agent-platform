@@ -10,6 +10,7 @@ import {
 import Layout from "../components/Layout";
 import StatCard from "../components/StatCard";
 import PaymentsWidget from "../components/payments/PaymentsWidget";
+import SetupChecklist from "../components/setup/SetupChecklist";
 import type {
   Lead,
   UsageStat,
@@ -21,7 +22,6 @@ import {
   Flame,
   Eye,
   Share2,
-  Zap,
   ChevronRight,
   ShoppingCart,
   IndianRupee,
@@ -29,7 +29,6 @@ import {
   Package,
   FlaskConical,
   Clock,
-  X,
   Copy,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
@@ -105,44 +104,6 @@ function CatalogueBanner({ slug, businessName }: { slug: string; businessName: s
         >
           <Share2 size={13} className="text-gray-400" />
         </button>
-      </div>
-    </div>
-  );
-}
-
-// ── WhatsApp connect banner ───────────────────────────────────────────────────
-
-function ConnectWhatsAppBanner({ onDismiss }: { onDismiss: () => void }) {
-  const navigate = useNavigate();
-  return (
-    <div className="bg-gradient-to-r from-orange-500 to-amber-500 rounded-2xl px-6 py-4 text-white shadow-md">
-      <div className="flex items-center gap-4">
-        <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center shrink-0">
-          <Zap size={20} className="text-white" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="font-bold text-white text-[15px] leading-tight">
-            Connect WhatsApp to go live
-          </p>
-          <p className="text-white/80 text-[13px] mt-0.5">
-            Your agent is ready — just needs a number
-          </p>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            onClick={() => navigate("/onboarding")}
-            className="bg-white text-orange-600 font-semibold text-[13px] px-4 py-2 rounded-lg hover:bg-orange-50 transition-colors"
-          >
-            Connect Now →
-          </button>
-          <button
-            onClick={onDismiss}
-            title="Dismiss"
-            className="w-8 h-8 flex items-center justify-center rounded-full bg-white/20 hover:bg-white/30 text-white transition-colors"
-          >
-            <X size={14} />
-          </button>
-        </div>
       </div>
     </div>
   );
@@ -229,15 +190,6 @@ export default function Dashboard() {
   const [orderStats, setOrderStats] = useState<OrderStats | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const [waBannerDismissed, setWaBannerDismissed] = useState(
-    () => localStorage.getItem("connect_wa_dismissed") === "1",
-  );
-
-  function dismissWaBanner() {
-    localStorage.setItem("connect_wa_dismissed", "1");
-    setWaBannerDismissed(true);
-  }
-
   const isOwner = !!client?.current_user.is_owner;
 
   useEffect(() => {
@@ -267,9 +219,6 @@ export default function Dashboard() {
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
   const firstName = firstWord(client?.business_name || "there");
-
-  const waConnected = !!client?.whatsapp_phone_number_id;
-  const showWaBanner = !waConnected && !waBannerDismissed;
 
   const pendingOrders = orderStats?.pending_dispatch ?? 0;
 
@@ -348,8 +297,8 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* 2 — Connect WhatsApp banner */}
-        {showWaBanner && <ConnectWhatsAppBanner onDismiss={dismissWaBanner} />}
+        {/* 2 — Setup checklist: pinned until the account is live (status derived from real state) */}
+        {isOwner && <SetupChecklist />}
 
         {/* 3 — Catalogue bar */}
         {client?.catalogue_slug && (

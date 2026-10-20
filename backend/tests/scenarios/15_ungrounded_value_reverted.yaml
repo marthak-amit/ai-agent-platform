@@ -1,0 +1,10 @@
+name: ungrounded_value_reverted
+description: 'A colour and quantity the planner invented (the customer said neither) are reverted and asked for.'
+turns:
+  - user: "I want the Cotton Kurti"
+    plan: {actions: [{type: add_line, sku: KU10001, variant: {color: Red}, qty: 2}]}
+    expect:
+      allow_violations: true
+      cart: {lines: [{sku: KU10001, color: null, qty: null}]}
+      reply_contains: ["Which colour", "Available: Red, Green, Blue"]
+      reply_not_contains: ["Added 2×"]

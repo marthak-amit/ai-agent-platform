@@ -1,0 +1,17 @@
+name: grounding_known_values
+description: 'A value is grounded when the customer said it, OR it is already in the cart / was chosen earlier for the SAME SKU ("same size"). Only values invented for a product the customer never specified are reverted.'
+turns:
+  - user: "I want 1 blue lehenga in M"
+    plan: {actions: [{type: add_line, sku: LH10042, variant: {color: Blue, size: M}, qty: 1}]}
+    expect: {cart: {lines: [{sku: LH10042, color: Blue, size: M, qty: 1}]}}
+  - user: "add one more in pink, same size"
+    plan: {actions: [{type: add_line, sku: LH10042, variant: {color: Pink, size: M}, qty: 1}]}
+    expect:
+      cart: {lines: [{sku: LH10042, color: Blue, size: M, qty: 1}, {sku: LH10042, color: Pink, size: M, qty: 1}]}
+      reply_contains: ["Added 1× Cotton Lehenga (Pink / M)"]
+  - user: "and a kurti"
+    plan: {actions: [{type: add_line, sku: KU10001, variant: {color: Red}, qty: 1}]}
+    expect:
+      allow_violations: true
+      cart: {lines: [{sku: LH10042, color: Blue, size: M, qty: 1}, {sku: LH10042, color: Pink, size: M, qty: 1}, {sku: KU10001, color: null, qty: 1}]}
+      reply_contains: ["Which colour"]

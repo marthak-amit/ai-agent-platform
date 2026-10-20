@@ -126,6 +126,22 @@ async def delete_sandbox_conversation(
         await db.commit()
 
 
+def _loaded_channel(db: AsyncSession, conversation_id: int) -> str | None:
+    """
+    The conversation's channel when its row is already in this session (no query): rows are written WITH their channel, so nothing has
+    to back-fill ``messages.channel`` afterwards (that was an ``UPDATE … WHERE channel IS NULL`` on every turn). None when the row is not
+    loaded — readers fall back to the conversation's channel for such rows.
+    """
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy.orm.util import identity_key
+
+    try:
+        conv = db.identity_map.get(identity_key(Conversation, conversation_id))
+        return sa_inspect(conv).dict.get("channel") if conv is not None else None
+    except Exception:  # noqa: BLE001 - an optimisation: never block a save
+        return None
+
+
 async def save_message(
     db: AsyncSession,
     conversation_id: int,
@@ -171,6 +187,8 @@ async def save_message(
     """
     normalized = normalize_role(role)
     inbound = normalized == "user"
+    if channel is None:
+        channel = _loaded_channel(db, conversation_id)
     msg = Message(
         conversation_id=conversation_id,
         role=normalized,
@@ -185,8 +203,7 @@ async def save_message(
         media_type=media_type,
     )
     db.add(msg)
-    await db.commit()
-    await db.refresh(msg)
+    await db.commit()          # no db.refresh(): the INSERT ... RETURNING already loaded the id / server defaults (one network round trip saved per message)
 
     direction = "OUT" if normalize_role(role) == "assistant" else "IN"
     cost_log.log(

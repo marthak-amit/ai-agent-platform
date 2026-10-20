@@ -1,0 +1,19 @@
+name: language_switch_rules
+description: 'The reply language follows the customer with hysteresis: a strong message (script, 3 markers, or 2 markers and nothing else) switches at once ("Give me catalogue" in a Gujarati chat → English); "ok" / numbers / taps never switch; one weak English message waits for a second one.'
+turns:
+  - user: "mane kurti batavo"
+    plan: {actions: [{type: search_catalog, query: kurti}]}
+    expect: {reply_contains: ["mate aa malyu"], reply_not_contains: ["Here's what I found"]}
+  - user: "Give me catalogue"
+    plan: {actions: [{type: browse_catalog}]}
+    expect: {reply_contains: ["Here are our products"], reply_not_contains: ["Amara", "juo"]}
+  - user: "mane saree batavo"
+    plan: {actions: [{type: search_catalog, query: saree}]}
+    expect: {reply_contains: ["mate aa malyu"]}
+  - user: "ok"
+    expect: {fast_path: reaction, planner_calls: 0, reply_contains: ["Tamane gamyu e jaani khushi thai"], reply_not_contains: ["Glad you like it"]}
+  - user: "show kurti"
+    expect: {fast_path: category, reply_contains: ["Amara products juo"]}
+  - user: "price please"
+    plan: {actions: [{type: browse_catalog}]}
+    expect: {reply_contains: ["Here are our products"]}

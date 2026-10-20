@@ -382,6 +382,20 @@ def test_factory_refuses_a_key_that_contradicts_the_mode(mode, key_id):
         get_billing_gateway(_settings(razorpay_mode=mode, razorpay_key_id=key_id, razorpay_key_secret="s"))
 
 
+@pytest.mark.parametrize("key_id,mode", [("rzp_test_abc", "test"), ("rzp_live_abc", "live")])
+def test_auto_mode_follows_the_key_prefix(key_id, mode):
+    s = _settings(razorpay_mode="auto", razorpay_key_id=key_id, razorpay_key_secret="s")
+    gateway = get_billing_gateway(s)
+    assert isinstance(gateway, RazorpayClient) and gateway.mode == mode
+    assert rc.mode_for_settings(s) == mode
+
+
+def test_auto_mode_without_keys_is_mock_and_test():
+    s = _settings(razorpay_mode="auto")
+    assert isinstance(get_billing_gateway(s), MockRazorpayClient)
+    assert rc.mode_for_settings(s) == "test"
+
+
 def test_factory_accepts_matching_live_key():
     gateway = get_billing_gateway(_settings(razorpay_mode="live", razorpay_key_id="rzp_live_abc", razorpay_key_secret="s"))
     assert isinstance(gateway, RazorpayClient)

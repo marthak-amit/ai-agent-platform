@@ -18,6 +18,7 @@ existing call sites continue to work unchanged.
 """
 
 import asyncio
+import contextvars
 import json as _json
 import logging
 import random
@@ -33,7 +34,8 @@ from app.config import get_settings
 from app.services import billing_service, catalogue_service, conversation_flow, conversation_service, customer_service
 from app.services import cost_log, escalation_service, gemini_service, lead_service, order_service, order_state_machine
 from app.services import command_words, language_service as _lang_svc, usage_service, voice_service
-from app.services import ocr_service, side_questions, storage_service
+from app.services import message_batcher, ocr_service, order_recovery, shop_context_service, side_questions, spam_guard, storage_service
+from app.services import turn_trace
 from app.services.delivery_service import get_delivery_time_str
 from app.services.language_templates import TEMPLATES, format_price, get_template
 from app.services import payment_verification_service, stock_reservation_service
@@ -132,6 +134,11 @@ class PipelineResult:
     skip_send:    True when the pipeline already decided nothing should be
                   sent to the customer at all (distinct from text=None with a
                   send still expected to happen, which doesn't occur today).
+    skip_reason:  Why skip_send is set: one of SILENCE_REASONS (legitimate: the bot is paused, the sender is blocked, the bot is not live,
+                  the chat is muted for spam, the render failed and was already reported) or DEDUPE_REASONS (the message is covered by
+                  a reply sent seconds ago — only honoured when that reply is at most NO_REPLY_DEDUPE_SECONDS old).
+    skip_localizer: True when `text` is already in the customer's language and script (pre-translated template
+                  tables), so `_ensure_reply_language` must not spend an LLM call on it.
     image_fallback_text: Text to send if every entry of `images` fails to deliver (payment QR caption).
     pre_texts:    Plain-text message(s) to send BEFORE the main text/buttons/
                   list — mirrors webhook.py's original bank-transfer-details
@@ -153,12 +160,22 @@ class PipelineResult:
     carousel_items: list[CarouselItemSpec] | None = None
     nonce: str | None = None
     skip_send: bool = False
+    # WHY nothing is sent when skip_send is set (see ``ensure_reply``): a silence without a recognised reason is a bug (`no_reply_sent`).
+    skip_reason: str | None = None
+    skip_localizer: bool = False   # the text is already complete in the customer's language (agent v3 template tables): no LLM translate call
     pre_texts: list[str] | None = None
     status: str = "ok"
     # Sent as plain text when the images above could not be delivered (suppressed by the send gate or
     # rejected by the channel). Set for the payment QR, whose caption carries the "send the screenshot"
     # line — without this fallback a failed QR send would leave the customer without that instruction.
     image_fallback_text: str | None = None
+
+#: Reasons for which a turn legitimately sends nothing.
+SILENCE_REASONS = frozenset({"ai_paused", "blocked", "bot_not_live", "spam_muted", "noise_in_order", "render_error"})
+#: Reasons for which a turn may send nothing ONLY because another reply went out moments ago and covers it (a burst of images, a throttled ack).
+DEDUPE_REASONS = frozenset({"image_burst", "image_repeat", "ack_throttled"})
+#: How recent that covering reply must be.
+NO_REPLY_DEDUPE_SECONDS = 10
 
 # ---------------------------------------------------------------------------
 # Button-nonce helpers (BUG 4 FIX)
@@ -344,11 +361,17 @@ def _is_payment_option_answer(next_slot: "str | None", text: str) -> bool:
     return command_words.matches_whole("pay_cod", text) or command_words.matches_whole("pay_upi", text)
 
 
-def _upi_only_banner(client, lang: str) -> str:
-    """'We accept UPI only' line for the order summary — only when the shop really has no COD."""
-    if client is None or getattr(client, "accepts_cod", False):
-        return ""
-    return get_template(lang, "summary_upi_only_note") + "\n\n"
+def _summary_payment_display(client, lang: str, pay: str | None) -> str | None:
+    """
+    The 💳 line of the order summary. "UPI" shows the seller's UPI id; a shop without COD says "UPI only" right there —
+    once, in the line — instead of a "We currently accept payments via UPI only." paragraph above every summary.
+    """
+    if not pay or pay.upper() != "UPI":
+        return pay
+    upi = getattr(client, "upi_id", None) if client else None
+    only = client is not None and not getattr(client, "accepts_cod", False)
+    label = get_template(lang, "summary_upi_only_label") if only else pay
+    return f"{label} ({upi})" if upi else label
 
 
 def _is_availability_question(text: str) -> bool:
@@ -715,6 +738,8 @@ async def _check_and_reset_llm_budget(
 
     Safe to call repeatedly — only writes to DB when the date rolled over.
     """
+    if getattr(conv, "is_sandbox", False):
+        return 0, 10**9, 10**9   # the in-dashboard simulator is never budget-capped (and never taken over by a cap)
     today = _today_utc()
     if (conv.llm_calls_date or "") != today:
         conv.llm_calls_today = 0
@@ -749,6 +774,16 @@ _SLOT_ATTEMPT_ESCALATE = 6       # stop LLM and escalate at this attempt number
 
 # ── Off-topic counter threshold (Improvement 2) ───────────────────────────
 _DEFAULT_OFF_TOPIC_THRESHOLD = 4  # consecutive off-topic messages before template-only
+
+# Seconds of waiting the message batcher already imposed on this turn (set per turn from InboundContext).
+_reply_delay_credit: contextvars.ContextVar[float] = contextvars.ContextVar("reply_delay_credit", default=0.0)
+# What the customer actually typed this turn when the router rewrote it ("please" -> "SR63896") — for log lines only.
+_turn_original_text: contextvars.ContextVar["str | None"] = contextvars.ContextVar("turn_original_text", default=None)
+
+
+def _typed_text(user_text: str) -> str:
+    """The customer's own words for this turn (before the router canonicalised them), for logging."""
+    return _turn_original_text.get() or user_text
 
 # ── Minimum score for auto-pinning/switching a product by name-match (Improvement 4) ──
 _NAME_MATCH_AUTO_PIN_MIN_SCORE = 3   # min score for first-time pin (currently always fires when _single_strong)
@@ -803,6 +838,9 @@ def _build_slot_question(
     if next_slot == "color":
         colors = " / ".join(vi.get("available_colors", [])) or "see catalogue"
         _slot_reply = _gt(lang, "ask_color", colors=colors)
+        if len(vi.get("available_colors", [])) == 1:
+            # One option only: a bare "Color? Grey" reads like a yes/no question — ask it as one.
+            _slot_reply = _gt(lang, "ask_color_single", value=vi["available_colors"][0])
         if attempt_count >= _SLOT_ATTEMPT_ESCAPE_HATCH:
             _slot_reply += "\n\n(Reply 'cancel' to stop, or 'help' to reach our team.)"
         return _slot_reply
@@ -810,6 +848,9 @@ def _build_slot_question(
     if next_slot == "size":
         sizes = " / ".join(vi.get("available_sizes", [])) or "see catalogue"
         _slot_reply = _gt(lang, "ask_size", sizes=sizes)
+        if len(vi.get("available_sizes", [])) == 1:
+            # One option only: a bare "Color? Grey" reads like a yes/no question — ask it as one.
+            _slot_reply = _gt(lang, "ask_size_single", value=vi["available_sizes"][0])
         if attempt_count >= _SLOT_ATTEMPT_ESCAPE_HATCH:
             _slot_reply += "\n\n(Reply 'cancel' to stop, or 'help' to reach our team.)"
         return _slot_reply
@@ -817,6 +858,9 @@ def _build_slot_question(
     if next_slot == "material":
         materials = " / ".join(vi.get("available_materials", [])) or "see catalogue"
         _slot_reply = _gt(lang, "ask_material", materials=materials)
+        if len(vi.get("available_materials", [])) == 1:
+            # One option only: a bare "Color? Grey" reads like a yes/no question — ask it as one.
+            _slot_reply = _gt(lang, "ask_material_single", value=vi["available_materials"][0])
         if attempt_count >= _SLOT_ATTEMPT_ESCAPE_HATCH:
             _slot_reply += "\n\n(Reply 'cancel' to stop, or 'help' to reach our team.)"
         return _slot_reply
@@ -857,6 +901,9 @@ def _build_slot_question(
         else:
             _cs_parts = [p for p in [_wip.get("color"), _wip.get("size")] if p]
         _color_size = "/".join(_cs_parts) or "this item"
+        if not _cart_items_so_far and vi.get("needs_color") and len(vi.get("available_colors", [])) >= 2:
+            # "different for each": never open with "How many of Red?" — ask which colours, and how many of each.
+            return _gt(lang, "ask_cart_colors", n=_n, colors=" / ".join(vi["available_colors"]))
         return _gt(lang, "ask_cart_item_qty", color_size=_color_size, remaining=_remaining)
 
     if next_slot == "cart_breakdown":
@@ -1209,6 +1256,8 @@ async def run_cancel_in_payment_guard(
     except Exception as exc:
         logger.error("Payment-stage cancel: order cancellation failed for conv=%s: %s", conv.id, exc)
 
+    await order_recovery.close_cancel_confirm(db, conv)
+    await order_recovery.save_cancelled_draft(db, conv)
     for _pcf, _pcv in CANCEL_RESET_FIELDS:
         try:
             await conversation_service.update_order_field(db, conv.id, _pcf, _pcv)
@@ -1288,7 +1337,86 @@ async def run_human_takeover_guard(
         "AI paused for %s — human takeover active, message saved silently.",
         sender_phone,
     )
-    return PipelineResult(text=None, skip_send=True)
+    return PipelineResult(text=None, skip_send=True, skip_reason="ai_paused")
+
+
+def _shop_catalogue_url(client) -> str:
+    """Public catalogue link of this shop (the base shop URL when it has no slug)."""
+    settings = get_settings()
+    slug = getattr(client, "catalogue_slug", None)
+    return f"{settings.public_shop_base_url}/{slug}" if slug else settings.public_shop_base_url
+
+
+async def _spam_reply(db, conv, client, user_text: str, wamid: str | None, reply: str, record_usage, why: str) -> "PipelineResult":
+    """Save the customer's message and our fixed reply, count the message, and return the reply to send."""
+    try:
+        await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+        await conversation_service.save_message(db, conv.id, "assistant", reply)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("spam guard save error conv=%s: %s", conv.id, exc)
+    try:
+        await record_usage(db, client, conv)
+    except Exception:  # noqa: BLE001
+        pass
+    _log_route(conv.id, "TEMPLATE", why)
+    return PipelineResult(text=reply)
+
+
+async def run_spam_guard(
+    db, conv, client, message, user_text: str, wamid: str | None, stored_stage: str, record_usage,
+) -> "PipelineResult | None":
+    """
+    Stop spending LLM money on a customer who only sends noise (see app/services/spam_guard.py).
+
+    * muted (after `irrelevant_streak_limit` irrelevant messages in a row): free text is saved silently — no router,
+      no LLM, no reply. SKUs / bare numbers / yes-no / pastes, buttons, images and "talk to someone" still pass;
+    * an emoji-only / laughter message (not a thanks emoji): browsing → a fixed nudge, and at the limit the ONE final
+      notice + the mute; during an order → ignored silently (never muted, an order answer must still be accepted).
+    Returns None when the message should go through the normal pipeline.
+    """
+    if getattr(message, "type", None) != "text" or conv is None or client is None:
+        return None
+    order_active = stored_stage in spam_guard.ORDER_STAGES
+    if spam_guard.mute_expired(conv):
+        await spam_guard.clear(db, conv)        # the mute ran out: start from zero
+    text = user_text or ""
+    if spam_guard.is_muted(conv):
+        if order_active or message_batcher.is_exact_reference(text) or side_questions.detect_topic(text) == "human":
+            return None
+        try:
+            await conversation_service.save_message(db, conv.id, "user", text, wamid=wamid)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("spam guard save error conv=%s: %s", conv.id, exc)
+        logger.info("SPAM muted conv=%s: message saved silently — no LLM, no reply.", conv.id)
+        return PipelineResult(text=None, skip_send=True, skip_reason="spam_muted")
+    if spam_guard.classify_text(text) != "junk":
+        return None
+    if order_recovery.is_question_marks_only(text) and (
+        order_active or conv.pending_product_sku or order_recovery.restorable_draft(conv) is not None
+    ):
+        return None      # a bare "?" with something open means "I don't follow" (side_questions -> confused), not noise
+    if order_active:
+        try:
+            await conversation_service.save_message(db, conv.id, "user", text, wamid=wamid)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("spam guard save error conv=%s: %s", conv.id, exc)
+        logger.info("SPAM junk conv=%s during an order — ignored (no reply, no LLM).", conv.id)
+        return PipelineResult(text=None, skip_send=True, skip_reason="noise_in_order")
+    strike = await spam_guard.register_strike(db, conv, client, may_mute=True)
+    lang = _lang_svc.normalize_language(getattr(conv, "last_customer_language", None))
+    business = getattr(client, "business_name", None) or "our shop"
+    url = _shop_catalogue_url(client)
+    if strike.muted:
+        reply = get_template(lang, "rt_spam_final", business=business, catalogue_url=url, minutes=spam_guard.mute_minutes())
+        why = "spam_final"
+    elif strike.reached:
+        reply = get_template(lang, "off_topic_boundary", business=business)
+        why = "spam_boundary"
+    else:
+        reply = get_template(lang, "rt_junk_nudge", catalogue_url=url)
+        why = "spam_nudge"
+    logger.info("SPAM junk conv=%s strike=%d/%d muted=%s", conv.id, strike.count, strike.limit, strike.muted)
+    return await _spam_reply(db, conv, client, text, wamid, reply, record_usage, why)
 
 
 async def run_duplicate_confirm_tap_guard(
@@ -1552,7 +1680,7 @@ async def run_switch_confirm_guard(
         )
     except RenderError as exc:
         logger.error("Switch-confirm render error: %s", exc)
-        return PipelineResult(text=None, skip_send=True, status="render_error")
+        return PipelineResult(text=None, skip_send=True, status="render_error", skip_reason="render_error")
     if _sc_answer:
         reply = f"{_sc_answer}\n\n{reply}"
     if _sc_switch_ok and not _sc_next_slot:
@@ -1603,6 +1731,49 @@ async def run_switch_confirm_guard(
 # browsing-stage interrupted_sku handler (run_sku_and_name_pinning).
 # ---------------------------------------------------------------------------
 
+async def _fold_into_cart_and_pin(db, conv, old_product, old_sku: str | None, new_product) -> dict:
+    """
+    "Add <another product> too": fold the just-finished selection into `cart_items` (as another line item) instead
+    of wiping it, keep name/address/payment (same order, same delivery), and pin `new_product` with fresh variant /
+    quantity slots. Returns the new product's variant_info. Shared by the summary's "2️⃣ Add X too" and "Add both".
+    """
+    existing = list(getattr(conv, "cart_items", None) or [])
+    if not existing:
+        old_qty = getattr(conv, "pending_order_quantity", None)
+        if old_qty:
+            existing.append({
+                "sku": old_sku,
+                "product_name": getattr(old_product, "name", old_sku),
+                "color": getattr(conv, "selected_color", None),
+                "size": getattr(conv, "selected_size", None),
+                "material": getattr(conv, "selected_material", None),
+                "qty": old_qty,
+                "unit_price": getattr(old_product, "price", 0),
+            })
+    try:
+        await conversation_service.update_order_field(db, conv.id, "cart_items", existing)
+        conv.cart_items = existing
+    except Exception as exc:
+        logger.error("Cross-sell cart_items fold error: %s", exc)
+    for field_name, value in (
+        ("pending_product_sku", new_product.sku),
+        ("pending_order_quantity", None),
+        ("selected_color", None),
+        ("selected_size", None),
+        ("selected_material", None),
+        ("summary_shown", False),
+        ("cart_variant_mode", None),
+        ("cart_collection_mode", None),
+        ("cart_wip_item", None),
+    ):
+        try:
+            await conversation_service.update_order_field(db, conv.id, field_name, value)
+            setattr(conv, field_name, value)
+        except Exception as exc:
+            logger.error("Cross-sell slot reset (%s): %s", field_name, exc)
+    return await catalogue_service.get_product_variant_info(db, new_product)
+
+
 async def run_order_switch_confirm_guard(
     db, conv, client, sender_phone: str, user_text: str, wamid: "str | None", record_usage,
 ) -> "PipelineResult | None":
@@ -1627,11 +1798,17 @@ async def run_order_switch_confirm_guard(
 
     _candidate_sku = getattr(conv, "interrupted_sku", None)
     _lang = getattr(conv, "last_customer_language", None) or "english"
-    _confirm_yes = command_words.is_yes(user_text)
+    _add_both = _is_add_both(user_text)
+    _confirm_yes = (not _add_both) and _wants_switch(user_text)
 
     _new_product = None
+    _both_product = None
     if _confirm_yes and _candidate_sku and client:
         _new_product = await catalogue_service.find_product_by_sku(db, client.id, _candidate_sku)
+    elif _add_both and _candidate_sku and client:
+        _both_product = await catalogue_service.find_product_by_sku(db, client.id, _candidate_sku)
+        if _both_product is not None and await _is_product_out_of_stock(db, _both_product):
+            _both_product = None
 
     # A follow-up about the product on offer ("is Red available?", "size M hai?") while the switch offer is
     # open: answer about THAT product from its variant rows and keep the offer open — it is neither a yes nor
@@ -1651,7 +1828,7 @@ async def run_order_switch_confirm_guard(
                 _cta = get_template(_lang, "rt_order_cta")
                 _reply = (
                     f"{_ans.replace(chr(10) + _cta, '')}\n\n"
-                    f"{get_template(_lang, 'switch_offer', product=_cand.name, pinned=getattr(_pinned, 'name', None) or 'your current order')}"
+                    f"{get_template(_lang, 'switch_offer3', product=_cand.name, pinned=getattr(_pinned, 'name', None) or 'your current order')}"
                 )
                 try:
                     await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
@@ -1660,7 +1837,7 @@ async def run_order_switch_confirm_guard(
                 except Exception as _exc:
                     logger.error("Switch-offer follow-up save error conv=%s: %s", conv.id, _exc)
                 logger.info("Switch offer open: conv=%s answered availability about %s, offer kept", conv.id, _candidate_sku)
-                return PipelineResult(text=_reply)
+                return PipelineResult(text=_reply, buttons=switch_offer_buttons(_lang, conv))
 
     # Set only in the decline/unclear branch below when the reply turns out
     # to be a genuine new question rather than a decline; prepended to the
@@ -1746,6 +1923,24 @@ async def run_order_switch_confirm_guard(
             "Cross-product switch confirmed: conv=%s → pending_product_sku=%s (was %s)",
             conv.id, _candidate_sku, _old_sku,
         )
+    elif _both_product is not None and _swg_origin_stage == "awaiting_afc_switch_confirm":
+        # "Add both" at the summary: the finished item stays in the cart, the new product is set up next (same
+        # path as the summary's "2️⃣ Add X too").
+        _old_pinned_sku = getattr(conv, "pending_product_sku", None)
+        _old_pinned_prod = await catalogue_service.find_product_by_sku(db, client.id, _old_pinned_sku) if _old_pinned_sku else None
+        _variant_info = await _fold_into_cart_and_pin(db, conv, _old_pinned_prod, _old_pinned_sku, _both_product)
+        try:
+            await conversation_service.update_order_field(db, conv.id, "interrupted_sku", None)
+            conv.interrupted_sku = None
+            await conversation_service.update_stage(db, conv.id, "order_collection")
+            conv.current_stage = "order_collection"
+        except Exception as exc:
+            logger.error("Add-both stage update error: %s", exc)
+        _next_slot = conversation_flow.get_next_required_slot(conv, _variant_info)
+        _is_first_slot = True
+        _swg_render_action = "ask_slot"
+        _swg_answer = get_template(_lang, "switch_add_both_now", product=_both_product.name)
+        logger.info("Add both (summary): conv=%s folded %s, now %s", conv.id, _old_pinned_sku, _both_product.sku)
     else:
         # "No", an unclear reply, the candidate no longer resolves, or the
         # customer asked a genuine new question instead of answering
@@ -1842,6 +2037,26 @@ async def run_order_switch_confirm_guard(
                 f"{_swg_named_product.name} — ₹{int(getattr(_swg_named_product, 'price', 0) or 0):,}."
             )
 
+        if _both_product is not None:
+            # "Add both" while the first product is still being filled: finish it first; the other one is queued as
+            # the most recently browsed product, which the summary then offers as "Add <it> too".
+            try:
+                _bq = _json.loads(getattr(conv, "browsed_skus", None) or "[]")
+            except Exception:
+                _bq = []
+            _bq = [x for x in _bq if x != _both_product.sku] + [_both_product.sku]
+            try:
+                _nbq = _json.dumps(_bq)
+                await conversation_service.update_order_field(db, conv.id, "browsed_skus", _nbq)
+                conv.browsed_skus = _nbq
+            except Exception as exc:
+                logger.error("browsed_skus update (add both): %s", exc)
+            _swg_answer = get_template(
+                _lang, "switch_add_both_later", product=_both_product.name,
+                pinned=getattr(_pinned_product_reask, "name", None) or "your current order",
+            )
+        elif _wants_keep(user_text) and _pinned_product_reask is not None:
+            _swg_answer = get_template(_lang, "switch_kept", pinned=_pinned_product_reask.name)
         if _swg_answer:
             logger.info(
                 "Switch-offer new-query: conv=%s named=%s pinned=%s — answered, cancelled offer, re-asking pinned slot",
@@ -1853,16 +2068,24 @@ async def run_order_switch_confirm_guard(
                 conv.id, _pinned_sku_reask,
             )
 
+    # The saved-address offer is part of the open question when it was interrupted ("Amit, 702 Somerest… pe
+    # deliver karein?"): without the profile the resume degraded to a bare "What is your delivery address?".
+    _swg_profile = None
+    if client is not None and _next_slot == "delivery_address":
+        try:
+            _swg_profile = await customer_service.get_customer(db, client_id=client.id, phone=sender_phone)
+        except Exception as exc:  # noqa: BLE001 — plain address question is the safe fallback
+            logger.warning("Switch-confirm profile load failed conv=%s: %s", conv.id, exc)
     try:
         reply = await _render_order_reply(
             action=_swg_render_action, conv=conv, db=db, client=client,
-            next_slot=_next_slot, variant_info=_variant_info, customer_profile=None,
+            next_slot=_next_slot, variant_info=_variant_info, customer_profile=_swg_profile,
             available_stock=None, declined_saved_address=False, lang=_lang,
             is_first_slot=_is_first_slot,
         )
     except RenderError as exc:
         logger.error("Cross-product switch-confirm render error: %s", exc)
-        return PipelineResult(text=None, skip_send=True, status="render_error")
+        return PipelineResult(text=None, skip_send=True, status="render_error", skip_reason="render_error")
 
     if _swg_answer:
         reply = f"{_swg_answer}\n\n{reply}"
@@ -1876,6 +2099,15 @@ async def run_order_switch_confirm_guard(
         await record_usage(db, client, conv)
     except Exception as exc:
         logger.error("Usage tracking error (cross-product switch confirm): %s", exc)
+    if (
+        _next_slot == "delivery_address"
+        and getattr(conv, "channel", "whatsapp") == "whatsapp"
+        and conversation_flow.is_saved_address_prompt(reply)
+    ):
+        return PipelineResult(
+            text=reply,
+            buttons=[ButtonSpec(id=b["id"], title=b["title"]) for b in _saved_address_buttons(_lang)],
+        )
     return PipelineResult(text=reply)
 
 
@@ -2028,6 +2260,234 @@ async def _reset_flow_state(db, conv) -> None:
         conv.current_stage = "greeting"
     except Exception as exc:
         logger.error("Flow-state reset stage-update error: %s", exc)
+
+
+async def run_empty_order_product_reference_guard(db, conv, client, message, user_text: str) -> bool:
+    """
+    The name / SKU of the product already on offer, typed at an order step where no quantity / payment has
+    been given yet, restarts the normal browse flow: product details (price, colours, stock) + "Would you
+    like to order?".
+
+    An order that has only just opened ("Color? Grey" / "Kitne pieces chahiye?" asked, no quantity or payment
+    given) is not a real order in progress, yet the name/SKU pinners are switched off for order stages — so
+    the customer was stuck re-asked the open question and never saw the product. A colour / size / material
+    does not make it a real order: a single-option variant is filled automatically ("Yeh sirf Grey color
+    mein hai"), and a conversation left like that yesterday resumed at "Kitne pieces chahiye?" when the
+    customer came back typing the product name. Demoting the stage to ``product_inquiry`` lets the ordinary
+    pinner show the card and the offer; a "yes" then re-enters the order (the colour / size stay selected).
+    Returns True when the stage was demoted. Real orders (quantity given, summary shown, payment step) are untouched.
+    """
+    if (
+        client is None
+        or message.type != "text"
+        or not user_text
+        or (conv.current_stage or "") != "order_collection"
+        or not getattr(conv, "pending_product_sku", None)
+        or getattr(conv, "pending_order_quantity", None)
+        or getattr(conv, "payment_method", None)
+        or getattr(conv, "summary_shown", False)
+        or getattr(conv, "interrupted_sku", None)
+    ):
+        return False
+    try:
+        pinned = next(
+            (
+                prod for prod in await catalogue_service.list_products(db, client.id)
+                if (prod.sku or "").upper() == conv.pending_product_sku.upper()
+            ),
+            None,
+        )
+        # Only a reference to the product already on offer: a DIFFERENT product still goes through the
+        # "Would you like to order X instead?" switch confirmation.
+        is_reference = pinned is not None and (
+            _is_exact_sku_message(user_text, pinned) or _find_exact_name_match([pinned], user_text) is not None
+        )
+        if not is_reference:
+            return False
+        await conversation_service.update_stage(db, conv.id, "product_inquiry")
+        conv.current_stage = "product_inquiry"
+    except Exception as exc:  # noqa: BLE001 — never block the turn; the old behaviour is the fallback
+        logger.warning("Empty-order product-reference guard failed (non-fatal): %s", exc)
+        return False
+    logger.info(
+        "Empty order + product reference: conv=%s %r — back to product_inquiry (show details + order offer).",
+        conv.id, user_text[:40],
+    )
+    return True
+
+
+async def _reply_and_resume_order(
+    db, conv, client, message, user_text: str, wamid: "str | None", record_usage, product, stage: str,
+    *, own_product: bool = False,
+) -> "PipelineResult | None":
+    """
+    A product was named mid-order and answered with a short lead line; then the open step is re-asked — order state is never touched.
+
+    * ``own_product=False`` (``product`` is sold out): the lead line is "Sorry, X is currently out of stock." The
+      slot machine's own sold-out reply ("Would you like to see other products?") replaced the open question,
+      so the customer lost their place ("Quantity?" never came back).
+    * ``own_product=True`` (the customer pasted the code / name of the product they are ALREADY ordering, real
+      order): the lead is that product's card, never "answer the last question or type cancel".
+
+    The colour / size / quantity / name / address / payment question (with its buttons) follows the lead line,
+    and at the order summary the summary is shown again. Returns None (slot machine fallback) on any failure.
+    """
+    from app.services import router_actions as ra
+
+    try:
+        lang = ra.template_language(None, user_text, conv)
+        pinned = await catalogue_service.find_product_by_sku(db, client.id, conv.pending_product_sku)
+        if pinned is None:
+            return None
+        variant_info = await catalogue_service.get_product_variant_info(db, pinned)
+        next_slot = conversation_flow.get_next_required_slot(conv, variant_info) if stage == "order_collection" else None
+        profile = None
+        if next_slot == "delivery_address":
+            profile = await customer_service.get_customer(db, client_id=client.id, phone=conv.phone_number)
+        rc = ra.RouterCtx(
+            db=db, conv=conv, client=client, message=message, user_text=user_text, sender_phone=conv.phone_number,
+            wamid=wamid, stage=stage, language=lang, record_usage=record_usage, ctx=None, all_products=[],
+            pinned_product=pinned, variant_info=variant_info, next_slot=next_slot, profile=profile,
+        )
+        if own_product:
+            sorry = render_product_card(lang, product, variant_info, ask_order=False)
+        else:
+            sorry = get_template(lang, "rt_search_oos", product=product.name)
+        route = "own_product_midorder" if own_product else "oos_midorder"
+        if next_slot:
+            outcome = await ra._reask(rc, lang, None, route, prefix_text=sorry)
+        elif stage == "awaiting_final_confirmation":
+            summary = await _render_order_reply(
+                action="show_summary", conv=conv, db=db, client=client, next_slot=None, variant_info=variant_info,
+                customer_profile=profile, available_stock=None, declined_saved_address=False, lang=lang,
+            )
+            text = f"{sorry}\n\n{summary}"
+            result = await ra._send_with_buttons(db, conv, client, stage, text, None, pinned, variant_info)
+            outcome = await rc.reply(text, route, lang, result=result)
+        else:
+            return None
+    except Exception as exc:  # noqa: BLE001 — never block the turn; the slot machine is the fallback
+        logger.warning("Mid-order sold-out reference failed (non-fatal): %s", exc)
+        return None
+    logger.info(
+        "Mid-order %s: conv=%s stage=%s named=%s — shown, open step re-asked.",
+        "own product" if own_product else "sold-out product", conv.id, stage, product.sku,
+    )
+    return outcome.early_result
+
+
+_ADD_BOTH_PHRASES = (
+    "add both", "both", "add it too", "add that too", "add also", "add this too", "dono", "dono add", "dono add karo", "dono chahiye",
+    "banne", "banne add", "banne joiye", "दोनों", "दोनों जोड़ें", "दोनों चाहिए", "બંને", "બંને ઉમેરો", "બંને જોઈએ",
+)
+_KEEP_PHRASES = ("keep current", "keep it", "keep", "abhi wala rakhein", "abhi wala rakho", "aa j rakho", "रखें", "આ જ રાખો")
+
+
+def _is_add_both(text: str) -> bool:
+    """"Add both" (button or typed): short message naming both products."""
+    norm = command_words.normalize((text or "").replace("'", ""))
+    return bool(norm) and len(norm.split()) <= 4 and any(f" {command_words.normalize(p)} " in f" {norm} " for p in _ADD_BOTH_PHRASES)
+
+
+def _wants_switch(text: str) -> bool:
+    """A yes, or the Switch button / the word "switch" — but not "don't switch"."""
+    norm = command_words.normalize((text or "").replace("'", ""))
+    if re.search(r"\b(?:dont|do not|no|not|never|nahi|na)\b.*\bswitch\b", norm):
+        return False
+    return command_words.is_yes(text) or (bool(norm) and len(norm.split()) <= 3 and command_words.matches("switch", text) and not command_words.is_no(text))
+
+
+def _wants_keep(text: str) -> bool:
+    """"Keep current" (button or typed)."""
+    norm = command_words.normalize((text or "").replace("'", ""))
+    return bool(norm) and len(norm.split()) <= 4 and any(f" {command_words.normalize(p)} " in f" {norm} " for p in _KEEP_PHRASES)
+
+
+def switch_offer_buttons(lang: str, conv) -> "list[ButtonSpec] | None":
+    """Switch / Add both / Keep current (WhatsApp only); typed answers work on every channel."""
+    if getattr(conv, "channel", "whatsapp") != "whatsapp":
+        return None
+    return [
+        ButtonSpec(id="switch_product", title=get_template(lang, "btn_switch")),
+        ButtonSpec(id="add_both", title=get_template(lang, "btn_add_both")),
+        ButtonSpec(id="keep_current", title=get_template(lang, "btn_keep_current")),
+    ]
+
+
+async def run_mid_order_product_name_guard(
+    db, conv, client, message, user_text: str, wamid: "str | None", record_usage,
+) -> "PipelineResult | None":
+    """
+    The exact name (or exact SKU) of ANOTHER product, typed in the middle of an order, shows that product first.
+
+    A customer at "Kitne pieces chahiye?" / the saved-address offer who types "Mirror Work Linen Saree" or
+    "PR42546" is asking about that product — it is not an answer to the open question, and the slot machine
+    used to swallow it (re-asking the question, or rejecting the SKU as an invalid address). Reply with the
+    product card ("Yes, we have this available: …") and the usual
+    "Would you like to order X instead of Y? (Yes / No)" offer; the offer is stashed exactly like the aside-
+    question switch (`interrupted_sku` + a switch-confirm micro-stage), so "yes" switches the order to it and
+    "no" resumes the open question. A sold-out product is never offered: the customer is told so and the open
+    question is re-asked (`_reply_and_resume_order`); the pinned product pasted again gets its card + the open
+    question. Shared by router and keyword shops (runs before either). Non-order stages are left to the existing flows.
+    """
+    stage = conv.current_stage or ""
+    pinned_sku = getattr(conv, "pending_product_sku", None)
+    if (
+        client is None
+        or message.type != "text"
+        or not user_text
+        or stage not in ("order_collection", "awaiting_final_confirmation")
+        or not pinned_sku
+        or getattr(conv, "interrupted_sku", None)
+    ):
+        return None
+    try:
+        products = await catalogue_service.list_products(db, client.id)
+        named = _find_exact_name_match(products, user_text)
+        if named is None:
+            sku_hit = next((p for p in products if p.is_active is not False and _is_exact_sku_message(user_text, p)), None)
+            # Another product's SKU typed mid-order is NEVER a silent switch: it gets the card and the
+            # "Switch / Add both / Keep current" offer at every step (a sold-out SKU is just answered).
+            if sku_hit is not None:
+                named = sku_hit
+        if named is None:
+            return None
+        if (named.sku or "").upper() == pinned_sku.upper():
+            # The product already being ordered, pasted again: its card + the open question (a just-opened order
+            # was already sent back to the browse card by run_empty_order_product_reference_guard).
+            return await _reply_and_resume_order(
+                db, conv, client, message, user_text, wamid, record_usage, named, stage, own_product=True,
+            )
+        if await _is_product_out_of_stock(db, named):
+            return await _reply_and_resume_order(db, conv, client, message, user_text, wamid, record_usage, named, stage)
+        pinned = next((p for p in products if (p.sku or "").upper() == pinned_sku.upper()), None)
+        variant_info = await catalogue_service.get_product_variant_info(db, named)
+        lang = _lang_svc.normalize_language(getattr(conv, "last_customer_language", None))
+        card = render_product_card(lang, named, variant_info, ask_order=False, intro=True)
+        offer = get_template(lang, "switch_offer3", product=named.name, pinned=(pinned.name if pinned else "your current order"))
+        reply = f"{card}\n\n{offer}"
+        await conversation_service.update_order_field(db, conv.id, "interrupted_sku", named.sku)
+        conv.interrupted_sku = named.sku
+        switch_stage = "awaiting_afc_switch_confirm" if stage == "awaiting_final_confirmation" else "awaiting_order_switch_confirm"
+        await conversation_service.update_stage(db, conv.id, switch_stage)
+        conv.current_stage = switch_stage
+        image = await watermarked_product_image_url(client, named)
+    except Exception as exc:  # noqa: BLE001 — never block the turn; the slot machine is the fallback
+        logger.warning("Mid-order product-name guard failed (non-fatal): %s", exc)
+        return None
+    try:
+        await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+        await conversation_service.save_message(db, conv.id, "assistant", reply)
+        await record_usage(db, client, conv)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Mid-order product-name save error conv=%s: %s", conv.id, exc)
+    logger.info(
+        "Mid-order product name: conv=%s stage=%s named=%s pinned=%s — card + switch offer.",
+        conv.id, stage, named.sku, pinned_sku,
+    )
+    return PipelineResult(
+        text=reply, buttons=switch_offer_buttons(lang, conv), images=[(image, f"{named.name} — ₹{named.price}")] if image else None,
+    )
 
 
 async def _send_fresh_greeting(
@@ -3096,8 +3556,29 @@ async def run_sku_and_name_pinning(
                     _picked_sku = _cand_sku
                     break
 
+        # A message that is the exact name of — or clearly scores higher for — a product that is NOT on the
+        # menu is a new request, not a pick: "Festive Banarasi silk saree" typed under a list of other
+        # Banarasi sarees must not resolve to the closest of THOSE. Steps 4-5 are skipped; the fall-through
+        # below clears the menu and the normal name pinner shows the right product.
+        _pc_names_other_product = False
+        if not _picked_sku and client and _stripped_pc and not _stripped_pc.isdigit():
+            try:
+                _pc_everything = await catalogue_service.list_products(db, client.id)
+            except Exception:
+                _pc_everything = []
+            _pc_exact_hit = _find_exact_name_match(_pc_everything, _stripped_pc)
+            if _pc_exact_hit is not None:
+                _pc_names_other_product = getattr(_pc_exact_hit, "sku", None) not in _pending_choice_skus_list
+            elif _pc_everything:
+                _pc_global = catalogue_service.search_products_with_scores(_pc_everything, _stripped_pc)
+                _pc_local = catalogue_service.search_products_with_scores(
+                    [p for _, p in _pc_candidates if p], _stripped_pc
+                )
+                if _pc_global and getattr(_pc_global[0][1], "sku", None) not in _pending_choice_skus_list:
+                    _pc_names_other_product = _pc_global[0][0] > (_pc_local[0][0] if _pc_local else 0)
+
         # 4. Exact/substring product-name match against the shown options only.
-        if not _picked_sku:
+        if not _picked_sku and not _pc_names_other_product:
             for _cand_sku, _cand_prod in _pc_candidates:
                 if _cand_prod and _cand_prod.name and _cand_prod.name.lower() in _stripped_pc_lower:
                     _picked_sku = _cand_sku
@@ -3107,7 +3588,7 @@ async def run_sku_and_name_pinning(
         # but "kurti best" will), scored ONLY against the shown candidates so
         # the match can never resolve to a product outside this choice. Only
         # accept when there's a single, unambiguous best match.
-        if not _picked_sku and _pc_candidates:
+        if not _picked_sku and _pc_candidates and not _pc_names_other_product:
             _pc_products_only = [p for _, p in _pc_candidates if p]
             if _pc_products_only:
                 _pc_scored = catalogue_service.search_products_with_scores(_pc_products_only, _stripped_pc)
@@ -3601,11 +4082,30 @@ async def run_sku_and_name_pinning(
             )
         )
     )
+    # A message that IS a product's exact name is an explicit product request, never a colour/size/quantity
+    # answer — so a leftover (e.g. auto-selected single-option) colour must not switch the pinner off for it
+    # while the stored stage is still a browsing one. Without this the customer who comes back typing the name
+    # got the stale "Kitne pieces chahiye?" instead of the product card.
+    _exact_name_reference = False
+    if (
+        _any_slot_filled
+        and not _stored_stage_is_order
+        and getattr(conv, "pending_product_sku", None)
+        and message.type == "text"
+        and user_text
+        and client
+    ):
+        try:
+            _exact_name_reference = (
+                _find_exact_name_match(await catalogue_service.list_products(db, client.id), user_text) is not None
+            )
+        except Exception as _enr_exc:  # noqa: BLE001 — the old behaviour is the safe fallback
+            logger.warning("exact-name reference check failed (non-fatal): %s", _enr_exc)
     _active_order_context = bool(
         getattr(conv, "pending_product_sku", None)
         and (
             _stored_stage_is_order
-            or _any_slot_filled
+            or (_any_slot_filled and not _exact_name_reference)
             # Block re-pin for bare single-word attributes (color/material/size) when a
             # product is already pinned at a browsing stage. Multi-word messages (explicit
             # product names) are allowed through so a customer can switch products.
@@ -4416,50 +4916,11 @@ async def run_slot_state_machine(
                     try:
                         _cs_new_product = await catalogue_service.find_product_by_sku(db, client.id, _new_cs_sku)
                         if _cs_new_product:
-                            # Phase 1 cart engine: "Add X too" builds ONE cart —
-                            # fold the just-finished selection into cart_items
-                            # (as another line item) instead of wiping it, and
-                            # keep customer_name/delivery_address/payment_method
-                            # since this is still the same order, same delivery.
-                            _cs_existing_cart = list(getattr(conv, "cart_items", None) or [])
-                            if not _cs_existing_cart:
-                                _cs_old_qty = getattr(conv, "pending_order_quantity", None)
-                                if _cs_old_qty:
-                                    _cs_existing_cart.append({
-                                        "sku": _current_sku_cs2,
-                                        "product_name": getattr(pinned_product, "name", _current_sku_cs2),
-                                        "color": getattr(conv, "selected_color", None),
-                                        "size": getattr(conv, "selected_size", None),
-                                        "material": getattr(conv, "selected_material", None),
-                                        "qty": _cs_old_qty,
-                                        "unit_price": getattr(pinned_product, "price", 0),
-                                    })
-                            try:
-                                await conversation_service.update_order_field(db, conv.id, "cart_items", _cs_existing_cart)
-                                conv.cart_items = _cs_existing_cart
-                            except Exception as _cs_cart_e:
-                                logger.error("Cross-sell cart_items fold error: %s", _cs_cart_e)
-
-                            # Reset per-product working slots for the new product only.
-                            _cs_reset_fields = [
-                                ("pending_product_sku", _new_cs_sku),
-                                ("pending_order_quantity", None),
-                                ("selected_color", None),
-                                ("selected_size", None),
-                                ("selected_material", None),
-                                ("summary_shown", False),
-                                ("cart_variant_mode", None),
-                                ("cart_collection_mode", None),
-                                ("cart_wip_item", None),
-                            ]
-                            for _csf, _csv in _cs_reset_fields:
-                                try:
-                                    await conversation_service.update_order_field(db, conv.id, _csf, _csv)
-                                    setattr(conv, _csf, _csv)
-                                except Exception as _cse:
-                                    logger.error("Cross-sell slot reset (%s): %s", _csf, _cse)
+                            # Phase 1 cart engine: "Add X too" builds ONE cart — see _fold_into_cart_and_pin.
+                            variant_info = await _fold_into_cart_and_pin(
+                                db, conv, pinned_product, _current_sku_cs2, _cs_new_product,
+                            )
                             pinned_product = _cs_new_product
-                            variant_info = await catalogue_service.get_product_variant_info(db, _cs_new_product)
                             stage = "order_collection"
                             _afc_crosssell_switched = True
                             logger.info(
@@ -4532,6 +4993,7 @@ async def run_slot_state_machine(
                 ("cart_collection_mode", None), ("cart_wip_item", None),
                 ("cart_pending_confirmation", None),
             ]
+            await order_recovery.save_cancelled_draft(db, conv)
             for _cf, _cv in _full_cancel_fields:
                 try:
                     await conversation_service.update_order_field(db, conv.id, _cf, _cv)
@@ -4724,7 +5186,13 @@ async def run_slot_state_machine(
                         await record_usage(db, client, conv)
                     except Exception:
                         pass
-                    out.early_result = PipelineResult(text=_ac_reprompt)
+                    out.early_result = PipelineResult(
+                        text=_ac_reprompt,
+                        buttons=(
+                            [ButtonSpec(id=b["id"], title=b["title"]) for b in _saved_address_buttons(_ac_lang_cap)]
+                            if getattr(conv, "channel", "whatsapp") == "whatsapp" else None
+                        ),
+                    )
                     return out
 
             # Improvement 1: hard cap — skip LLM entirely at ≥ ESCALATE attempts
@@ -4960,7 +5428,8 @@ async def run_slot_state_machine(
                     # which resolves this on the next turn).
                     _aq_switch_prompt = get_template(
                         _lang_svc.normalize_language(getattr(conv, "last_customer_language", None)),
-                        "would_you_like_to_order_switch", name=_aq_named_product.name,
+                        "switch_offer3", product=_aq_named_product.name,
+                        pinned=getattr(pinned_product, "name", None) or "your current order",
                     )
                     _aq_reply = f"{_aq_answer}\n\n{_aq_switch_prompt}"
                     try:
@@ -5193,7 +5662,7 @@ async def run_slot_state_machine(
                 message.type == "text"
                 and pinned_product is not None
                 and getattr(pinned_product, "has_variants", False)
-                and _next_slot_pre in conversation_flow.BREAKDOWN_SLOTS
+                and conversation_flow.breakdown_slot_open(_next_slot_pre, conv)
             ):
                 _bd_result = conversation_flow.parse_variant_breakdown(
                     user_text, variant_info,
@@ -5236,6 +5705,40 @@ async def run_slot_state_machine(
                     saved_address=getattr(customer_profile, "address", None) if customer_profile else None,
                 )
                 _just_entered_order_collection_via_affirmation = _entry_probe is None
+
+            # ── Single-option variant question: "Only Grey. Would you like Grey? (Yes / No)" ─────────
+            # A bare yes takes the one option; a bare no ends the draft and goes back to browsing.
+            _so_key = {"color": "available_colors", "size": "available_sizes", "material": "available_materials"}.get(_next_slot_pre)
+            _so_opts = (variant_info or {}).get(_so_key, []) if _so_key else []
+            if message.type in ("text", "interactive") and len(_so_opts) == 1 and not _just_entered_order_collection_via_affirmation:
+                _so_is_yes = command_words.is_yes(user_text)
+                _so_is_no = (not _so_is_yes) and command_words.is_no(user_text)
+                if _so_is_yes:
+                    logger.info("conv=%s single-option %s: bare yes → %r", conv.id, _next_slot_pre, _so_opts[0])
+                    user_text = _so_opts[0]
+                elif _so_is_no:
+                    _so_reply = get_template(
+                        _lang_svc.normalize_language(getattr(conv, "last_customer_language", None)), "single_option_declined",
+                    )
+                    for _rf, _rv in (("pending_order_quantity", None), ("selected_color", None), ("selected_size", None),
+                                     ("selected_material", None), ("payment_method", None), ("summary_shown", False),
+                                     ("pending_product_sku", None)):
+                        try:
+                            await conversation_service.update_order_field(db, conv.id, _rf, _rv)
+                            setattr(conv, _rf, _rv)
+                        except Exception as exc:
+                            logger.error("Single-option decline reset (%s): %s", _rf, exc)
+                    try:
+                        await conversation_service.update_stage(db, conv.id, "product_inquiry")
+                        conv.current_stage = "product_inquiry"
+                        await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+                        await conversation_service.save_message(db, conv.id, "assistant", _so_reply)
+                        await record_usage(db, client, conv)
+                    except Exception as exc:
+                        logger.error("Single-option decline save error: %s", exc)
+                    logger.info("conv=%s single-option %s: bare no → back to browsing", conv.id, _next_slot_pre)
+                    out.early_result = PipelineResult(text=_so_reply)
+                    return out
 
             # P0-2: deterministic fast-path — a trivial slot answer (color/size/
             # qty/yes-no/free-text address) never needs an LLM classify call.
@@ -5281,7 +5784,7 @@ async def run_slot_state_machine(
                 logger.info(
                     "conv=%s bare affirmation %r just triggered browsing→order_collection — "
                     "OTHER (ask first slot), not treated as an answer to next_slot=%s",
-                    conv.id, user_text[:40], _next_slot_pre,
+                    conv.id, _typed_text(user_text)[:40], _next_slot_pre,
                 )
                 _intent_struct = {"intent": "OTHER", "entities": {}}
             elif _det_skip_llm:
@@ -5301,6 +5804,14 @@ async def run_slot_state_machine(
                 except Exception as exc:
                     logger.warning("Intent classification error (defaulting ANSWER): %s", exc)
                     _intent = "ANSWER"
+
+            if _intent == "CANCEL" and not (
+                order_recovery.has_explicit_cancel_keyword(user_text) or command_words.is_cancel(user_text)
+            ):
+                # The classifier read "sorry i cant get it!" as a cancel. A draft is only ever wiped on the customer's
+                # own cancel wording; anything else just re-asks the open question.
+                logger.info("conv=%s CANCEL intent without cancel wording %r → OTHER (re-ask)", conv.id, user_text[:40])
+                _intent = "OTHER"
 
             _classified_intent = _intent
             logger.info("conv=%s intent=%s next_slot=%s", conv.id, _intent, _next_slot_pre)
@@ -5342,59 +5853,43 @@ async def run_slot_state_machine(
                         _card_product = _switch_product
                         logger.info("conv=%s NEW_PRODUCT ignored — %s is already the pinned product.", conv.id, _new_sku_candidate)
                     else:
-                        # Track old SKU as browsed before switching
-                        _old_pinned = getattr(conv, "pending_product_sku", None)
-                        if _old_pinned and _old_pinned != _new_sku_candidate:
-                            import json as _json
-                            _browsed_raw = getattr(conv, "browsed_skus", None) or "[]"
-                            try:
-                                _browsed = _json.loads(_browsed_raw)
-                            except Exception:
-                                _browsed = []
-                            if _old_pinned not in _browsed:
-                                _browsed.append(_old_pinned)
-                            try:
-                                _nb = _json.dumps(_browsed)
-                                await conversation_service.update_order_field(db, conv.id, "browsed_skus", _nb)
-                                conv.browsed_skus = _nb
-                            except Exception as exc:
-                                logger.error("browsed_skus update (auto-switch): %s", exc)
-                        # Reset variant/qty/summary; keep customer_name + delivery_address
-                        _sw_reset_fields = [
-                            ("pending_order_quantity", None), ("selected_color", None),
-                            ("selected_size", None), ("selected_material", None),
-                            ("summary_shown", False),
-                            ("pending_choice_skus", None),
-                        ]
-                        for _rf, _rv in _sw_reset_fields:
-                            try:
-                                await conversation_service.update_order_field(db, conv.id, _rf, _rv)
-                                setattr(conv, _rf, _rv)
-                            except Exception as exc:
-                                logger.error("auto-switch slot reset (%s): %s", _rf, exc)
+                        # NEVER a silent switch: show the product and ask "Switch / Add both / Keep current". The
+                        # next message (or button tap) is resolved by run_order_switch_confirm_guard.
+                        _ns_lang = _lang_svc.normalize_language(getattr(conv, "last_customer_language", None))
                         try:
-                            await conversation_service.update_order_field(db, conv.id, "pending_product_sku", _new_sku_candidate)
-                            conv.pending_product_sku = _new_sku_candidate
-                            await conversation_service.update_stage(db, conv.id, "order_collection")
-                            conv.current_stage = "order_collection"
-                            stage = "order_collection"
+                            _ns_vi = await catalogue_service.get_product_variant_info(db, _switch_product)
                         except Exception as exc:
-                            logger.error("auto-switch pin error: %s", exc)
-                        if _switch_product:
-                            pinned_product = _switch_product
-                        if pinned_product:
-                            try:
-                                variant_info = await catalogue_service.get_product_variant_info(db, pinned_product)
-                            except Exception as exc:
-                                logger.error("auto-switch variant_info re-fetch: %s", exc)
-                        _classified_intent = "AUTO_SWITCH_DONE"
-                        _switch_resolved = True
-                        _card_product, _card_is_switch = _switch_product, True
-                        logger.info("conv=%s NEW_PRODUCT auto-switched to %s (was %s)", conv.id, _new_sku_candidate, _old_pinned)
-                        logger.info(
-                            "event=product_type_changed conv=%s old_sku=%s new_sku=%s",
-                            conv.id, _old_pinned, _new_sku_candidate,
+                            logger.error("new-product offer variant_info error: %s", exc)
+                            _ns_vi = {}
+                        _ns_card = render_product_card(_ns_lang, _switch_product, _ns_vi, ask_order=False, intro=True)
+                        _ns_offer = get_template(
+                            _ns_lang, "switch_offer3", product=_switch_product.name,
+                            pinned=getattr(pinned_product, "name", None) or "your current order",
                         )
+                        _ns_reply = f"{_ns_card}\n\n{_ns_offer}"
+                        try:
+                            await conversation_service.update_order_field(db, conv.id, "interrupted_sku", _switch_product.sku)
+                            conv.interrupted_sku = _switch_product.sku
+                            await conversation_service.update_stage(db, conv.id, "awaiting_order_switch_confirm")
+                            conv.current_stage = "awaiting_order_switch_confirm"
+                        except Exception as exc:
+                            logger.error("new-product offer stash error: %s", exc)
+                        try:
+                            await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
+                            await conversation_service.save_message(db, conv.id, "assistant", _ns_reply)
+                            await record_usage(db, client, conv)
+                        except Exception as exc:
+                            logger.error("new-product offer save error: %s", exc)
+                        logger.info(
+                            "conv=%s NEW_PRODUCT %s while ordering %s — offering Switch / Add both / Keep current",
+                            conv.id, _new_sku_candidate, getattr(conv, "pending_product_sku", None),
+                        )
+                        _ns_img = await watermarked_product_image_url(client, _switch_product)
+                        out.early_result = PipelineResult(
+                            text=_ns_reply, buttons=switch_offer_buttons(_ns_lang, conv),
+                            images=[(_ns_img, f"{_switch_product.name} — ₹{_switch_product.price}")] if _ns_img else None,
+                        )
+                        return out
                 else:
                     # No SKU found in message — treat as OTHER (re-ask slot)
                     _intent_override = "OTHER"
@@ -5434,6 +5929,7 @@ async def run_slot_state_machine(
                     ("cart_collection_mode", None), ("cart_wip_item", None),
                     ("cart_pending_confirmation", None),
                 ]
+                await order_recovery.save_cancelled_draft(db, conv)
                 for _rf, _rv in _cancel_fields:
                     try:
                         await conversation_service.update_order_field(db, conv.id, _rf, _rv)
@@ -5453,14 +5949,11 @@ async def run_slot_state_machine(
                 logger.info("conv=%s DISCOUNT_QUERY — will show fixed-price reply + re-ask slot=%s", conv.id, _next_slot_pre)
 
             elif _intent == "OFF_TOPIC":
-                # Improvement 2: track off-topic abuse
-                _midorder_ot_count = (conv.off_topic_count or 0) + 1
-                conv.off_topic_count = _midorder_ot_count
-                try:
-                    await conversation_service.update_order_field(db, conv.id, "off_topic_count", _midorder_ot_count)
-                except Exception:
-                    pass
-                _ot_threshold_mo = int(getattr(client, "off_topic_threshold", None) or _DEFAULT_OFF_TOPIC_THRESHOLD) if client else _DEFAULT_OFF_TOPIC_THRESHOLD
+                # Improvement 2: track off-topic abuse (shared irrelevant-message counter; never muted mid-order —
+                # an order answer must still be accepted)
+                _mo_strike = await spam_guard.register_strike(db, conv, client, may_mute=False) if client else None
+                _midorder_ot_count = _mo_strike.count if _mo_strike else (conv.off_topic_count or 0) + 1
+                _ot_threshold_mo = _mo_strike.limit if _mo_strike else _DEFAULT_OFF_TOPIC_THRESHOLD
                 _shop_name_mo = (getattr(client, "business_name", None) or "our shop") if client else "our shop"
                 if _midorder_ot_count >= _ot_threshold_mo:
                     _ot_boundary_mo = get_template(
@@ -6331,16 +6824,23 @@ async def _render_order_reply(
         return _gt(lang, "cancel_ack")
 
     if action == "discount_reask":
-        _dsc = _gt(lang, "discount_policy")
         if next_slot:
-            return f"{_dsc}\n\n{_build_slot_question(next_slot, **_sq_kwargs)}"
-        return _dsc
+            # ONE question: the fixed-price statement, then the open slot question (not "continue with the order?" too).
+            return f"{_gt(lang, 'sq_discount')}\n\n{_build_slot_question(next_slot, **_sq_kwargs)}"
+        return _gt(lang, "discount_policy")
 
     if action == "offtopic_reask":
         _sq = _build_slot_question(next_slot, **_sq_kwargs) if next_slot else ""
         return _gt(lang, "off_topic_midorder", slot_question=_sq)
 
     if action == "oos_block":
+        # Mid-order the open question must survive: "Sorry, X is out of stock." + the slot question (a bare
+        # "Would you like to see other products?" made the customer lose their place and a "yes" ambiguous).
+        if next_slot:
+            return (
+                f"{_gt(lang, 'rt_search_oos', product=oos_product_name or _prod_name)}\n\n"
+                f"{_build_slot_question(next_slot, **_sq_kwargs)}"
+            )
         return _gt(lang, "out_of_stock_block", product=oos_product_name or _prod_name)
 
     if action == "show_summary":
@@ -6364,11 +6864,7 @@ async def _render_order_reply(
                 raise RenderError(
                     f"show_summary(cart): a line item is missing unit_price (conv={conv.id})"
                 )
-            _cart_pay_display = _pay
-            if _pay and _pay.upper() == "UPI":
-                _cart_upi = getattr(client, "upi_id", None) if client else None
-                if _cart_upi:
-                    _cart_pay_display = f"{_pay} ({_cart_upi})"
+            _cart_pay_display = _summary_payment_display(client, lang, _pay)
             _cart_lines = []
             _cart_grand_total = 0.0
             for _item in _cart:
@@ -6379,7 +6875,7 @@ async def _render_order_reply(
                     f"📦 {_item['product_name']} {_variant_bits} × {_item['qty']} = {format_price(_sub)}"
                 )
             _cart_delivery = get_delivery_time_str(_prod, client) or "3–7 business days"
-            return _upi_only_banner(client, lang) + _gt(
+            return _gt(
                 lang, "cart_order_summary",
                 items_block="\n".join(_cart_lines),
                 total=format_price(_cart_grand_total),
@@ -6389,11 +6885,7 @@ async def _render_order_reply(
         # Show the actual UPI ID alongside the payment method so the customer
         # doesn't have to wait for the separate payment-instructions message
         # to know where to send money.
-        _pay_display = _pay
-        if _pay and _pay.upper() == "UPI":
-            _upi_for_summary = getattr(client, "upi_id", None) if client else None
-            if _upi_for_summary:
-                _pay_display = f"{_pay} ({_upi_for_summary})"
+        _pay_display = _summary_payment_display(client, lang, _pay)
         _summary_delivery = get_delivery_time_str(_prod, client) or "3–7 business days"
         _total_fmt = format_price(_total)
         # Cross-sell: most-recently-browsed different SKU
@@ -6414,7 +6906,7 @@ async def _render_order_reply(
                        delivery_time=_summary_delivery)
         if _variant_str:
             _kw["variant"] = _variant_str
-        return _upi_only_banner(client, lang) + _gt(lang, _tpl, **_kw)
+        return _gt(lang, _tpl, **_kw)
 
     if action == "reask_confirm":
         return _gt(lang, "already_confirmed")
@@ -7433,6 +7925,11 @@ async def _reset_order_slots_after_completion(
         ("cart_collection_mode", None),
         ("cart_wip_item", None),
         ("cart_pending_confirmation", None),
+        # A finished order leaves no half-open prompt behind: not a switch offer, not a "Cancel this order?" question,
+        # and not an older cancelled draft that a later "yes" could bring back.
+        ("interrupted_sku", None),
+        ("cancel_confirm_at", None),
+        ("last_cancelled_draft", None),
     ]
     for _field, _value in _reset_fields:
         try:
@@ -7982,6 +8479,18 @@ async def run_order_payment(
 # app/routers/_whatsapp_adapter.py)
 # ---------------------------------------------------------------------------
 
+_SUMMARY_ADDON_RE = re.compile(r"2️⃣\s*(?:Add\s+)?(.+?)\s*\(₹[\d,]+\)")
+
+
+def _addon_button_title(lang: str, name: str) -> str:
+    """"Add <name>" within WhatsApp's 20-character button-title limit (the name is shortened, never the verb)."""
+    full = get_template(lang, "btn_add_item", name=name)
+    if len(full) <= 20:
+        return full
+    room = max(1, 20 - (len(full) - len(name)) - 1)
+    return get_template(lang, "btn_add_item", name=name[:room].rstrip() + "…")
+
+
 def _should_use_buttons(
     stage: str,
     ai_reply: str,
@@ -8077,6 +8586,15 @@ def _asks_to_order(reply: str) -> bool:
     return any(cue in lower for cue in _ORDER_OFFER_CUES_ALL)
 
 
+def _saved_address_buttons(lang: str | None) -> list[dict]:
+    """Yes / Change buttons of the saved-address offer (ids map to "yes" / "change" in the webhook adapters)."""
+    code = _lang_svc.normalize_language(lang)
+    return [
+        {"id": "offer_yes", "title": get_template(code, "btn_yes")},
+        {"id": "addr_change", "title": get_template(code, "btn_change_address")},
+    ]
+
+
 async def decide_send_instruction(
     db,
     conv,
@@ -8134,6 +8652,10 @@ async def decide_send_instruction(
                 {"id": "offer_yes", "title": get_template(_btn_lang, "btn_yes")},
                 {"id": "offer_no", "title": get_template(_btn_lang, "btn_no")},
             ]
+        elif next_slot == "delivery_address" and conversation_flow.is_saved_address_prompt(ai_reply):
+            # "Amit, 702 Somerest, Ahmedabad pe deliver karein? (haan/change)" → Yes / Change buttons.
+            button_type = "offer_buttons"
+            offer_buttons = _saved_address_buttons(_btn_lang)
         elif next_slot in ("color", "size", "material"):
             # BUG 2 FIX: a slot question's buttons must always come from that
             # slot's real option list (variant_info), never from
@@ -8146,7 +8668,14 @@ async def decide_send_instruction(
                 "material": "available_materials",
             }[next_slot]
             _slot_opts = (variant_info or {}).get(_slot_opts_key) or []
-            if 2 <= len(_slot_opts) <= 3:
+            if len(_slot_opts) == 1:
+                # Single option → the question is Yes / No ("Only Grey. Would you like Grey?").
+                button_type = "offer_buttons"
+                offer_buttons = [
+                    {"id": "offer_yes", "title": get_template(_btn_lang, "btn_yes")},
+                    {"id": "offer_no", "title": get_template(_btn_lang, "btn_no")},
+                ]
+            elif 2 <= len(_slot_opts) <= 3:
                 button_type = "choice_buttons"
                 for _opt in _slot_opts:
                     choice_buttons.append({"id": _opt, "title": _opt[:20]})
@@ -8288,13 +8817,15 @@ async def decide_send_instruction(
         )
 
     if button_type == "confirm_buttons":
-        return PipelineResult(
-            text=ai_reply,
-            buttons=[
-                ButtonSpec(id="confirm_pay", title=get_template(_btn_lang, "btn_confirm_pay")),
-                ButtonSpec(id="cancel_order", title=get_template(_btn_lang, "btn_cancel")),
-            ],
-        )
+        buttons = [
+            ButtonSpec(id="confirm_pay", title=get_template(_btn_lang, "btn_confirm_pay")),
+            ButtonSpec(id="cancel_order", title=get_template(_btn_lang, "btn_cancel")),
+        ]
+        # The summary text offers "2️⃣ Add <product> (₹…) too" — the buttons must offer exactly what the text does.
+        addon = _SUMMARY_ADDON_RE.search(ai_reply or "")
+        if addon:
+            buttons.insert(1, ButtonSpec(id="add_crosssell", title=_addon_button_title(_btn_lang, addon.group(1))))
+        return PipelineResult(text=ai_reply, buttons=buttons)
 
     if button_type == "paid_button":
         return PipelineResult(
@@ -8356,7 +8887,7 @@ async def _record_usage(db, client, conv=None) -> None:
     the client's plan conv_limit (no-op if client is None; conv is optional
     since not every call site has a resolved Conversation).
     """
-    if client:
+    if client and not (conv is not None and getattr(conv, "is_sandbox", False)):   # simulator turns are never counted
         await usage_service.record_message(db, client)
         # Old calendar-month unique-thread counter: kept for one release behind
         # BILLING_LEGACY_COUNTING so its numbers can be compared with the new per-period counter
@@ -8554,8 +9085,23 @@ class InboundContext:
     # ("pink wala" -> "Pink"); the stored inbound message is restored to this original afterwards.
     router_original_text: "str | None" = None
     media_type: "str | None" = None
+    # Set by payment_inbound when an image sent while an order awaits payment was classified as a PRODUCT photo (not a payment proof):
+    # the product flow then also tries a visual match against the catalogue.
+    image_is_product_photo: bool = False
+    # The classifier's verdict for that image (it carries the vision model's description of the product, reused by the similarity search),
+    # the downloaded image bytes, and — when the customer answered "product photo" to our question some turns later — the bytes of THAT
+    # earlier picture, which the product flow then looks at instead of the button label.
+    image_verdict: "object | None" = None
+    image_bytes: "bytes | None" = None
+    photo_bytes: "bytes | None" = None
     # Set by _transcribe_voice_note_early: what a voice note said (the pipeline then sees it as typed text).
     voice_transcript: "str | None" = None
+    # Seconds the message batcher already made the customer wait (quiet window / queue); deducted from the
+    # artificial human-like reply delay so batching does not add to the total latency.
+    reply_delay_credit: float = 0.0
+    # True when the caller prints the TURN block itself after sending the reply (the WhatsApp webhook does, so the send
+    # spans are in it): handle_inbound_message then holds the block back (turn_trace.emit_pending prints it).
+    defer_trace: bool = False
 
 
 async def stage_aware_fallback_text(
@@ -8624,17 +9170,52 @@ async def stage_aware_fallback_text(
     return get_template(lang, "fallback_browse", catalogue_url=router_actions._catalogue_url(client))
 
 
+async def _reply_sent_recently(ctx: "InboundContext") -> bool:
+    """True when the bot's latest message in this conversation is at most ``NO_REPLY_DEDUPE_SECONDS`` old (it covers a burst's extra messages)."""
+    from sqlalchemy import select as _select
+
+    from app.models.message import Message as _Message
+
+    try:
+        created = (await ctx.db.execute(
+            _select(_Message.created_at).where(_Message.conversation_id == ctx.conv.id, _Message.role == "assistant").order_by(_Message.id.desc()).limit(1)
+        )).scalar_one_or_none()
+    except Exception as exc:  # noqa: BLE001 - unknown means "not covered": answer
+        logger.warning("reply-dedupe lookup failed conv=%s: %s", getattr(ctx.conv, "id", None), exc)
+        return False
+    if created is None:
+        return False
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - created).total_seconds() <= NO_REPLY_DEDUPE_SECONDS
+
+
 async def ensure_reply(result: "PipelineResult | None", ctx: "InboundContext") -> "PipelineResult":
     """
     Guarantee that every inbound message that is meant to be answered produces exactly one outbound reply.
 
-    Intentional silence (`skip_send`: bot paused, human takeover, blocked sender, a render_error already
-    reported) is respected. Anything else that ends the pipeline without text — `None`, or a result whose
-    text is empty — is a bug: it is logged as `NO_REPLY conv=…` and replaced by the stage-aware
+    Intentional silence (`skip_send` with a reason in SILENCE_REASONS: bot paused, human takeover, blocked sender, a
+    render_error already reported — or a DEDUPE_REASONS one covered by a reply sent at most NO_REPLY_DEDUPE_SECONDS ago)
+    is respected. Anything else that ends the pipeline without text — `None`, a result whose text is empty, or a silence
+    without such a reason — is a bug (`no_reply_sent`): it is logged as `NO_REPLY conv=…` and replaced by the stage-aware
     deterministic fallback, which is also saved to the transcript so the dashboard shows what was sent.
     """
     conv = ctx.conv
-    if result is not None and (result.skip_send or (result.text or "").strip() or result.images or result.pre_images):
+    if result is not None and result.skip_send:
+        reason = result.skip_reason
+        if reason in SILENCE_REASONS:
+            return result
+        if reason in DEDUPE_REASONS and await _reply_sent_recently(ctx):
+            logger.info("REPLY_DEDUPED conv=%s reason=%s (an earlier reply, at most %ds old, covers this message)", getattr(conv, "id", None), reason, NO_REPLY_DEDUPE_SECONDS)
+            return result
+        # A silence nobody can justify: the customer wrote and gets nothing. Log the violation and answer.
+        logger.error(
+            "no_reply_sent conv=%s stage=%s msg_type=%s reason=%s — every inbound message gets a reply; sending the deterministic fallback",
+            getattr(conv, "id", None), getattr(conv, "current_stage", None), getattr(ctx.message, "type", None), reason or "none",
+        )
+        result.skip_send = False
+        result.text = None
+    elif result is not None and ((result.text or "").strip() or result.images or result.pre_images):
         return result
     def _safe(obj, name):
         """getattr that survives an expired ORM row (a rollback makes attribute access raise MissingGreenlet)."""
@@ -8668,6 +9249,30 @@ async def ensure_reply(result: "PipelineResult | None", ctx: "InboundContext") -
     return result
 
 
+async def _turn_cost(ctx: "InboundContext") -> "dict | None":
+    """{"turn", "session", "lifetime"} in ₹ for the COST line, all from the llm_usage ledger (None on any failure)."""
+    from app.services import llm_usage_service
+
+    try:
+        summary = await llm_usage_service.cost_summary(ctx.db, ctx.conv.id)
+        return {"turn": summary["turn"]["cost_inr"], "session": summary["session_inr"], "lifetime": summary["lifetime_inr"]}
+    except Exception as exc:  # noqa: BLE001 — a cost line must never break a reply
+        logger.debug("turn cost failed: %s", exc)
+        return None
+
+
+async def _cost_args(ctx: "InboundContext") -> dict:
+    """
+    How the COST line is produced for ``turn_trace.log_turn``: nothing when the trace is off (those ledger queries were being run for a
+    log line nobody prints); lazily AFTER the reply was sent when the webhook defers the block; immediately otherwise (simulator, tests).
+    """
+    if not get_settings().turn_trace_enabled:
+        return {"defer": ctx.defer_trace}
+    if ctx.defer_trace:
+        return {"defer": True, "cost_fn": lambda: _turn_cost(ctx)}
+    return {"defer": False, "cost": await _turn_cost(ctx)}
+
+
 async def handle_inbound_message(ctx: InboundContext) -> PipelineResult:
     """
     Channel-neutral entry point: payment/media pre-hooks → pipeline → persistence post-hook.
@@ -8678,9 +9283,18 @@ async def handle_inbound_message(ctx: InboundContext) -> PipelineResult:
     is persisted (with channel + media_url) and announces new messages in real
     time. See app/services/payment_inbound.py.
     """
-    from app.services import llm_usage_service, payment_inbound
+    from app.services import llm_usage_service, payment_inbound, turn_trace
 
     conv = ctx.conv
+    _credit = max(0.0, float(getattr(ctx, "reply_delay_credit", 0.0) or 0.0))
+    _trace_started = turn_trace.start(credit=_credit)
+    from app.services import loop_monitor
+
+    turn_trace.note(loop_lag_start=await loop_monitor.measure())        # TIME line: loop_lag=start/end/worst
+    if conv is not None and ctx.db is not None:
+        await llm_usage_service.mark_turn_start(ctx.db, conv.id)      # the COST line reads this turn's ledger rows (id > mark)
+    _trace_stage_before = getattr(conv, "current_stage", None)
+    _reply_delay_credit.set(_credit)
     # Ambient (client, conversation) for llm_usage: every LLM call this turn that doesn't
     # pass explicit ids (generate_reply, classifiers, vision, STT) is attributed here.
     llm_usage_service.set_context(
@@ -8696,16 +9310,27 @@ async def handle_inbound_message(ctx: InboundContext) -> PipelineResult:
     blocked = await _billing_preflight(ctx)
     if blocked is not None:
         await payment_inbound.post_process(ctx, before_max)
+        turn_trace.log_turn(
+            _trace_started, enabled=get_settings().turn_trace_enabled, conv=conv, stage_before=_trace_stage_before,
+            user_text=getattr(ctx, "router_original_text", None) or ctx.user_text, result=blocked,
+            **await _cost_args(ctx),
+        )
         return blocked
     result = await payment_inbound.pre_process(ctx)
     if result is None:
         await _transcribe_voice_note_early(ctx)
         result = await _handle_inbound_message_core(ctx)
-    result = await _ensure_reply_language(ctx, result)
+    with turn_trace.span("localizer"):
+        result = await _ensure_reply_language(ctx, result)
     result = _echo_voice_transcript(ctx, result)
     await _restore_router_original_text(ctx, before_max)
     await _mark_voice_messages(ctx, before_max)
     await payment_inbound.post_process(ctx, before_max)
+    turn_trace.log_turn(
+        _trace_started, enabled=get_settings().turn_trace_enabled, conv=conv, stage_before=_trace_stage_before,
+        user_text=getattr(ctx, "router_original_text", None) or ctx.user_text, result=result,
+        **await _cost_args(ctx),
+    )
     return result
 
 
@@ -8801,6 +9426,8 @@ async def _ensure_reply_language(ctx: InboundContext, result: "PipelineResult") 
     conv = ctx.conv
     if result is None or conv is None or getattr(result, "skip_send", False) or not result.text:
         return result
+    if getattr(result, "skip_localizer", False):
+        return result
     from app.services import reply_localizer
 
     lang = getattr(conv, "last_customer_language", None)
@@ -8837,6 +9464,17 @@ async def _billing_preflight(ctx: InboundContext) -> "PipelineResult | None":
     client, conv = ctx.client, ctx.conv
     if client is None or conv is None:
         return None
+    if getattr(conv, "is_sandbox", False):
+        return None      # the in-dashboard simulator: never gated, never counted toward usage or the trial
+    if getattr(client, "bot_active", True) is False:
+        # Not live yet ("Go live" not pressed): real customers' messages are saved so the owner sees them, but the
+        # assistant stays silent. (Human-takeover conversations take the same silent path.)
+        try:
+            await conversation_service.save_message(ctx.db, conv.id, "user", ctx.user_text, wamid=ctx.wamid)
+        except Exception:
+            logger.exception("not-live: could not save inbound message for conv=%s", conv.id)
+        logger.info("bot not live: client=%s conv=%s — inbound saved, no reply", client.id, conv.id)
+        return PipelineResult(text=None, skip_send=True, skip_reason="bot_not_live")
     try:
         from app.services.billing import entitlement, usage
 
@@ -8929,13 +9567,21 @@ async def _handle_inbound_message_core(ctx: InboundContext) -> PipelineResult:
     # so every downstream code path (name-match guard, stage-lock, order-detect,
     # etc.) can reference the pre-update stage unconditionally.
     _stored_stage: str = conv.current_stage or "greeting"
+    _turn_original_text.set(None)
 
-    # Reply language = the language of THIS message (see sync_conversation_language).
-    await sync_conversation_language(db, conv, message, user_text)
+    from app.services import agent_v3 as _agent_v3
+
+    _v3_on = _agent_v3.enabled(client)    # AGENT_V3: cart + planner + validator owns the whole turn (see agent_v3.py)
+
+    # Reply language = the language of THIS message (see sync_conversation_language). Agent v3 decides it itself, with hysteresis
+    # (language_tracker: a strong message or two clear ones switch, taps / "ok" / names never do), so it skips this one-message rule.
+    if not _v3_on:
+        await sync_conversation_language(db, conv, message, user_text)
 
     # A screenshot is already with the seller: the conversation must not stay locked in the payment
-    # stage answering every message with a payment template.
-    if await detach_conversation_from_order_under_review(db, conv, client, message, user_text):
+    # stage answering every message with a payment template. (Agent v3 never resets the stage of a pending
+    # payment order — the cart is separate from the order — so it skips this legacy reset.)
+    if not _v3_on and await detach_conversation_from_order_under_review(db, conv, client, message, user_text):
         _stored_stage = conv.current_stage or "greeting"
 
     # P0-3: mirror pending_product_sku into last_shown_sku, which is NEVER
@@ -9021,7 +9667,7 @@ async def _handle_inbound_message_core(ctx: InboundContext) -> PipelineResult:
     # ROUTER_V2: only the bare "cancel" (button tap or typed) is handled by this keyword guard;
     # free-text cancel intent ("order cancel kar do", "never mind") goes to the router's cancel_order.
     _cancel_in_payment_result = None
-    if not _router_on or (user_text or "").strip().lower() == "cancel":
+    if not _v3_on and (not _router_on or (user_text or "").strip().lower() == "cancel"):
         _cancel_in_payment_result = await run_cancel_in_payment_guard(
             db, conv, client, sender_phone, user_text, wamid, _stored_stage, _record_usage,
         )
@@ -9031,12 +9677,35 @@ async def _handle_inbound_message_core(ctx: InboundContext) -> PipelineResult:
     # Upsert customer profile — best-effort; never block the message flow.
     # Block listed customers get no AI reply.
     if await run_blocklist_guard(db, client, sender_phone):
-        return PipelineResult(text=None, skip_send=True)
+        return PipelineResult(text=None, skip_send=True, skip_reason="blocked")
 
     # Human takeover: save message silently, skip AI entirely.
     _takeover_result = await run_human_takeover_guard(db, conv, sender_phone, user_text, wamid)
     if _takeover_result is not None:
         return _takeover_result
+
+    # Irrelevant-message guard: a muted conversation / emoji-only noise never reaches the router or any LLM.
+    _spam_result = await run_spam_guard(db, conv, client, message, user_text, wamid, _stored_stage, _record_usage)
+    if _spam_result is not None:
+        return _spam_result
+
+    if _v3_on:
+        # Agent v3 (Cart + Planner + Validator) owns everything from here: slot answers, side questions, cancel safety,
+        # the summary / confirmation, upsell. Only the deterministic payment-help answer (re-send the UPI instructions
+        # of the open order) stays in front of it.
+        _v3_pay_help = await run_payment_help_guard(db, conv, client, message, user_text, wamid, _record_usage)
+        if _v3_pay_help is not None:
+            return _v3_pay_help
+        return await _agent_v3.handle_turn(ctx, stored_stage=_stored_stage, llm_budget=_llm_budget, record_usage=_record_usage)
+
+    # "Cancel this order? (Yes / No)" answers, and "continue" / "yes" that restores a just-cancelled draft. Before every
+    # other yes/no guard: those would read the same "yes" as an answer to an older question.
+    _recovery_result = await order_recovery.run_recovery_guard(
+        db, conv, client, message, user_text, sender_phone, wamid, _stored_stage,
+        _lang_svc.normalize_language(getattr(conv, "last_customer_language", None)), _record_usage,
+    )
+    if _recovery_result is not None:
+        return _recovery_result
 
     # ── Duplicate "Confirm Order" tap guard ───────────────────────────────────
     # WhatsApp button messages remain tappable indefinitely after the chat moves on.
@@ -9102,6 +9771,13 @@ async def _handle_inbound_message_core(ctx: InboundContext) -> PipelineResult:
         await _reset_flow_state(db, conv)
         _stored_stage = "greeting"
 
+    if await run_empty_order_product_reference_guard(db, conv, client, message, user_text):
+        _stored_stage = "product_inquiry"
+
+    _mid_order_name_result = await run_mid_order_product_name_guard(db, conv, client, message, user_text, wamid, _record_usage)
+    if _mid_order_name_result is not None:
+        return _mid_order_name_result
+
     # ── Mid-payment switch-confirmation resolution ───────────────────────────
     # Runs before SKU/name-pinning and before detect_stage so a "yes"/"no"
     # reply to the switch-confirm prompt is never mistaken for a fresh SKU
@@ -9153,7 +9829,8 @@ async def _handle_inbound_message_core(ctx: InboundContext) -> PipelineResult:
             # fall through to normal flow dispatch below.
 
     settings = get_settings()
-    delay = random.uniform(settings.min_reply_delay, settings.max_reply_delay)
+    delay = max(0.0, random.uniform(settings.min_reply_delay, settings.max_reply_delay) - _reply_delay_credit.get())
+    turn_trace.add_span("wait", delay)
     await asyncio.sleep(delay)
 
     # ── Front door, BEFORE any catalogue matching ──────────────────────────────
@@ -9169,6 +9846,7 @@ async def _handle_inbound_message_core(ctx: InboundContext) -> PipelineResult:
     _stored_stage = _cat_order.stored_stage
     if _cat_order.original_text is not None:
         ctx.router_original_text = _cat_order.original_text
+        _turn_original_text.set(_cat_order.original_text)
         user_text = _cat_order.user_text
     _cat_link_result = await run_catalogue_link_short_circuit(
         db, conv, client, message, user_text, wamid, _stored_stage, _record_usage,
@@ -9211,6 +9889,7 @@ async def _handle_inbound_message_core(ctx: InboundContext) -> PipelineResult:
             _router_force_order = _router_out.force_order
             if _router_out.user_text and _router_out.user_text != user_text:
                 ctx.router_original_text = ctx.router_original_text or user_text
+                _turn_original_text.set(ctx.router_original_text)
                 user_text = _router_out.user_text
     if _run_keyword_front_door:
         _pre_route_result = await run_pre_catalog_router(
@@ -9288,6 +9967,21 @@ async def _handle_inbound_message_core(ctx: InboundContext) -> PipelineResult:
         stored_stage=conv.current_stage,
         pending_product_sku=getattr(conv, "pending_product_sku", None),
     )
+
+    # A bare exact SKU / product name (pinned this turn, from a browsing stage) expresses no buy intent. The
+    # history heuristic in detect_stage ("the agent's last message asked for quantity/name/address") must not
+    # push it into order_collection: the last assistant line can be a stale slot question left from an
+    # earlier day ("Kitne pieces chahiye?"), and the customer would never see the product card.
+    if (
+        _deterministic_step
+        and stage == "order_collection"
+        and _stored_stage not in ("order_collection", "awaiting_final_confirmation", "payment", "completed")
+    ):
+        stage = "product_inquiry"
+        logger.info(
+            "conv=%s exact %s reference %r → product card (stale order-slot question in history ignored)",
+            conv.id, _deterministic_step, user_text[:40],
+        )
 
     # P0-3: the repin above means the customer just affirmed an actual product
     # card — force order_collection now rather than waiting for detect_stage's
@@ -9725,74 +10419,46 @@ RULES:
     ):
         _ot_product_ctx = getattr(pinned_product, "name", None) if pinned_product else None
         try:
-            _is_ot = await conversation_flow.is_off_topic_message(user_text, stage, _ot_product_ctx, conversation_id=conv.id)
+            _ot_shop_profile = await shop_context_service.ensure_fresh(db, client, catalogue_products)
+            _is_ot = await conversation_flow.is_off_topic_message(
+                user_text, stage, _ot_product_ctx, conversation_id=conv.id, shop_profile=_ot_shop_profile,
+            )
             _llm_called_this_turn = True
         except Exception as _ot_exc:
             logger.warning("is_off_topic_message error (skipping): %s", _ot_exc)
             _is_ot = False
+        else:
+            if not _is_ot and not spam_guard.is_muted(conv):
+                await spam_guard.clear(db, conv)       # judged on-topic → the irrelevant streak ends
 
         if _is_ot:
-            # Improvement 2: track off-topic abuse (idle)
-            _idle_ot_count = (conv.off_topic_count or 0) + 1
-            conv.off_topic_count = _idle_ot_count
-            try:
-                await conversation_service.update_order_field(db, conv.id, "off_topic_count", _idle_ot_count)
-            except Exception:
-                pass
-            _ot_threshold_idle = int(getattr(client, "off_topic_threshold", None) or _DEFAULT_OFF_TOPIC_THRESHOLD) if client else _DEFAULT_OFF_TOPIC_THRESHOLD
+            # Improvement 2: track off-topic abuse (idle) — shared irrelevant-message counter: at the limit the ONE final
+            # notice goes out and the conversation is muted (no LLM, no reply) for `irrelevant_mute_minutes`.
+            _idle_strike = await spam_guard.register_strike(db, conv, client, may_mute=True)
+            _idle_ot_count = _idle_strike.count
             _shop_name_idle = (getattr(client, "business_name", None) or "our shop") if client else "our shop"
-            if _idle_ot_count >= _ot_threshold_idle:
+            if _idle_strike.muted:
+                _final_idle = get_template(
+                    _lang_svc.normalize_language(getattr(conv, "last_customer_language", None)),
+                    "rt_spam_final", business=_shop_name_idle, catalogue_url=_shop_catalogue_url(client),
+                    minutes=spam_guard.mute_minutes(),
+                )
+                logger.warning("OFF_TOPIC streak (idle): conv=%s count=%d — final notice + mute.", conv.id, _idle_ot_count)
+                return await _spam_reply(db, conv, client, user_text, wamid, _final_idle, _record_usage, "spam_final")
+            if _idle_strike.reached:
                 _boundary_idle = get_template(
                     _lang_svc.normalize_language(getattr(conv, "last_customer_language", None)),
                     "off_topic_boundary", business=_shop_name_idle,
                 )
                 logger.warning("OFF_TOPIC threshold (idle): conv=%s count=%d — boundary reply.", conv.id, _idle_ot_count)
-                try:
-                    await conversation_service.save_message(db, conv.id, "user", user_text, wamid=wamid)
-                    await conversation_service.save_message(db, conv.id, "assistant", _boundary_idle)
-                except Exception:
-                    pass
-                try:
-                    await _record_usage(db, client, conv)
-                except Exception:
-                    pass
-                return PipelineResult(text=_boundary_idle)
-            _ot_idle_lang = getattr(conv, "last_customer_language", None) or language or "english"
-            from app.services.language_templates import get_template as _get_ot_idle_tpl
-            # Build contact line: website (catalogue URL) + phone, omitting blank lines
+                return await _spam_reply(db, conv, client, user_text, wamid, _boundary_idle, _record_usage, "spam_boundary")
+            _ot_idle_lang = _lang_svc.normalize_language(getattr(conv, "last_customer_language", None) or language)
+            # Same fixed boundary message as the router's `out_of_scope` (shop name + catalogue link).
             _ot_cat_slug = getattr(client, "catalogue_slug", None)
-            _ot_cat_url = (
-                f"{settings.public_shop_base_url}/{_ot_cat_slug}"
-                if _ot_cat_slug else settings.public_shop_base_url
-            ) if _ot_cat_slug else None
-            _ot_phone = getattr(client, "phone", None)
-            _contact_parts = []
-            if _ot_cat_url:
-                if _ot_idle_lang in ("hindi_roman", "hinglish"):
-                    _contact_parts.append(f"Humari products ke baare mein jaankari ke liye hamara catalogue dekhein: {_ot_cat_url}")
-                elif _ot_idle_lang == "hindi_devanagari":
-                    _contact_parts.append(f"हमारे प्रोडक्ट्स के बारे में जानकारी के लिए हमारा कैटलॉग देखें: {_ot_cat_url}")
-                elif _ot_idle_lang == "gujarati_roman":
-                    _contact_parts.append(f"Amara products vishe mahiti mate amaru catalogue joi lo: {_ot_cat_url}")
-                elif _ot_idle_lang == "gujarati_script":
-                    _contact_parts.append(f"અમારા પ્રોડક્ટ્સ વિશે માહિતી માટે અમારું કેટલોગ જુઓ: {_ot_cat_url}")
-                else:
-                    _contact_parts.append(f"For info about our products, visit our catalogue: {_ot_cat_url}")
-            if _ot_phone:
-                if _ot_idle_lang in ("hindi_roman", "hinglish"):
-                    _contact_parts.append(f"Ya call karein: {_ot_phone}")
-                elif _ot_idle_lang == "hindi_devanagari":
-                    _contact_parts.append(f"या कॉल करें: {_ot_phone}")
-                elif _ot_idle_lang == "gujarati_roman":
-                    _contact_parts.append(f"Ya call karo: {_ot_phone}")
-                elif _ot_idle_lang == "gujarati_script":
-                    _contact_parts.append(f"અથવા કૉલ કરો: {_ot_phone}")
-                else:
-                    _contact_parts.append(f"Or call us: {_ot_phone}")
-            _contact_line = "\n".join(_contact_parts) + "\n\n" if _contact_parts else ""
-            _ot_idle_reply = _get_ot_idle_tpl(
-                _ot_idle_lang, "off_topic_idle",
-                contact_line=_contact_line,
+            _ot_cat_url = f"{settings.public_shop_base_url}/{_ot_cat_slug}" if _ot_cat_slug else settings.public_shop_base_url
+            _ot_idle_reply = get_template(
+                _ot_idle_lang, "rt_out_of_scope",
+                business=getattr(client, "business_name", None) or "our shop", catalogue_url=_ot_cat_url,
             )
             logger.info(
                 "OFF_TOPIC idle short-circuit: conv=%s stage=%s — idle deflect, no order started.",
@@ -10275,7 +10941,7 @@ RULES:
                     if _summary_outcome.early_result is not None:
                         return _summary_outcome.early_result
                     if _summary_outcome.render_error:
-                        return PipelineResult(text=None, skip_send=True, status="render_error")
+                        return PipelineResult(text=None, skip_send=True, status="render_error", skip_reason="render_error")
                     ai_reply = _summary_outcome.text
                     _render_action = _summary_outcome.render_action
                 else:
@@ -10321,7 +10987,7 @@ RULES:
                             "RenderError conv=%s stage=%r action=%r — refusing to send: %s",
                             conv.id, stage, _render_action, _re,
                         )
-                        return PipelineResult(text=None, skip_send=True, status="render_error")
+                        return PipelineResult(text=None, skip_send=True, status="render_error", skip_reason="render_error")
 
                     # The customer re-sent / switched to a product mid-order: show its card (and photo) first so the
                     # bare slot question ("Quantity?") isn't the whole answer — and never the same reply twice.
@@ -10585,11 +11251,12 @@ RULES:
         {"role": "model", "content": ai_reply},
     ]
     try:
-        await lead_service.tag_lead(
-            db, sender_phone, conv.id, all_messages,
-            client_id=client.id if client else None,
-            channel="whatsapp",
-        )
+        if not getattr(conv, "is_sandbox", False):      # simulator chats never become leads
+            await lead_service.tag_lead(
+                db, sender_phone, conv.id, all_messages,
+                client_id=client.id if client else None,
+                channel="whatsapp",
+            )
     except Exception as exc:
         logger.error("Lead tagging error: %s", exc)
 

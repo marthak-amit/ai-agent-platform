@@ -147,6 +147,7 @@ async def import_recipients_from_conversations(
     conv_result = await db.execute(
         select(Conversation.phone_number).where(
             Conversation.channel == "whatsapp",
+            Conversation.is_sandbox.is_(False),
             Conversation.client_id == campaign.client_id,
         ).distinct()
     )

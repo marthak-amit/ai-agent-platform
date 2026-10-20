@@ -1,0 +1,15 @@
+name: quantity_mismatch
+description: 'A breakdown that does not add up ("2 red 2 green" for 3) is read at ₹0 and answered with the mismatch + a plain question — no example values.'
+turns:
+  - user: "I want 3 kurtis"
+    plan: {actions: [{type: add_line, sku: KU10001, variant: {}, qty: 3}]}
+  - user: "2 red 2 green"
+    expect:
+      fast_path: multi_variant
+      planner_calls: 0
+      issues_contain: [QTY_MISMATCH]
+      cart: {lines: [{sku: KU10001, color: null, qty: 3}]}
+      reply_contains: ["adds up to 4", "order is for 3", "Which colours and how many of each"]
+      reply_not_contains: ["e.g."]
+  - user: "2 red 1 green"
+    expect: {fast_path: multi_variant, planner_calls: 0, cart: {lines: [{sku: KU10001, color: Red, qty: 2}, {sku: KU10001, color: Green, qty: 1}]}}

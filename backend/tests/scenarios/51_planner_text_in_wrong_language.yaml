@@ -1,0 +1,12 @@
+name: planner_text_in_wrong_language
+description: 'A planner sentence in another language than the customer''s is never sent: the template question replaces it, the violation lang_mismatch is logged, and nothing is translated.'
+turns:
+  - user: "mare Cotton Kurti joi che"
+    plan: {actions: [{type: add_line, sku: KU10001}]}
+  - user: "gift wrap thase?"
+    plan: {actions: [{type: ask_clarify, question: "Do you want gift wrapping?", options: [], slot: other}]}
+    expect:
+      allow_violations: true
+      translate_calls: 0
+      reply_contains: ["Tamane shu joiye chhe te thodu vadhare kaho ne"]
+      reply_not_contains: ["gift wrapping", "Do you want"]

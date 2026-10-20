@@ -47,18 +47,18 @@ _CATEGORY_TABLE = {
 }
 
 _COLOR_TABLE = {
-    "red": "red laal lal लाल લાલ লাল சிவப்பு ఎరుపు ಕೆಂಪು ചുവപ്പ് ਲਾਲ ଲାଲ لال سرخ",
-    "blue": "blue neela neeli nila vadli वाडली नीला नीली निळा નીલો વાદળી নীল நீலம் నీలం ನೀಲಿ നീല ਨੀਲਾ ନୀଳ نیلا",
-    "green": "green hara hari lilo hirva हरा हरी हिरवा લીલો লীলো সবুজ பச்சை ఆకుపచ్చ ಹಸಿರು പച്ച ਹਰਾ ସବୁଜ ہرا سبز",
-    "pink": "pink gulabi gulaabi गुलाबी ગુલાબી গোলাপি இளஞ்சிவப்பு గులాబీ ಗುಲಾಬಿ പിങ്ക് ਗੁਲਾਬੀ ଗୋଲାପୀ گلابی",
-    "yellow": "yellow peela pila pivla पीला पिवळा પીળો হলুদ மஞ்சள் పసుపు ಹಳದಿ മഞ്ഞ ਪੀਲਾ ହଳଦିଆ پیلا",
-    "black": "black kala kaala kaali काला काली काळा કાળો কালো கருப்பு నలుపు ಕಪ್ಪು കറുപ്പ് ਕਾਲਾ କଳା کالا",
-    "white": "white safed safeda safed सफेद पांढरा સફેદ સફેદો সাদা வெள்ளை తెలుపు ಬಿಳಿ വെള്ള ਚਿੱਟਾ ଧଳା سفید",
-    "orange": "orange narangi नारंगी केशरी નારંગી কমলা ஆரஞ்சு నారింజ ಕಿತ್ತಳೆ ഓറഞ്ച് ਸੰਤਰੀ କମଳା نارنجی",
-    "purple": "purple jamuni baingani बैंगनी जामुनी જાંબલી বেগুনি ஊதா ఊదా ನೇರಳೆ വയലറ്റ് ਬੈਂਗਣੀ ବାଇଗଣି جامنی",
+    "red": "red laal lal laall lalrang रेड રેડ लाल લાલ লাল சிவப்பு ఎరుపు ಕೆಂಪು ചുവപ്പ് ਲਾਲ ଲାଲ لال سرخ",
+    "blue": "blue neela ब्लू બ્લૂ બ્લુ neeli nila neelo vadli वाडली नीला नीली निळा નીલો વાદળી নীল நீலம் నీలం ನೀಲಿ നീല ਨੀਲਾ ନୀଳ نیلا",
+    "green": "green hara ग्रीन ગ્રીન hari lilo hirva हरा हरी हिरवा લીલો লীলো সবুজ பச்சை ఆకుపచ్చ ಹಸಿರು പച്ച ਹਰਾ ସବୁଜ ہرا سبز",
+    "pink": "pink gulabi पिंक પિંક gulaabi गुलाबी ગુલાબી গোলাপি இளஞ்சிவப்பு గులాబీ ಗುಲಾಬಿ പിങ്ക് ਗੁਲਾਬੀ ଗୋଲାପୀ گلابی",
+    "yellow": "yellow peela येलो યેલો pila pivla pilo peelo पीला पिवळा પીળો হলুদ மஞ்சள் పసుపు ಹಳದಿ മഞ്ഞ ਪੀਲਾ ହଳଦିଆ پیلا",
+    "black": "black kala ब्लैक બ્લેક kaala kaali kalo kaalo kalu kali kaalu kaloo काला काली काळा કાળો কালো கருப்பு నలుపు ಕಪ್ಪು കറുപ്പ് ਕਾਲਾ କଳା کالا",
+    "white": "white safed व्हाइट વ્હાઇટ safeda dholo dhoLo dhawal सफेद पांढरा સફેદ સફેદો সাদা வெள்ளை తెలుపు ಬಿಳಿ വെള്ള ਚਿੱਟਾ ଧଳା سفید",
+    "orange": "orange narangi ऑरेंज ઓરેન્જ नारंगी केशरी નારંગી কমলা ஆரஞ்சு నారింజ ಕಿತ್ತಳೆ ഓറഞ്ച് ਸੰਤਰੀ କମଳା نارنجی",
+    "purple": "purple jamuni पर्पल પર્પલ वायलेट વાયોલેટ baingani jambli बैंगनी जामुनी જાંબલી বেগুনি ஊதா ఊదా ನೇರಳೆ വയലറ്റ് ਬੈਂਗਣੀ ବାଇଗଣି جامنی",
     "maroon": "maroon marun मैरून મરૂન মেরুন மெரூன் మెరూన్ ಮರೂನ್ മറൂൺ ਮਰੂਨ ମେରୁନ ماروں",
-    "brown": "brown bhura bhoora भूरा તપખીરી ભૂરો বাদামী பழுப்பு గోధుమ ಕಂದು തവിട്ട് ਭੂਰਾ ଖଇରି بھورا",
-    "grey": "grey gray slate ग्रे स्लेटी રાખોડી ধূসর சாம்பல் బూడిద ಬೂದು ചാരം ਸਲੇਟੀ ଧୂସର سرمئی",
+    "brown": "brown bhura bhoora bhuro भूरा તપખીરી ભૂરો বাদামী பழுப்பு గోధుమ ಕಂದು തവിട്ട് ਭੂਰਾ ଖଇରି بھورا",
+    "grey": "grey gray slate rakhodi ग्रे स्लेटी રાખોડી ধূসর சாம்பல் బూడిద ಬೂದು ചാരം ਸਲੇਟੀ ଧୂସର سرمئی",
     "golden": "golden gold sunehri सुनहरी गोल्डन સોનેરી গোল্ডেন தங்க బంగారు ಚಿನ್ನ സ്വർണ്ണ ਸੁਨਹਿਰੀ ସୁନେଲି سنہری",
     "silver": "silver chandi चांदी सिल्वर ચાંદી সিলভার வெள்ளி వెండి ಬೆಳ್ಳಿ വെള്ളി ਚਾਂਦੀ ରୂପା چاندی",
     "cream": "cream क्रीम ક્રીમ ক্রিম கிரீம் క్రీమ్ ಕ್ರೀಮ್ ക്രീം ਕਰੀਮ କ୍ରିମ୍ کریم",
@@ -138,6 +138,11 @@ def expand_query(text: str) -> list[str]:
     """
     tokens = tokenize(text)
     return _lookup(tokens, _CATEGORY_ALIAS) + _lookup(tokens, _COLOR_ALIAS)
+
+
+def canonical_colors(text: str) -> list[str]:
+    """Every known colour named in `text`, in order ("2 laal 1 hara" → ["red", "green"]); [] when none."""
+    return _lookup(tokenize(text), _COLOR_ALIAS)
 
 
 def canonical_color(text: str) -> str | None:

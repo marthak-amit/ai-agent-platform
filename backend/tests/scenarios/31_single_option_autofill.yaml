@@ -1,0 +1,16 @@
+name: single_option_autofill
+description: 'An attribute with exactly one available value is selected automatically and the reply says so — it is not a question and not an ungrounded value.'
+turns:
+  - user: "I want a leather wallet"
+    plan: {actions: [{type: add_line, sku: WL60001}]}
+    expect:
+      cart: {lines: [{sku: WL60001, size: One Size, color: null, qty: null}]}
+      reply_contains: ["Only One Size is available", "so I selected it", "Which colour", "Available: Black, Brown"]
+      reply_not_contains: ["Which size"]
+  - user: "black"
+    expect: {fast_path: option, cart: {lines: [{sku: WL60001, size: One Size, color: Black, qty: null}]}, reply_contains: ["How many"]}
+  - user: "2 travel mugs"
+    plan: {actions: [{type: add_line, sku: TM70001, qty: 2}]}
+    expect:
+      cart: {lines: [{sku: WL60001, color: Black, qty: null}, {sku: TM70001, color: White, qty: 2}]}
+      reply_contains: ["Only White is available", "How many"]

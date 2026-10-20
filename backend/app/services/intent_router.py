@@ -262,7 +262,7 @@ async def format_orders(db, client, orders: list) -> str:
     for order in orders:
         eta = order_eta_window(order, client, await order_product_days(db, order))
         if eta["state"] == "window":
-            eta_txt = f"{eta['from']:%d %b}–{eta['to']:%d %b}"
+            eta_txt = f"{eta['from']:%d %b}" if eta["from"] == eta["to"] else f"{eta['from']:%d %b}–{eta['to']:%d %b}"
         else:
             eta_txt = {"none": "n/a", "awaiting": "starts after payment is confirmed", "overdue": "window passed"}[eta["state"]]
         placed, paid = to_ist_date(order.created_at), to_ist_date(order.paid_at)
@@ -291,6 +291,7 @@ class RouterContext:
     candidate_products: list = field(default_factory=list)
     allowed_skus: set = field(default_factory=set)
     order_rows: list = field(default_factory=list)
+    shop_profile: object = None     # shop_context_service.ShopProfile (None = unknown → never refuse on scope)
 
 
 def _state_block(conv, stage: str, pinned_product, variant_info: dict, next_slot: str | None) -> str:
@@ -339,8 +340,11 @@ def _state_block(conv, stage: str, pinned_product, variant_info: dict, next_slot
     return "\n".join(lines)
 
 
-def _shop_block(client, conv, profile) -> str:
-    """SHOP line: name, language preference, delivery days, payment modes (flags only — no ids/accounts)."""
+def _shop_block(client, conv, profile, shop_profile=None) -> str:
+    """
+    SHOP block: name, language preference, delivery days, payment modes (flags only — no ids/accounts), plus the
+    cached shop profile (`sells: … | categories: … | products: …`) that tells the router what is in scope.
+    """
     lo, hi = order_delivery_days(client)
     language = (
         getattr(conv, "last_customer_language", None) or getattr(profile, "preferred_language", None) or "english"
@@ -350,10 +354,12 @@ def _shop_block(client, conv, profile) -> str:
         modes.append("COD")
     if getattr(client, "accepts_upi", True) and getattr(client, "upi_id", None):
         modes.append("UPI")
-    return (
+    block = (
         f"name: {getattr(client, 'business_name', None) or 'the shop'} | customer language: {language} | "
         f"delivery: {lo}–{hi} business days | payment: {', '.join(modes) or 'not configured'}"
     )
+    shop_text = getattr(shop_profile, "text", None)
+    return f"{block}\nwhat the business offers: {shop_text}" if shop_text else block
 
 
 def _history_block(history_rows: list, limit: int = 8) -> str:
@@ -368,7 +374,7 @@ def _history_block(history_rows: list, limit: int = 8) -> str:
 
 async def build_context(
     db, conv, client, user_text: str, *, sender_phone: str, stage: str, pinned_product, variant_info: dict,
-    all_products: list, profile, history_rows: list, next_slot: str | None,
+    all_products: list, profile, history_rows: list, next_slot: str | None, shop_profile=None,
 ) -> RouterContext:
     """Assemble the compact router context for this turn (state, orders, candidates, history)."""
     candidates = pick_candidates(all_products, user_text, pinned_product)
@@ -377,14 +383,14 @@ async def build_context(
     if pinned_product is not None and pinned_product.sku:
         allowed.add(pinned_product.sku.upper())
     return RouterContext(
-        shop=_shop_block(client, conv, profile),
+        shop=_shop_block(client, conv, profile, shop_profile),
         state=_state_block(conv, stage, pinned_product, variant_info or {}, next_slot),
         orders=await format_orders(db, client, orders),
         candidates="\n".join(format_candidate(p) for p in candidates) or "(no close catalogue matches for this message)",
         history=_history_block(history_rows),
         stage=stage, next_slot=next_slot,
         pinned_sku=getattr(pinned_product, "sku", None),
-        candidate_products=candidates, allowed_skus=allowed, order_rows=orders,
+        candidate_products=candidates, allowed_skus=allowed, order_rows=orders, shop_profile=shop_profile,
     )
 
 
@@ -422,7 +428,7 @@ async def fast_path_reason(
     # "I want 2 L and one M": a per-unit split must reach the slot machine verbatim — the router LLM
     # would flatten it into a bare "same"/"M" answer and drop the rest.
     if (
-        pinned_product is not None and stage in ORDER_SLOT_STAGES and next_slot in conversation_flow.BREAKDOWN_SLOTS
+        pinned_product is not None and stage in ORDER_SLOT_STAGES and conversation_flow.breakdown_slot_open(next_slot, conv)
         and conversation_flow.looks_like_variant_breakdown(text, variant_info or {})
     ):
         return "variant_breakdown"

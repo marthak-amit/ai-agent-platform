@@ -232,7 +232,7 @@ async def finish_payment(s: Session, rng: random.Random, *, approve: bool = True
             return
         client = await db.get(Client, s.client_id)
         if approve:
-            res = await pvs.approve(db, client, order.id, None)
+            res = await pvs.approve(db, client, order.id, None, confirm_high_value=True)
         else:
             res = await pvs.reject(db, client, order.id, None, reason="blurry")
     final = (await s.orders())[-1]
@@ -334,12 +334,20 @@ async def sc_price_questions(s: Session, rng: random.Random) -> None:
     await s.say(_pick(rng, L.FAQ, s.lang), s.lang)
 
 
+async def say_cancel(s: Session, rng: random.Random) -> None:
+    """Type a cancel phrase; when the bot asks "Cancel this order? (Yes / No)" (an unsure model), answer yes."""
+    await s.say(_pick(rng, L.CANCEL, s.lang), s.lang)
+    conv = await s.conv()
+    if conv is not None and getattr(conv, "cancel_confirm_at", None):
+        await s.say(rng.choice(L.YES[s.lang]), s.lang)
+
+
 async def sc_cancel_mid_order(s: Session, rng: random.Random) -> None:
     """Start an order, answer a slot or two, cancel — nothing must be created."""
     sku = rng.choice(["LH10042", "CC40001", "KU30001"])
     await choose_product(s, rng, sku)
     await express_order_intent(s, rng)
-    await s.say(_pick(rng, L.CANCEL, s.lang), s.lang)
+    await say_cancel(s, rng)
     if await s.orders():
         s.flag("goal_failed", "order exists after cancelling mid-order")
     conv = await s.conv()
@@ -353,7 +361,7 @@ async def sc_cancel_at_payment(s: Session, rng: random.Random) -> None:
     color, size = pick_variant(rng, sku)
     if not await drive_order(s, rng, sku=sku, qty=1, pay="UPI", color=color, size=size):
         return
-    await s.say(_pick(rng, L.CANCEL, s.lang), s.lang)
+    await say_cancel(s, rng)
     orders = await s.orders()
     if orders and orders[-1].status not in ("cancelled",):
         s.flag("goal_failed", f"order status {orders[-1].status} after cancel at payment")

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -22,6 +22,7 @@ class Message(Base):
     """
 
     __tablename__ = "messages"
+    __table_args__ = (Index("ix_messages_conversation_id_id", "conversation_id", "id"),)      # max(id) / "id > mark" / newest-first per conversation
 
     id: Mapped[int] = mapped_column(primary_key=True)
     conversation_id: Mapped[int] = mapped_column(

@@ -1,0 +1,22 @@
+name: change_colour_at_confirmation
+description: 'Changing the colour while the summary is on screen updates the line and shows the summary again; "yes" then orders the NEW colour.'
+shop: default
+turns:
+  - macro: complete_cart_cod
+  - user: "change colour to green"
+    plan: {actions: [{type: update_line, line_id: "$line[0]", fields: {color: Green}}], reply_intent: none}
+    expect:
+      actions_contains: [update_line]
+      stage: confirming
+      cart: {lines: [{sku: KU10001, color: Green, qty: 2}]}
+      reply_contains: ["Updated Cotton Kurti", "colour Red → Green", "Order summary", "(Green)"]
+      reply_not_contains: ["(Red)"]
+  - user: "yes"
+    expect:
+      fast_path: confirm
+      planner_calls: 0
+      orders: 1
+      order: {status: paid, payment_method: COD, total: 998, lines: [{sku: KU10001, color: Green, qty: 2}]}
+      reply_contains: ["Order confirmed", "₹998", "pay when it arrives"]
+      cart: {empty: true}
+      conv_stage: completed

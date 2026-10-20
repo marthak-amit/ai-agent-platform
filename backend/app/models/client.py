@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Optional
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, JSON, String, Text, func
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -166,3 +166,34 @@ class Client(Base):
     # LLM intent router ("ROUTER_V2", migration 0061): NULL = follow the ROUTER_V2_CLIENT_IDS
     # env default, True/False = force on/off for this client.
     router_v2_enabled: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+
+    # Agent v3 (Cart + Planner + Validator, migration 0072): NULL = follow the AGENT_V3_CLIENT_IDS env default,
+    # True/False = force on/off for this client. Off ⇒ the legacy router / slot machine runs unchanged.
+    agent_v3_enabled: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+
+    # Cached "shop profile" (migration 0068) built by shop_context_service from business_type /
+    # business_description / catalogue categories+names / approved KB topics. It tells the router and the
+    # off-topic check what this business sells so out-of-scope questions get a fixed template reply.
+    # `shop_context_hash` fingerprints the inputs (catalogue edits change it → lazy rebuild); NULL = rebuild.
+    shop_context: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    shop_context_keywords: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True)
+    shop_context_hash: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    shop_context_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Dashboard-first onboarding / account lifecycle (migration 0070).
+    # account_status: 'setup' (before "Go live": unlimited simulator, no expiry, bot silent to real customers),
+    # 'trial' (went live on a trial), 'active' (everything else, incl. every client that pre-dates this).
+    account_status: Mapped[str] = mapped_column(String, default="active", nullable=False, server_default="active")
+    # NULL = the one-screen quick start (business name + language) has not been done yet.
+    quick_start_completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # False until "Go live": inbound messages from real customers are saved but not answered.
+    bot_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, server_default="true")
+    go_live_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The trial starts at go-live (never at signup); see app.services.trial_service.
+    trial_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    trial_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set once the in-dashboard simulator has answered enough turns (checklist item "Test your agent").
+    agent_tested_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Orders above this total need the seller's explicit review before the payment can be approved (migration 0071).
+    # NULL = platform default (settings.high_value_order_threshold, ₹50,000).
+    high_value_order_threshold: Mapped[Optional[float]] = mapped_column(Float, nullable=True)

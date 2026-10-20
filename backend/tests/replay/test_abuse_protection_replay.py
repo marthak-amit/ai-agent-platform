@@ -356,8 +356,8 @@ async def test_s5_cross_product_question_mid_order(replay_http, replay_session):
     assert "6,500" in reply or "6500" in reply or "banarasi" in reply.lower(), (
         f"reply should mention Banarasi Saree price, got: {reply!r}"
     )
-    assert "yes" in reply.lower() and "no" in reply.lower(), (
-        f"reply should offer to switch the order (Yes/No), got: {reply!r}"
+    assert "switch" in reply.lower() and "add both" in reply.lower() and "keep" in reply.lower(), (
+        f"reply should offer to switch / add both / keep the order, got: {reply!r}"
     )
 
 

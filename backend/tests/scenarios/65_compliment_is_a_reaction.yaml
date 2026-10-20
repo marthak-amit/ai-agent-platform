@@ -1,0 +1,20 @@
+name: compliment_is_a_reaction
+description: 'A compliment sentence and a bare "ok" are answered at ₹0 (no planner call) and keep the open question; a request that merely contains praise still goes to the planner.'
+turns:
+  - user: "I want the banarasi saree in maroon"
+    plan: {actions: [{type: add_line, sku: SR20001, variant: {color: Maroon}}]}
+    expect: {reply_contains: ["How many"]}
+  - user: "You have such a amazing catalogue"
+    expect:
+      fast_path: reaction
+      planner_calls: 0
+      reply_contains: ["Glad you like it", "How many"]
+      cart: {lines: [{sku: SR20001, color: Maroon, qty: null}]}
+  - user: "ok"
+    expect:
+      fast_path: reaction
+      planner_calls: 0
+      reply_contains: ["How many"]
+  - user: "show me nice sarees"
+    plan: {actions: [{type: search_catalog, query: saree}]}
+    expect: {fast_path: null, planner_calls: 1}

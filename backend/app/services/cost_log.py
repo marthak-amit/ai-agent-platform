@@ -125,7 +125,9 @@ async def print_report(db, conversation_id: int, order_number: str, order_id: in
         order_number, rows,
         {"messages": len(entries), "template": len(entries) - llm_msgs, "llm": llm_msgs},
     )
-    print(report)
+    # Through the logger (stderr), not print() (stdout): the multi-line report and the TURN block used to land on the terminal through two
+    # different streams and tear each other's lines ("COST turn=₹0.00INFO: …").
+    logger.info("%s", report)
     logger.info("cost_report | order:%s | conv:%s | llm_calls:%d | messages:%d | total:₹%.2f",
                 order_number, conversation_id, len(rows), len(entries), sum(r.cost_inr for r in rows))
     return report

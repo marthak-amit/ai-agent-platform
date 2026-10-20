@@ -246,6 +246,7 @@ async def get_revenue_chart(
             Order.created_at >= seven_days_ago,
             Order.status.notin_(["cancelled"]),
             Order.client_id == current_client.id,
+            Order.is_sandbox.is_(False),
         )
         .group_by(func.date(Order.created_at))
         .order_by(func.date(Order.created_at))

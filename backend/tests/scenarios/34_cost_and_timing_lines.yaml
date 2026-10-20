@@ -1,0 +1,23 @@
+name: cost_and_timing_lines
+description: 'The TURN block prints a COST line (₹ of this turn / this session / the conversation''s lifetime, all read from llm_usage) and a TIME line with the spans of the turn.'
+turns:
+  - user: "show me products"
+    plan: {actions: [{type: browse_catalog}]}
+    usage: {input: 10000, cached: 0, output: 1000}
+    expect:
+      turn_contains:
+        - "COST turn=₹0.17 session=₹0.17 lifetime=₹0.17"
+        - "TIME total="
+        - " planner="
+        - " render="
+        - " db="
+        - " wait="
+  - user: "what else do you have"
+    plan: {actions: [{type: browse_catalog}]}
+    usage: {input: 5000, cached: 2000, output: 500}
+    expect:
+      turn_contains: ["COST turn=₹0.07 session=₹0.25 lifetime=₹0.25"]
+  - user: "hi"
+    expect:
+      fast_path: greeting
+      turn_contains: ["COST turn=₹0.00 session=₹0.25 lifetime=₹0.25"]

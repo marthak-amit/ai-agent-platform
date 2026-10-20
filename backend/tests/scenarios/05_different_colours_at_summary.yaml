@@ -1,0 +1,24 @@
+name: different_colours_at_summary
+description: '"I want different colours" at the summary asks which ones (no guess, no confirmation); the answer splits the line and the summary comes back.'
+turns:
+  - macro: complete_cart_cod
+  - user: "I want different colours"
+    plan: {actions: [{type: ask_clarify, question: "Which colours would you like?", options: [Red, Green, Blue], slot: split}]}
+    expect:
+      actions_absent: [confirm_order]
+      orders: 0
+      cart: {lines: [{sku: KU10001, color: Red, qty: 2}]}
+      reply_contains: ["Which colours and how many of each"]
+      reply_not_contains: ["e.g."]
+      stage: collecting
+  - user: "1 red 1 green"
+    expect:
+      fast_path: multi_variant
+      planner_calls: 0
+      stage: confirming
+      cart: {lines: [{sku: KU10001, color: Red, qty: 1}, {sku: KU10001, color: Green, qty: 1}]}
+      reply_contains: ["Order summary", "(Red) × 1", "(Green) × 1", "Total: ₹998"]
+  - user: "yes"
+    expect:
+      orders: 1
+      order: {status: paid, total: 998, lines: [{sku: KU10001, color: Red, qty: 1}, {sku: KU10001, color: Green, qty: 1}]}

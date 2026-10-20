@@ -1,0 +1,15 @@
+name: language_follows_last_message
+description: 'The reply language is the language of the customer''s LAST message (not a sticky first language); a bare "2" or "yes" with no signal of its own keeps the previous message''s language.'
+turns:
+  - user: "mare Cotton Kurti joi che"
+    plan: {actions: [{type: add_line, sku: KU10001}]}
+    expect: {reply_contains: ["Kayo rang"], reply_not_contains: ["Which colour"]}
+  - user: "I want 2 red ones"
+    plan: {actions: [{type: update_line, line_id: "$line[0]", fields: {color: Red, qty: 2}}]}
+    expect: {reply_contains: ["your name"], reply_not_contains: ["tamaru naam"]}
+  - user: "Asha Patel"
+    plan: {actions: [{type: set_customer, name: Asha Patel}]}
+    expect: {reply_contains: ["address"], reply_not_contains: ["tamaru"]}
+  - user: "have kurti nu size?"
+    plan: {actions: [{type: ask_clarify, question: "", options: [], slot: other}]}
+    expect: {reply_not_contains: ["Please share your complete"]}

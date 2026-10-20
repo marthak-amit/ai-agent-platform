@@ -91,7 +91,7 @@ def test_parse_prediction_applies_production_validation_and_sanitiser():
 
 
 def test_golden_set_is_labelled_valid_and_covers_every_action():
-    """golden_router.jsonl: every row labelled with a production action; all twelve actions appear."""
+    """golden_router.jsonl: every row labelled with a production action; every action (incl. out_of_scope) appears."""
     from app.schemas.router import ROUTER_ACTIONS
 
     rows = common.load_dataset(common.GOLDEN_PATH)

@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.customer import Customer
+from app.services.sandbox_guard import not_sandbox_phone
 from app.services.db_helpers import add_or_get
 
 logger = logging.getLogger(__name__)
@@ -256,6 +257,7 @@ async def list_customers(
     q = select(Customer).where(
         Customer.client_id == client_id,
         Customer.is_blocked == False,  # noqa: E712
+        not_sandbox_phone(Customer.phone),
     )
 
     if search:
@@ -307,16 +309,19 @@ async def get_customer_stats(db: AsyncSession, client_id: int) -> dict:
 
     month_ago = datetime.now(timezone.utc) - timedelta(days=30)
 
-    total = await _count([Customer.client_id == client_id])
+    real = not_sandbox_phone(Customer.phone)
+    total = await _count([Customer.client_id == client_id, real])
     active = await _count([
         Customer.client_id == client_id,
         Customer.last_message_at >= month_ago,
+        real,
     ])
-    vip = await _count([Customer.client_id == client_id, Customer.is_vip == True])  # noqa: E712
+    vip = await _count([Customer.client_id == client_id, Customer.is_vip == True, real])  # noqa: E712
 
     avg_stmt = select(func.avg(Customer.total_spent)).where(
         Customer.client_id == client_id,
         Customer.total_orders > 0,
+        real,
     )
     avg_val = await _scalar(avg_stmt)
 

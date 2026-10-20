@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import type { InboxFilter, InboxItem } from "../../types/chat";
 import { relativeTime } from "../../utils/time";
 import ChannelIcon from "./ChannelIcon";
+import EmptyStateCta from "../setup/EmptyStateCta";
 
 interface Props {
   items: InboxItem[];
@@ -99,10 +100,12 @@ export default function ConversationList({
               <RefreshCw size={14} /> {t("chat.retry")}
             </button>
           </div>
+        ) : items.length === 0 && !search && filter === "all" ? (
+          <EmptyStateCta kind="chats" />
         ) : items.length === 0 ? (
           <div className="flex flex-col items-center text-center py-12 px-6">
             <MessageSquare size={32} className="text-gray-200 mb-2" />
-            <p className="text-sm text-gray-400">{search || filter !== "all" ? t("chat.no_results") : t("chat.empty_list")}</p>
+            <p className="text-sm text-gray-400">{t("chat.no_results")}</p>
           </div>
         ) : (
           items.map((c) => {

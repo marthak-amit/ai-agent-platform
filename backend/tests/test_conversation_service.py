@@ -60,7 +60,7 @@ async def test_save_message_adds_and_commits(db, mock_settings):
 
     db.add.assert_called_once()
     db.commit.assert_called_once()
-    db.refresh.assert_called_once()
+    db.refresh.assert_not_called()      # the INSERT already returned the row: no extra round trip
 
 
 async def test_get_history_returns_messages(db, mock_settings):

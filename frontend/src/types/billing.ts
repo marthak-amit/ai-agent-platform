@@ -66,11 +66,15 @@ export interface UpgradeOption {
   amounts: Amounts;
 }
 
-export type EntitlementKind = "active" | "exempt" | "grace" | "expired";
+export type EntitlementKind = "active" | "exempt" | "setup" | "trial" | "grace" | "expired";
 
 export interface Entitlement {
   state: EntitlementKind;
   grace_ends_at: string | null;
+  /** Present while state is "trial": when it ends and how many of its conversations are used. */
+  trial_ends_at?: string | null;
+  trial_conversations_used?: number | null;
+  trial_conversation_limit?: number | null;
   enforced: boolean;
   restricted: boolean;
   over_limit: boolean;

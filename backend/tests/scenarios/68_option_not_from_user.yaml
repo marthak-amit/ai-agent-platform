@@ -1,0 +1,15 @@
+name: option_not_from_user
+description: 'A planner that picks colours the customer never wrote (here Gold and Maroon for "I want 3 sarees, different shades") is rejected: the lines are reverted, the violation is logged as option_not_from_user and the customer is asked with the real options — never an ordered colour they did not choose.'
+turns:
+  - user: "I want 3 banarasi sarees"
+    plan: {actions: [{type: add_line, sku: SR20001, variant: {}, qty: 3}]}
+    expect: {cart: {lines: [{sku: SR20001, color: null, qty: 3}]}, reply_contains: ["Which colour"]}
+  - user: "different shades please"
+    plan:
+      actions: [{type: split_line, line_id: "$line[0]", parts: [{variant: {color: Gold}, qty: 2}, {variant: {color: Maroon}, qty: 1}]}]
+    expect:
+      allow_violations: true
+      log_contains: ["option_not_from_user"]
+      cart: {lines: [{sku: SR20001, color: null, qty: 3}]}
+      reply_contains: ["Which colour"]
+      reply_not_contains: ["Split"]

@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.schemas.router import ROUTER_ACTIONS
-from app.services import intent_router
+from app.services import intent_router, shop_context_service
 
 HERE = Path(__file__).parent
 DATASET_PATH = HERE / "dataset.jsonl"
@@ -73,8 +73,11 @@ def eval_context(row: dict, catalogue: list[dict]) -> "intent_router.RouterConte
                for m in row.get("context", [])]
     client = SimpleNamespace(business_name="Test Store", delivery_days_min=3, delivery_days_max=7,
                              accepts_cod=True, accepts_upi=True, upi_id="x@upi")
+    client.business_type = "textile"
+    client.business_description = "Sarees, lehengas, kurtis and other ethnic wear"
+    shop_profile = shop_context_service.build_profile(client, products)     # same builder the live pipeline uses
     return intent_router.RouterContext(
-        shop=intent_router._shop_block(client, conv, None),
+        shop=intent_router._shop_block(client, conv, None, shop_profile),
         state=intent_router._state_block(conv, state.get("stage", "greeting"), pinned, vi, next_slot),
         orders="\n".join(state.get("orders") or []) or "(none)",
         candidates="\n".join(intent_router.format_candidate(p) for p in candidates)
@@ -83,6 +86,7 @@ def eval_context(row: dict, catalogue: list[dict]) -> "intent_router.RouterConte
         stage=state.get("stage", "greeting"), next_slot=next_slot, pinned_sku=getattr(pinned, "sku", None),
         candidate_products=candidates,
         allowed_skus={p.sku.upper() for p in candidates} | ({pinned.sku.upper()} if pinned else set()),
+        shop_profile=shop_profile,
     )
 
 

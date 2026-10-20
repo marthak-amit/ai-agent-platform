@@ -21,11 +21,26 @@ from __future__ import annotations
 
 import logging
 
-from app.services import outbound
+from app.services import outbound, turn_trace, whatsapp_service, wa_labels
 from app.services.send_gate import MessageKind
 from app.services.order_pipeline import PipelineResult, _encode_btn, _rotate_nonce
 
 logger = logging.getLogger("app.routers.webhook")
+
+
+async def _timed(span_name: str, fn, *args, **kwargs):
+    """Await ``fn(*args, **kwargs)`` and add its duration to the turn's `span_name` span (wa_send / image_send)."""
+    with turn_trace.span(span_name):
+        return await fn(*args, **kwargs)
+
+
+def _log_interactive_fallback(conv, kind: str, titles: list[str]) -> None:
+    """One WARNING per refused interactive message: ``wa_interactive_fallback`` with Meta's status / error code (e.g. 131009)."""
+    err = whatsapp_service.last_interactive_error.get() or {}
+    logger.warning(
+        "wa_interactive_fallback conv=%s kind=%s status=%s code=%s options=%s — sending the numbered plain-text version",
+        getattr(conv, "id", None), kind, err.get("status", "suppressed"), err.get("code", "-"), titles,
+    )
 
 
 async def send_pipeline_result(
@@ -65,13 +80,13 @@ async def send_pipeline_result(
 
     for _pre_img_url, _pre_img_caption in (result.pre_images or []):
         try:
-            await outbound.send_image(sender_phone, _pre_img_url, _pre_img_caption, **_gate_kw)
+            await _timed("image_send", outbound.send_image, sender_phone, _pre_img_url, _pre_img_caption, **_gate_kw)
         except Exception as _pre_img_exc:
             logger.error("Pre-text image send error (non-fatal): %s", _pre_img_exc)
 
     for _pre in (result.pre_texts or []):
         try:
-            await outbound.send_text(sender_phone, _pre, **_gate_kw)
+            await _timed("wa_send", outbound.send_text, sender_phone, _pre, **_gate_kw)
         except Exception:
             pass
 
@@ -85,17 +100,24 @@ async def send_pipeline_result(
             return _encode_btn(action, conv.id, nonce)
         return action
 
+    language = getattr(conv, "last_customer_language", None)
     if result.buttons and pid:
-        sent = await outbound.send_buttons(
+        # Titles are unique and within Meta's limits even when the caller did not make them so (duplicate titles → #131009).
+        titles = wa_labels.unique_buttons([b.title for b in result.buttons])
+        whatsapp_service.last_interactive_error.set(None)
+        sent = await _timed("wa_send", outbound.send_buttons, 
             sender_phone,
             result.text,
-            [{"id": _nb(b.id), "title": b.title} for b in result.buttons],
+            [{"id": _nb(b.id), "title": title} for b, title in zip(result.buttons, titles)],
             **_gate_kw,
         )
         if not sent:
-            await outbound.send_text(sender_phone, result.text, **_gate_kw)
+            _log_interactive_fallback(conv, "buttons", titles)
+            await _timed("wa_send", outbound.send_text, sender_phone, wa_labels.numbered_fallback(result.text, titles, language), **_gate_kw)
     elif result.list_options and pid:
-        sent = await outbound.send_list(
+        titles = wa_labels.unique_row_titles([r.title for r in result.list_options])
+        whatsapp_service.last_interactive_error.set(None)
+        sent = await _timed("wa_send", outbound.send_list, 
             sender_phone,
             result.list_header or "Choose an option",
             result.text,
@@ -105,18 +127,19 @@ async def send_pipeline_result(
                 "rows": [
                     {
                         "id": _nb(r.id),
-                        "title": r.title,
+                        "title": title,
                         "description": r.description or "",
                     }
-                    for r in result.list_options
+                    for r, title in zip(result.list_options, titles)
                 ],
             }],
             **_gate_kw,
         )
         if not sent:
-            await outbound.send_text(sender_phone, result.text, **_gate_kw)
+            _log_interactive_fallback(conv, "list", titles)
+            await _timed("wa_send", outbound.send_text, sender_phone, wa_labels.numbered_fallback(result.text, titles, language), **_gate_kw)
     else:
-        await outbound.send_text(sender_phone, result.text, **_gate_kw)
+        await _timed("wa_send", outbound.send_text, sender_phone, result.text, **_gate_kw)
 
     # Deferred product images — sent AFTER the main text/buttons/list, mirroring
     # webhook.py's original end-of-request image queue (a failed image send must
@@ -124,7 +147,7 @@ async def send_pipeline_result(
     _images_delivered = 0
     for _img_url, _img_caption in (result.images or []):
         try:
-            _img_res = await outbound.send_image(
+            _img_res = await _timed("image_send", outbound.send_image, 
                 sender_phone, _img_url, _img_caption, **_gate_kw,
             )
         except Exception as _img_exc:
@@ -143,6 +166,6 @@ async def send_pipeline_result(
             "Payment QR image not delivered for conv=%s — sending the closing line as text.", conv.id,
         )
         try:
-            await outbound.send_text(sender_phone, result.image_fallback_text, **_gate_kw)
+            await _timed("wa_send", outbound.send_text, sender_phone, result.image_fallback_text, **_gate_kw)
         except Exception as _fb_exc:
             logger.error("Payment QR fallback text send error: %s", _fb_exc)

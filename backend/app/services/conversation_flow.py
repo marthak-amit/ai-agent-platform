@@ -610,6 +610,18 @@ def classify_address_confirmation(text: str) -> str:
 _SAVED_ADDRESS_CUES: tuple[str, ...] = _template_cues("confirm_saved_address")
 
 
+_SAVED_ADDRESS_REPROMPT_CUES: tuple[str, ...] = _template_cues("saved_address_reprompt")
+
+
+def is_saved_address_prompt(text: str) -> bool:
+    """
+    True when `text` is the saved-address offer ("Deliver to X? (yes/change)") or its re-prompt, in any template
+    language — the two messages that should carry Yes / Change buttons.
+    """
+    flat = " ".join((text or "").lower().split())
+    return bool(flat) and any(cue in flat for cue in _SAVED_ADDRESS_CUES + _SAVED_ADDRESS_REPROMPT_CUES)
+
+
 def _last_agent_offered_saved_address(conversation_history: list[dict]) -> bool:
     """True if the most recent agent message offered a saved address for confirmation (Deliver to X? yes/change)."""
     for m in reversed(conversation_history):
@@ -657,6 +669,26 @@ def _last_agent_offered_upi_only(conversation_history: list[dict]) -> bool:
     return False
 
 
+def _has_whole_cue(text: str, cues: tuple[str, ...]) -> bool:
+    """
+    True when any cue occurs in *text* without being glued to a Latin letter on either side.
+
+    A plain substring test made the order cue "ya cod" (from "UPI ya COD") fire inside the clarify
+    reply "Product ka naam ya code likhein", so the next message (a product name) was read as an
+    answer inside an order. Indic-script cues are unaffected: only [a-z] neighbours block a match.
+    """
+    for cue in cues:
+        start = text.find(cue)
+        while start != -1:
+            end = start + len(cue)
+            before_ok = start == 0 or not ("a" <= text[start - 1] <= "z") or not ("a" <= cue[0] <= "z")
+            after_ok = end == len(text) or not ("a" <= text[end] <= "z") or not ("a" <= cue[-1] <= "z")
+            if before_ok and after_ok:
+                return True
+            start = text.find(cue, start + 1)
+    return False
+
+
 def _is_order_followup(conversation_history: list[dict]) -> bool:
     """
     True if the agent's most recent message asked for an order-collection
@@ -673,7 +705,7 @@ def _is_order_followup(conversation_history: list[dict]) -> bool:
     for m in reversed(conversation_history):
         if m.get("role") in ("model", "assistant"):
             text = (m.get("content") or "").lower()
-            return any(cue in text for cue in _ORDER_FOLLOWUP_CUES)
+            return _has_whole_cue(text, _ORDER_FOLLOWUP_CUES)
     return False
 
 
@@ -969,22 +1001,32 @@ async def is_off_topic_message(
     stage: str,
     pinned_product_name: str | None = None,
     conversation_id: int | None = None,
+    shop_profile=None,
 ) -> bool:
     """
-    Return True when the customer's message is completely unrelated to the store.
+    Return True when the customer's message is clearly unrelated to this business.
 
     Called for idle and completed stages where classify_user_intent is not used.
     Uses the classifier model (LLM_MODEL_CLASSIFIER). Falls back to False on any error (counted + logged at ERROR)
     so genuine product messages are never blocked.
 
-    NOT off-topic: product/shopping questions, greetings, affirmations, names,
-    addresses, sizes, colours, quantities, payment words, SKUs.
-    OFF_TOPIC: general knowledge, tech, news, politics, trivia, personal advice.
+    Order of checks (cheapest first):
+      1. very short messages are never off-topic (greetings, affirmations);
+      2. a message sharing a word with the shop's own vocabulary (`shop_profile` keywords: product names,
+         categories, business type/description, KB topics) is on-topic — no LLM call;
+      3. one YES/NO call that includes what the business offers, so "which saree for a wedding?" is fine for
+         a saree shop and "what's the weather in Ahmedabad?" is not.
+
+    NOT off-topic: anything that could relate to the business or its products (including advice on choosing,
+    using or caring for them), greetings, affirmations, names, addresses, sizes, colours, quantities, payment
+    words, SKUs — and anything the model is unsure about.
 
     Args:
         user_text:           The customer's message.
         stage:               Current conversation stage.
         pinned_product_name: Optional product context.
+        conversation_id:     For llm_usage attribution.
+        shop_profile:        Optional shop_context_service.ShopProfile (None = no shop knowledge).
 
     Returns:
         True if the message is off-topic (should be deflected).
@@ -993,13 +1035,29 @@ async def is_off_topic_message(
     if len(user_text.strip()) <= 3:
         return False
 
-    store_context = f" in a store selling {pinned_product_name}" if pinned_product_name else " in an online store"
+    from app.services import shop_context_service
+
+    if shop_context_service.matches(shop_profile, user_text):
+        return False
+
+    shop_text = getattr(shop_profile, "text", "") or ""
+    if shop_text:
+        business = f"What the business offers: {shop_text}"
+    elif pinned_product_name:
+        business = f"The business sells {pinned_product_name} and similar products."
+    else:
+        business = "The business is an online store."
 
     prompt = (
-        f"A customer{store_context} sent: '{user_text}'\n\n"
-        "Is this message completely unrelated to shopping, products, orders, delivery, or payment?\n"
-        "Answer YES only for: general knowledge questions, tech questions, news, politics, trivia, jokes, weather, recipes, medical advice.\n"
-        "Answer NO for: product questions, shopping queries, greetings, names, addresses, sizes, colours, payment words, SKUs, anything store-related.\n"
+        f"A customer of a business sent: '{user_text}'\n"
+        f"{business}\n\n"
+        "Is this message completely unrelated to the business, its products or services, shopping, orders, "
+        "delivery or payment?\n"
+        "Answer YES only if it is clearly about something else: general knowledge, weather, news, sports, politics, "
+        "celebrities, jokes, recipes, homework, tech help, or medical/legal/financial advice the business does not offer.\n"
+        "Answer NO for anything that could relate to the business or its products (including how to choose, use or care "
+        "for them), greetings, thanks, names, addresses, sizes, colours, quantities, payment words, SKUs, and whenever you are unsure.\n"
+        "The message may be Hindi, Gujarati or Marathi written in English letters.\n"
         "Respond with only YES or NO."
     )
 
@@ -1283,6 +1341,18 @@ def _extract_multi_color_qty_pairs(text: str, available_colors: list[str]) -> li
 # flatten "2 L and one M" into "same".
 # Open questions at which a "2 L and one M" split is understood.
 BREAKDOWN_SLOTS = frozenset({"color", "size", "material", "quantity", "variant_mode"})
+
+
+def breakdown_slot_open(next_slot: str | None, conv) -> bool:
+    """
+    True when the open question is one at which a per-unit split ("1 Red, 1 Pink") is understood.
+
+    The first "how many of <colour>?" question of a "different for each" order also counts (it is asked as "which
+    colours, and how many of each?"); later line-item questions do not, so a split can never overwrite committed items.
+    """
+    if next_slot in BREAKDOWN_SLOTS:
+        return True
+    return next_slot == "cart_item_qty" and not (getattr(conv, "cart_items", None) or [])
 _NUMBER_WORDS: dict[str, int] = {
     "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
     "ek": 1, "teen": 3, "char": 4, "chaar": 4, "paanch": 5, "panch": 5,

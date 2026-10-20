@@ -89,6 +89,7 @@ async def resume_bot(db, client, conv) -> None:
     conv.slot_attempt_count = 0
     conv.slot_attempt_slot = None
     conv.off_topic_count = 0
+    conv.spam_muted_until = None
     await db.commit()
     realtime_service.publish(client.id, "conversation_updated", {"conversation_id": conv.id, "bot_paused": False})
 

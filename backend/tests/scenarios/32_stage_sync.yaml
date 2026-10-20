@@ -1,0 +1,26 @@
+name: stage_sync
+description: 'The legacy conversation stage follows the cart every turn: greeting → product_inquiry → order_collection → awaiting_final_confirmation → payment (UPI order placed); a new cart while that order is pending is order_collection again, and dropping it returns to plain browsing (greeting) — an unpaid order never pins the conversation to payment.'
+turns:
+  - user: "hi"
+    expect: {conv_stage: greeting}
+  - user: "show me the tote bag"
+    expect: {fast_path: product_name, conv_stage: product_inquiry}
+  - tap: v3_order_tb30001
+    expect: {conv_stage: order_collection}
+  - user: "1"
+    expect: {fast_path: quantity, conv_stage: order_collection}
+  - user: "Asha Patel"
+    plan: {actions: [{type: set_customer, name: Asha Patel}]}
+    expect: {conv_stage: order_collection}
+  - user: "12 MG Road, Adajan, Surat 395009"
+    plan: {actions: [{type: set_customer, address: "12 MG Road, Adajan, Surat 395009"}]}
+    expect: {conv_stage: order_collection}
+  - tap: v3_pay_upi
+    expect: {stage: confirming, conv_stage: awaiting_final_confirmation}
+  - tap: v3_confirm
+    expect: {orders: 1, order: {status: pending_payment}, conv_stage: payment}
+  - user: "I want 2 red kurtis"
+    plan: {actions: [{type: add_line, sku: KU10001, variant: {color: Red}, qty: 2}]}
+    expect: {conv_stage: order_collection, reply_contains: ["is waiting for payment"]}
+  - user: "cancel"
+    expect: {fast_path: cancel, cart: {empty: true}, conv_stage: greeting}

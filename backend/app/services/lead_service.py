@@ -90,6 +90,5 @@ async def tag_lead(
         lead.status = status
         lead.conversation_id = conversation_id
 
-    await db.commit()
-    await db.refresh(lead)
+    await db.commit()          # no refresh: nothing here is computed by the database
     return lead

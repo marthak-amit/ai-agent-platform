@@ -80,6 +80,10 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    # "Continue with Google" (migration 0070): the linked Google account's stable `sub`, and when this login's
+    # email was proven (Google says verified, or the user accepted an emailed invite).
+    google_sub: Mapped[Optional[str]] = mapped_column(String, unique=True, nullable=True, index=True)
+    email_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     client = relationship("Client")
 

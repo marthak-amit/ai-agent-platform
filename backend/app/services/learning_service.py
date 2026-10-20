@@ -62,6 +62,7 @@ async def get_live_examples_for_prompt(
     order_result = await db.execute(
         select(Order.conversation_id).where(
             Order.client_id == client_id,
+            Order.is_sandbox.is_(False),
             Order.created_at > cutoff,
             Order.stock_deducted == True,  # noqa: E712
         ).limit(50)

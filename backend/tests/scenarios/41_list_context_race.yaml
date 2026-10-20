@@ -1,0 +1,22 @@
+name: list_context_race
+description: 'A number refers to the list the customer could see when they sent it: the latest list DELIVERED before the message''s own timestamp. "1" sent while the next reply was still in flight picks from the older list.'
+turns:
+  - user: "show me products"
+    plan: {actions: [{type: browse_catalog}]}
+    expect: {reply_contains: ["Banarasi Silk Saree"]}
+  - user: "show me lehenga"
+    expect: {fast_path: category, reply_contains: ["Cotton Lehenga"]}
+  - user: "1"
+    ts: before_last_list
+    expect:
+      fast_path: product_number
+      planner_calls: 0
+      reply_contains: ["Banarasi Silk Saree"]
+      reply_not_contains: ["Cotton Lehenga"]
+  - user: "show me lehenga"
+  - user: "1"
+    ts: after_last_list
+    expect:
+      fast_path: product_number
+      reply_contains: ["Cotton Lehenga"]
+      reply_not_contains: ["Banarasi"]

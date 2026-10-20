@@ -1,0 +1,12 @@
+name: exact_product_name_fast_path
+description: 'A product''s exact name (any case / punctuation) shows its card for ₹0, like its SKU — no planner call, and the card keeps the order-this buttons.'
+turns:
+  - user: "cotton   LEHENGA"
+    expect:
+      fast_path: name
+      planner_calls: 0
+      actions_contains: [show_product]
+      reply_contains: ["Cotton Lehenga", "₹1,299", "Would you like to order this"]
+      buttons_contain: [v3_order_lh10042]
+  - user: "Handmade Tote Bag"
+    expect: {fast_path: name, planner_calls: 0, reply_contains: ["Handmade Tote Bag", "₹250"]}

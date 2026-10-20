@@ -23,10 +23,35 @@ export async function login(email: string, password: string): Promise<string> {
 export async function register(
   email: string,
   password: string,
-  business_name: string,
+  business_name?: string,
   phone?: string,
 ) {
-  const { data } = await api.post("/auth/register", { email, password, business_name, phone });
+  const { data } = await api.post("/auth/register", { email, password, business_name: business_name || undefined, phone });
+  return data;
+}
+
+// --- Google sign-in ---
+
+export interface GoogleConfig {
+  enabled: boolean;
+  client_id: string;
+}
+
+export async function getGoogleConfig(): Promise<GoogleConfig> {
+  const { data } = await api.get<GoogleConfig>("/auth/google/config");
+  return data;
+}
+
+export interface GoogleLoginResult {
+  access_token: string;
+  is_new_account: boolean;
+  linked_existing: boolean;
+  /** True when linking Google revoked an unverified email/password login (the Google owner takes over). */
+  password_login_disabled: boolean;
+}
+
+export async function googleLogin(credential: string): Promise<GoogleLoginResult> {
+  const { data } = await api.post<GoogleLoginResult>("/auth/google", { credential });
   return data;
 }
 
@@ -113,6 +138,50 @@ export async function getOnboardingStatus() {
 export async function updateOnboardingStep(step: number) {
   const { data } = await api.patch("/onboarding/progress", { step });
   return data as { onboarding_step: number; onboarding_completed: boolean };
+}
+
+// --- Dashboard-first onboarding ---
+
+export async function quickStart(business_name: string, language: "en" | "hi" | "gu") {
+  const { data } = await api.post<{ business_name: string; language: string; demo_products_created: number }>(
+    "/onboarding/quick-start",
+    { business_name, language },
+  );
+  return data;
+}
+
+export async function getChecklist(): Promise<import("../types/setup").Checklist> {
+  const { data } = await api.get("/onboarding/checklist");
+  return data;
+}
+
+export async function removeDemoProducts(): Promise<{ removed: number }> {
+  const { data } = await api.delete("/onboarding/demo-products");
+  return data;
+}
+
+export async function goLive(remove_demo_products: boolean): Promise<import("../types/setup").GoLiveResult> {
+  const { data } = await api.post("/onboarding/go-live", { remove_demo_products });
+  return data;
+}
+
+// --- Chat simulator (runs the real router + order engine; nothing is sent to WhatsApp) ---
+
+export async function getSimulatorSession(): Promise<import("../types/setup").SimSession> {
+  const { data } = await api.get("/simulator/session");
+  return data;
+}
+
+export async function sendSimulatorMessage(
+  body: { text: string } | { button_id: string; title: string } | { list_row_id: string; title: string },
+): Promise<import("../types/setup").SimReply> {
+  const { data } = await api.post("/simulator/message", body);
+  return data;
+}
+
+export async function resetSimulator(): Promise<{ status: string; orders_removed: number }> {
+  const { data } = await api.post("/simulator/reset");
+  return data;
 }
 
 // --- Products / Catalogue ---

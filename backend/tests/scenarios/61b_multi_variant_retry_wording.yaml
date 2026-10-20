@@ -1,0 +1,13 @@
+name: multi_variant_retry_wording
+description: 'conv=60 second attempt, verbatim shape: "2 maroon 1 gold and 1 green" (no joiner between the first two pairs) is read exactly like the first.'
+turns:
+  - user: "I want the banarasi saree in maroon"
+    plan: {actions: [{type: add_line, sku: SR20001, variant: {color: Maroon}}]}
+    expect: {cart: {lines: [{sku: SR20001, color: Maroon, qty: null}]}}
+  - user: "2 maroon 1 gold and 1 green"
+    expect:
+      fast_path: multi_variant
+      planner_calls: 0
+      cart: {lines: [{sku: SR20001, color: Maroon, qty: 2}, {sku: SR20001, color: Gold, qty: 1}]}
+      reply_contains: ["Green isn't available for Banarasi Silk Saree", "Available: Maroon, Gold"]
+      reply_not_contains: ["e.g.", "Which colours and how many of each"]

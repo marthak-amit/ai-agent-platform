@@ -2,6 +2,8 @@
 Shared pytest fixtures for all test modules.
 """
 
+import os
+os.environ.setdefault("USD_INR", "83")   # USD_INR is a required setting (no default in code); tests pin a rate
 import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import AsyncMock, MagicMock
@@ -40,6 +42,18 @@ def _router_v2_off_by_default(monkeypatch):
     from app.config import get_settings
 
     monkeypatch.setenv("ROUTER_V2_CLIENT_IDS", "")
+    # Same for agent v3 (also ON for client 1 by default): the legacy suite must keep running the legacy pipeline.
+    # Agent-v3 tests opt in per client via Client.agent_v3_enabled=True.
+    monkeypatch.setenv("AGENT_V3_CLIENT_IDS", "")
+    # The webhook answers Meta first and processes in a background task in production; the legacy suite posts a message and
+    # then reads the reply, so it runs inline. Background-mode tests switch it on explicitly.
+    monkeypatch.setenv("WEBHOOK_BACKGROUND_PROCESSING", "false")
+    # The client-side Groq token bucket (llm_rate_limiter) is production protection against the provider's 8k TPM cap; the suite's scripted
+    # / fake LLMs answer instantly and must not be throttled by it. tests/test_v16_units.py switches the default limits back on for its own tests.
+    monkeypatch.setenv("LLM_RATE_LIMITS", "{}")
+    # Message batching adds a quiet-window wait to every text turn; the suite sends one message at a time and
+    # expects the reply immediately. The batching tests switch it on explicitly.
+    monkeypatch.setenv("MESSAGE_BATCH_WINDOW_SECONDS", "0")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
@@ -213,3 +227,27 @@ def client(mock_settings, mock_db):
     app.dependency_overrides[get_db] = _override_get_db
     yield TestClient(app, raise_server_exceptions=False)
     app.dependency_overrides.pop(get_db, None)
+
+
+RECEIPT_OCR_TEXT = (
+    "Google Pay\nPayment successful\nPaid to Test Shop\nUPI transaction ID 412345678901\nBanking name TEST SHOP"
+)
+
+
+@pytest.fixture(autouse=True)
+def _images_read_as_payment_receipts_by_default(monkeypatch):
+    """
+    Images sent while an order awaits payment are classified before they are filed (``payment_proof_classifier``: OCR → vision). The replay
+    media stub serves a 1×1 PNG, which would read as a text-free product photo; the older replays mean "the customer sends their payment
+    screenshot", so OCR returns a receipt unless a test overrides ``payment_proof_classifier.ocr_text`` itself.
+    """
+    async def _receipt(_image_bytes):
+        """OCR text of a UPI receipt (no amount: the order total is not on it)."""
+        return RECEIPT_OCR_TEXT
+
+    async def _no_vision(*_a, **_k):
+        """The vision model is never called by the replays (no network, no tokens)."""
+        return None
+
+    monkeypatch.setattr("app.services.payment_proof_classifier.ocr_text", _receipt)
+    monkeypatch.setattr("app.services.payment_proof_classifier.vision_read", _no_vision)

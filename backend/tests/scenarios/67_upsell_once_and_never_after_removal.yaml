@@ -1,0 +1,14 @@
+name: upsell_once_and_never_after_removal
+description: 'The first summary offers the short "+ Tote ₹250" upsell; a customer who takes it and then removes it again is not offered it (or any upsell) a second time in this order.'
+turns:
+  - macro: complete_cart_cod
+  - tap: v3_upsell_tb30001
+    expect:
+      reply_contains: ["Added", "Handmade Tote Bag"]
+      buttons_absent: [v3_upsell_tb30001]
+  - user: "tote bag nahi chahiye"
+    expect:
+      fast_path: remove
+      planner_calls: 0
+      reply_not_contains: ["Many customers also add"]
+      buttons_absent: [v3_upsell_tb30001]

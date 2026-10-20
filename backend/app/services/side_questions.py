@@ -19,9 +19,10 @@ offers the human hand-off — a policy is never invented.
 from __future__ import annotations
 
 import logging
-import re
+from datetime import datetime, timedelta, timezone
 
 from app.services import command_words as cw
+from app.services import order_recovery
 from app.services.language_templates import get_template
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,11 @@ _LEXICON.update({
         "kuch aur", "kuch aur dikhao", "doosra product", "dusra product", "dusra dikhao", "biju batavo", "bijo product", "bija products",
         "biju kai", "baki kai chhe", "product badlo", "product badal", "दूसरा प्रोडक्ट", "कुछ और दिखाओ", "कुछ और", "प्रोडक्ट बदल", "और डिज़ाइन", "બીજું બતાવો",
         "બીજુ બતાવો", "બીજો પ્રોડક્ટ", "પ્રોડક્ટ બદલ", "બીજી ડિઝાઇન", "બીજું કંઈક",
+        # "show me more like that": the next items of the same search (router_actions.handle_more_like_this)
+        "more products", "more like", "some more", "show more", "show me more", "more options", "more items", "more of these",
+        "similar products", "similar items", "similar ones", "similar to this", "similar to that", "like that one", "like this one",
+        "aur dikhao", "aur batao", "aur dikhana", "aur options", "aur products", "dusre dikhao", "doosre dikhao", "biju batavo",
+        "bija batavo", "और दिखाओ", "और बताओ", "और प्रोडक्ट", "બીજા બતાવો", "બીજું જોઈએ",
     ),
     "trust": (
         "is it safe", "is this safe", "is it secure", "legit", "is it genuine shop", "trusted", "trustworthy", "fraud", "scam", "fake", "cheat",
@@ -360,8 +366,13 @@ async def _kb_answer(db, client, user_text: str, topic: str) -> str | None:
     return None
 
 
-async def build_answer(db, client, conv, pinned_product, topic: str, lang: str, user_text: str) -> str | None:
-    """Reply text for a topic from the shop's own facts (template in `lang`); never an invented policy."""
+async def build_answer(db, client, conv, pinned_product, topic: str, lang: str, user_text: str, info: dict | None = None) -> str | None:
+    """
+    Reply text for a topic from the shop's own facts (template in `lang`); never an invented policy.
+
+    `info` (optional out-param): ``info["seller_text"] = True`` when the answer is the seller's own knowledge-base wording — free text
+    in whatever language they wrote, unlike the templates — so a caller that skips the reply localizer knows to keep it for this one.
+    """
     t = lambda key, **kw: get_template(lang, key, **kw)  # noqa: E731 - tiny local shorthand
     if topic == "thanks":
         return t("sq_thanks")
@@ -372,7 +383,9 @@ async def build_answer(db, client, conv, pinned_product, topic: str, lang: str, 
     if topic == "think_later":
         return t("sq_think_later")
     if topic == "discount":
-        return t("discount_policy")
+        return t("sq_discount")       # one statement; the caller adds the single follow-up question
+    if topic == "discount_repeat":
+        return t("sq_discount_repeat")
     if topic == "ack":
         return t("sq_ack")
     if topic == "decline":
@@ -399,6 +412,8 @@ async def build_answer(db, client, conv, pinned_product, topic: str, lang: str, 
         return t("sq_location", address=" ".join(str(client.business_address).split()))
     kb = await _kb_answer(db, client, user_text, topic)
     if kb:
+        if info is not None:
+            info["seller_text"] = True
         return kb
     if topic == "quality":
         return t("known_fact_quality")
@@ -444,7 +459,15 @@ async def run_side_question_guard(
         except Exception as exc:  # noqa: BLE001
             logger.error("side question variant_info error: %s", exc)
     in_order = pinned is not None and stored_stage in intent_router.ORDER_SLOT_STAGES
+    if conv.channel == "whatsapp" and not getattr(conv, "mobile_number", None):
+        conv.mobile_number = sender_phone      # same in-memory fill as the router front door: the sender IS the number
     next_slot = conversation_flow.get_next_required_slot(conv, variant_info) if in_order else None
+
+    # One colour / size / material only: the question is "Only Grey. Would you like Grey? (Yes / No)", so a bare
+    # yes / no IS the answer (taken or declined by the order pipeline), not a decline / acknowledgement aside.
+    _single_key = {"color": "available_colors", "size": "available_sizes", "material": "available_materials"}.get(next_slot or "")
+    if _single_key and len(variant_info.get(_single_key) or []) == 1 and (cw.is_yes(user_text) or cw.is_no(user_text)):
+        return None
 
     profile = None
     if next_slot == "delivery_address":
@@ -452,14 +475,31 @@ async def run_side_question_guard(
             profile = await customer_service.get_customer(db, client_id=client.id, phone=sender_phone)
         except Exception:  # noqa: BLE001
             profile = None
-    topic = detect_topic(
-        user_text, next_slot=next_slot, saved_address_prompt=bool(profile is not None and getattr(profile, "address", None)),
-    )
+    context_open = bool(in_order or pinned is not None or stored_stage in intent_router.ORDER_ACTIVE_STAGES)
+    memo = _fresh_memo(conv)
+    if order_recovery.restorable_draft(conv) is not None:
+        context_open = True
+    topic = None
+    if order_recovery.is_confused(user_text) or (order_recovery.is_question_marks_only(user_text) and context_open):
+        topic = "confused"      # "I can't get it" / "what are you trying to say" / "?": re-ask simply, never cancel or guess
+    if topic is None:
+        topic = detect_topic(
+            user_text, next_slot=next_slot, saved_address_prompt=bool(profile is not None and getattr(profile, "address", None)),
+        )
+    if memo and memo.get("topic") in ("discount", "discount_followup"):
+        # "please" / a second "give me a discount" right after a discount refusal is that conversation continuing —
+        # not a yes to "Would you like to order X?".
+        if topic is None and _is_plea(user_text):
+            topic = "discount_followup"
+        elif topic == "discount":
+            topic = "discount_followup"
     # An unmistakable "cancel" while the order is being filled ends the draft — deterministically, so it also works
     # when the LLM is down (the router / classifier would otherwise be the only thing that can cancel it).
     if topic is None and in_order and next_slot and stored_stage == "order_collection" and cw.is_cancel(user_text):
         topic = "cancel"
     if topic is None:
+        if memo is not None:
+            await _forget_topic(db, conv)       # the conversation moved on: "please" later is not a discount follow-up
         return None
     if topic == "delivery_time" and not in_order and await _has_open_order(db, client, conv, sender_phone):
         return None       # "when will it come?" about an order the customer already has → the order-status flow
@@ -482,12 +522,29 @@ async def run_side_question_guard(
         return (await ra.handle_handoff(rc, None)).early_result
     if topic == "cancel":
         return (await ra.handle_cancel_order(rc, None)).early_result
+    if topic == "confused":
+        return (await ra.handle_confused(rc, None)).early_result
+    if topic == "change_product" and not in_order and stored_stage not in intent_router.ORDER_ACTIVE_STAGES:
+        # "another one?" / "aur dikhao" / "show me some more like that": the next items of the same search.
+        return (await ra.handle_more_like_this(rc, lang)).early_result
 
-    answer = await build_answer(db, client, conv, pinned, topic, lang, user_text)
+    followup = topic == "discount_followup"
+    answer = await build_answer(db, client, conv, pinned, "discount_repeat" if followup else topic, lang, user_text)
     if not answer:
         return None
     await ra._clear_menu(db, conv)      # an open "which one? 1/2/3" menu is closed by any unrelated question
     route = f"side_{topic}"
+    if topic in ("discount", "discount_followup"):
+        await _remember_topic(db, conv, topic, (memo or {}).get("n", 0) + 1 if memo else 1)
+    elif memo is not None:
+        await _forget_topic(db, conv)
+    if followup and not resume_slot and not in_summary:
+        # Fixed price said once more, politely — and the useful next step: similar items that cost less.
+        reference = pinned or await ra._reference_product(rc, await _catalogue(db, client))
+        return (await ra.handle_more_like_this(
+            rc, lang, cheaper_than=(reference.price if reference is not None else None) or 0,
+            header_key="rt_more_cheaper_header", none_key="rt_more_cheaper_none", prefix_text=answer, route=route,
+        )).early_result
     if resume_slot:
         outcome = await ra._reask(rc, lang, None, route, prefix_text=answer)
     elif in_summary and topic not in _NO_RESUME:
@@ -508,6 +565,73 @@ async def run_side_question_guard(
             text = f"{answer}\n\n{get_template(lang, 'would_you_like_to_order_named', name=pinned.name, sku=pinned.sku)}"
         outcome = await rc.reply(text, route, lang)
     return outcome.early_result
+
+
+# ── discount follow-ups ("please" after a refusal) ───────────────────────────
+
+_FOLLOWUP_WINDOW = timedelta(minutes=10)
+_PLEA_WORDS = frozenset(cw.normalize(w) for w in (
+    "please", "pls", "plz", "pleaz", "pleasee", "pleaseee", "pleas", "kindly", "request", "kripya", "meherbani", "mehrbani", "prarthna",
+    "plis", "प्लीज", "प्लीज़", "कृपया", "मेहरबानी", "પ્લીઝ", "કૃપા", "મહેરબાની",
+))
+_PLEA_FILLERS = frozenset(cw.normalize(w) for w in (
+    "sir", "madam", "maam", "bhai", "bhaiya", "ji", "na", "naa", "yaar", "once", "bas", "ek", "baar", "just", "very", "so", "much",
+    "a", "little", "bit", "thoda", "thodu", "kuch", "kam", "karo", "kardo", "do", "dedo", "de", "aapo", "apo", "ok", "okay", "yes", "ha", "haan",
+))
+
+
+def _is_plea(text: str) -> bool:
+    """A bare "please" / "pls sir" / "please na" — no product, number or question in it."""
+    tokens = cw.normalize(text).split()
+    if not tokens or len(tokens) > 4 or any(ch.isdigit() for ch in text) or "?" in text:
+        return False
+    return bool(set(tokens) & _PLEA_WORDS) and set(tokens) <= (_PLEA_WORDS | _PLEA_FILLERS)
+
+
+def _fresh_memo(conv) -> dict | None:
+    """Conversation.last_side_topic while it is recent enough to matter, else None."""
+    memo = getattr(conv, "last_side_topic", None)
+    if not isinstance(memo, dict):
+        return None
+    try:
+        ts = datetime.fromisoformat(str(memo.get("ts")))
+    except (TypeError, ValueError):
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return memo if datetime.now(timezone.utc) - ts <= _FOLLOWUP_WINDOW else None
+
+
+async def _remember_topic(db, conv, topic: str, n: int) -> None:
+    """Remember the side topic just answered (and how many times in a row) for follow-ups like "please"."""
+    from app.services import conversation_service
+
+    memo = {"topic": topic, "n": n, "ts": datetime.now(timezone.utc).isoformat()}
+    try:
+        await conversation_service.update_order_field(db, conv.id, "last_side_topic", memo)
+        conv.last_side_topic = memo
+    except Exception as exc:  # noqa: BLE001 - a memo is a nicety
+        logger.error("last_side_topic write error conv=%s: %s", conv.id, exc)
+
+
+async def _forget_topic(db, conv) -> None:
+    """The conversation moved on: drop the side-topic memo."""
+    from app.services import conversation_service
+
+    if getattr(conv, "last_side_topic", None) is None:
+        return
+    try:
+        await conversation_service.update_order_field(db, conv.id, "last_side_topic", None)
+        conv.last_side_topic = None
+    except Exception as exc:  # noqa: BLE001
+        logger.error("last_side_topic clear error conv=%s: %s", conv.id, exc)
+
+
+async def _catalogue(db, client) -> list:
+    """The shop's active products (the side-question context does not carry them)."""
+    from app.services import catalogue_service
+
+    return await catalogue_service.list_products(db, client.id, is_active=True)
 
 
 async def _has_open_order(db, client, conv, sender_phone: str) -> bool:

@@ -81,6 +81,7 @@ async def _get_orders_and_revenue(
     result = await db.execute(
         select(func.count(), func.sum(Order.total_amount)).where(
             Order.client_id == client_id,
+            Order.is_sandbox.is_(False),
             Order.payment_status == "paid",
             Order.created_at >= day_start,
             Order.created_at < day_end,

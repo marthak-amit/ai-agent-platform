@@ -1,0 +1,38 @@
+name: conv60_regression
+description: '"The 2026-10-17 conv=60 failures: a vague \"sorry i cant get it!\" must not cancel, another product must not silently switch the order, and \"continue\" after a cancel restores it."'
+turns:
+  - user: "Banarasi Silk Saree"
+    expect: {fast_path: name, planner_calls: 0, reply_contains: ["Banarasi Silk Saree", "₹2,499", "Would you like to order this"], buttons_contain: [v3_order_sr20001]}
+  - user: "yes"
+    expect: {fast_path: offer_yes, planner_calls: 0, reply_contains: ["Available: Maroon, Gold"]}
+  - user: "maroon"
+    expect: {fast_path: option, planner_calls: 0, reply_contains: ["How many"]}
+  - user: "1"
+    expect: {fast_path: quantity, reply_contains: ["your name"]}
+  - user: "Asha Patel"
+    plan: {actions: [{type: set_customer, name: Asha Patel}]}
+  - user: "12 MG Road, Adajan, Surat 395009"
+    plan: {actions: [{type: set_customer, address: "12 MG Road, Adajan, Surat 395009"}]}
+  - tap: v3_pay_upi
+    expect: {stage: confirming, reply_contains: ["Order summary", "Total: ₹2,499"]}
+  - user: "sorry i want 2 quantity"
+    plan: {actions: [{type: update_line, line_id: "$line[0]", fields: {qty: 2}}]}
+    expect: {stage: confirming, reply_contains: ["Total: ₹4,998", "(Maroon) × 2"]}
+  - user: "sorry i cant get it!"
+    plan: {actions: [{type: cancel}]}
+    expect:
+      cart: {lines: [{sku: SR20001, color: Maroon, qty: 2}]}
+      reply_contains: ["Cancel this order?"]
+      reply_not_contains: ["cancelled"]
+      buttons_contain: [v3_cancel_yes, v3_cancel_no]
+  - user: "cancel"
+    expect: {fast_path: cancel_yes, cart: {empty: true}, reply_contains: ["I've cancelled this order"]}
+  - user: "what are you trying to say"
+    plan: {actions: [], reply_intent: smalltalk}
+    expect: {cart: {empty: true}, ends_with_question: true}
+  - user: "I want to continue this"
+    expect:
+      fast_path: restore_cart
+      planner_calls: 0
+      cart: {lines: [{sku: SR20001, color: Maroon, qty: 2}]}
+      reply_contains: ["Added 2× Banarasi Silk Saree (Maroon)", "Order summary"]

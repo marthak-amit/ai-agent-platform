@@ -1,0 +1,24 @@
+name: greeting_with_stale_cart
+description: 'conv=60 bug 5: "Hello 👋🏻" on a cart that sat untouched for 7 h recaps the cart with [Continue order] [New order] [Browse products] and never asks the old line''s quantity; a greeting never refreshes the cart''s age; on a recent cart it is the short welcome-back with buttons.'
+turns:
+  - user: "I want a red cotton kurti"
+    plan: {actions: [{type: add_line, sku: KU10001, variant: {color: Red}}]}
+    expect: {reply_contains: ["How many"]}
+  - user: "Hello 👋🏻"
+    age_cart_hours: 7
+    expect:
+      fast_path: greeting
+      planner_calls: 0
+      reply_contains: ["Welcome back to Riya Boutique", "still in your cart", "1. Cotton Kurti (Red)", "continue with this order"]
+      reply_not_contains: ["How many", "Order summary"]
+      buttons_contain: [v3_continue, v3_fresh, v3_browse]
+  - user: "hi"
+    expect: {fast_path: greeting, reply_contains: ["still in your cart"]}
+  - tap: v3_continue
+    expect: {planner_calls: 0, reply_contains: ["How many"]}
+  - user: "Hello"
+    expect:
+      fast_path: greeting
+      reply_contains: ["Welcome back! You have 1 item in your cart."]
+      reply_not_contains: ["How many", "still in your cart"]
+      buttons_contain: [v3_continue, v3_fresh]

@@ -1,0 +1,17 @@
+name: decline
+description: '"No thanks" / "nahi joiye" / "bas" is a decline, not a thank-you: "Okay! Message anytime 😊" — no "you''re welcome", no new question.'
+turns:
+  - user: "show me products"
+    plan: {actions: [{type: browse_catalog}]}
+  - user: "No thanks"
+    expect:
+      fast_path: decline
+      planner_calls: 0
+      reply_contains: ["Okay! Message anytime"]
+      reply_not_contains: ["welcome", "Is there anything else"]
+  - user: "thanks"
+    expect: {fast_path: thanks, reply_contains: ["welcome"]}
+  - user: "bas"
+    expect: {fast_path: decline, planner_calls: 0, reply_contains: ["Okay! Message anytime"]}
+  - user: "nahi joiye"
+    expect: {fast_path: decline, planner_calls: 0}

@@ -1,0 +1,14 @@
+name: cost_session_resets_after_order
+description: 'COST session = ₹ since the last confirmed order (or the last 24 h, whichever is later); lifetime keeps everything. All from llm_usage.'
+turns:
+  - user: "show me products"
+    plan: {actions: [{type: browse_catalog}]}
+    usage: {input: 10000, cached: 0, output: 1000}
+    expect: {turn_contains: ["COST turn=₹0.17 session=₹0.17 lifetime=₹0.17"]}
+  - macro: complete_cart_cod
+  - user: "yes"
+    expect: {fast_path: confirm, orders: 1}
+  - user: "show me products again"
+    plan: {actions: [{type: browse_catalog}]}
+    usage: {input: 4000, cached: 0, output: 400}
+    expect: {turn_contains: ["COST turn=₹0.07 session=₹0.07 lifetime=₹0.24"]}

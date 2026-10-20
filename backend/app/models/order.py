@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -34,6 +34,14 @@ class Order(Base):
     """
 
     __tablename__ = "orders"
+    __table_args__ = (
+        # The agent looks up "this customer's unpaid orders" on every message (by conversation, and by phone for another channel):
+        # tiny partial indexes over the two payment-open states instead of a scan of the tenant's whole order history.
+        Index("ix_orders_open_payment_conversation", "client_id", "conversation_id", postgresql_where=text("status IN ('pending_payment','payment_submitted')")),
+        Index("ix_orders_open_payment_phone", "client_id", "customer_phone", postgresql_where=text("status IN ('pending_payment','payment_submitted')")),
+        Index("ix_orders_conversation_id", "conversation_id"),
+        Index("ix_orders_client_conversation_status", "client_id", "conversation_id", "status"),      # migration 0076
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     order_number: Mapped[str] = mapped_column(String, unique=True, index=True)
@@ -83,6 +91,14 @@ class Order(Base):
     cancel_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     dispatched_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     delivered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Placed by the in-dashboard simulator (migration 0070): never listed, counted, reserved, notified or invoiced.
+    is_sandbox: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
+
+    # High-value guard (migration 0071): total above the client's threshold → the payment may only be approved after
+    # the seller acknowledges the manual review (payment_verification_service.approve_payment).
+    requires_manual_review: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
+    manual_review_cleared_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Stock guard — prevents double-deduction if the order is processed twice
     stock_deducted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

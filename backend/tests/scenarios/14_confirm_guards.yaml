@@ -1,0 +1,12 @@
+name: confirm_guards
+description: 'confirm_order never creates an order unless the summary is on screen AND the customer clearly said yes.'
+turns:
+  - user: "yes, place my order"
+    plan: {actions: [{type: confirm_order}]}
+    expect: {orders: 0, issues_contain: [NOT_CONFIRMABLE]}
+  - macro: complete_cart_cod
+  - user: "yes but change the address"
+    plan: {actions: [{type: confirm_order}]}
+    expect: {orders: 0, issues_contain: [NOT_CONFIRMABLE], stage: confirming, reply_contains: ["Order summary"]}
+  - user: "ok confirm"
+    expect: {fast_path: confirm, orders: 1, order: {status: paid, total: 998}}

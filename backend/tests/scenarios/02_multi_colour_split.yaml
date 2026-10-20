@@ -1,0 +1,16 @@
+name: multi_colour_split
+description: '"2 red 1 green" for three kurtis becomes two cart lines; the colour question only offers colours that are really in stock.'
+turns:
+  - user: "I want 3 cotton kurtis"
+    plan: {actions: [{type: add_line, sku: KU10001, variant: {}, qty: 3}], reply_intent: none}
+    expect:
+      cart: {lines: [{sku: KU10001, color: null, qty: 3}]}
+      reply_contains: ["Which colour", "Available: Red, Green, Blue"]
+      reply_not_contains: ["Pink"]
+      stage: collecting
+  - user: "2 red 1 green"
+    expect:
+      fast_path: multi_variant          # read at ₹0: the planner is not called for a quantity-per-option list
+      planner_calls: 0
+      cart: {lines: [{sku: KU10001, color: Red, qty: 2}, {sku: KU10001, color: Green, qty: 1}]}
+      reply_contains: ["Split Cotton Kurti", "2× Red", "1× Green", "your name"]

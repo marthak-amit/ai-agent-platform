@@ -1,0 +1,6 @@
+name: summary_no_asks_change
+description: '"no" at the summary does not confirm or cancel — it asks what to change.'
+turns:
+  - macro: complete_cart_cod
+  - user: "no"
+    expect: {fast_path: summary_no, planner_calls: 0, orders: 0, reply_contains: ["what would you like to change"], cart: {lines: [{sku: KU10001, color: Red, qty: 2}]}}

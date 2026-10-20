@@ -531,7 +531,8 @@ async def test_give_me_images_after_a_search_list_sends_the_photos_of_the_listed
 
 
 async def test_resending_the_pinned_sku_mid_order_keeps_the_slots_and_shows_the_card(replay_http, replay_session, router, monkeypatch):
-    """Customer is at 'Quantity?' for KU30001 and sends 'KU30001' again → card + the same question, nothing reset."""
+    """At an order that has only just opened ('Quantity?', nothing chosen) the customer sends 'KU30001' again →
+    card + "Would you like to order?" (back to the normal browse flow), name/address and the pin kept."""
     phone, pnid = ph("0044")
     captured = capture_all(monkeypatch)
     images = capture_images(monkeypatch)
@@ -543,14 +544,14 @@ async def test_resending_the_pinned_sku_mid_order_keeps_the_slots_and_shows_the_
 
     reply = await say(replay_http, captured, phone, pnid, "KU30001")
 
-    assert "Printed Kurti [KU30001] — ₹450" in reply and "Quantity" in reply
+    assert "Printed Kurti [KU30001] — ₹450" in reply and "Would you like to order" in reply and "Quantity" not in reply
     assert [u for u, _ in images] == ["https://img.example.com/ku30001.jpg"]
     conv = await get_conv(replay_session, conv_id)
     assert conv.pending_product_sku == "KU30001" and conv.customer_name == "Asha" and conv.delivery_address == "1 Test Road"
 
 
 async def test_switching_product_mid_order_shows_the_new_products_card_not_just_the_next_question(replay_http, replay_session, router, monkeypatch):
-    """At 'Quantity?' for the kurti the customer sends a saree SKU → switched, with the saree's card before the question."""
+    """At 'Quantity?' for the kurti the customer sends a saree SKU → card + switch offer (no silent switch); 'switch' moves the order."""
     phone, pnid = ph("0045")
     captured = capture_all(monkeypatch)
     capture_images(monkeypatch)
@@ -561,7 +562,13 @@ async def test_switching_product_mid_order_shows_the_new_products_card_not_just_
 
     reply = await say(replay_http, captured, phone, pnid, "SR20002")
 
-    assert "Okay, switching to this product:" in reply and "Red Silk Saree [SR20002] — ₹2,499" in reply
+    # Never a silent switch: the saree's card + "Switch / Add both / Keep current"; the kurti order is untouched.
+    assert "Red Silk Saree [SR20002] — ₹2,499" in reply and "Switch to Red Silk Saree, add both, or keep Printed Kurti?" in reply
+    conv = await get_conv(replay_session, conv_id)
+    assert conv.pending_product_sku == "KU30001" and conv.interrupted_sku == "SR20002"
+
+    reply = await say(replay_http, captured, phone, pnid, "switch")
+    assert "Red Silk Saree" in reply
     assert (await get_conv(replay_session, conv_id)).pending_product_sku == "SR20002"
 
 
@@ -1163,7 +1170,7 @@ async def test_shop_order_message_opens_that_product_not_the_catalogue_link(repl
 
 
 async def test_shop_order_message_mid_order_switches_to_the_chosen_product(replay_http, replay_session, router, monkeypatch):
-    """Halfway through another product's order, tapping 'Order' in the shop moves the order to that product."""
+    """Halfway through another product's order, tapping 'Order' in the shop offers to switch; 'switch' moves the order."""
     phone, pnid = ph("0051")
     captured = capture_all(monkeypatch)
     capture_images(monkeypatch)
@@ -1173,9 +1180,13 @@ async def test_shop_order_message_mid_order_switches_to_the_chosen_product(repla
 
     reply = await say(replay_http, captured, phone, pnid, _shop_paste("Red Silk Saree", "SR20002"))
 
-    assert "complete collection" not in reply and "Red Silk Saree" in reply
+    assert "complete collection" not in reply and "Red Silk Saree" in reply and "add both" in reply
     conv = await get_conv(replay_session, conv_id)
-    assert conv.pending_product_sku == "SR20002" and conv.selected_color is None
+    assert conv.pending_product_sku == "LH10042" and conv.interrupted_sku == "SR20002"      # asked first, nothing switched
+
+    await say(replay_http, captured, phone, pnid, "switch")
+    conv = await get_conv(replay_session, conv_id)
+    assert conv.pending_product_sku == "SR20002" and conv.selected_color in (None, "Red")   # Red: the paste names it
 
 
 async def test_shop_order_message_for_a_product_without_sku_is_matched_by_name(replay_http, replay_session, router, monkeypatch):

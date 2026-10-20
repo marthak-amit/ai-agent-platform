@@ -1,0 +1,20 @@
+name: send_images
+description: 'images / photo / pic / dikhao with a product in focus is a ₹0 fast path that sends up to 3 product photos; the planner can also ask for a product''s photos; a product without photos says so in the customer''s language (photo dikhao is Hinglish).'
+turns:
+  - user: "KU10001"
+    expect: {fast_path: sku, reply_contains: ["Cotton Kurti"]}
+  - user: "images please"
+    expect:
+      fast_path: images
+      planner_calls: 0
+      actions_contains: [send_images]
+      images: 3
+      reply_contains: ["Cotton Kurti"]
+      ends_with_question: true
+  - user: "can you send a pic of the saree"
+    plan: {actions: [{type: send_images, sku: SR20001}]}
+    expect: {actions_contains: [send_images], images: 1, reply_contains: ["Banarasi Silk Saree"]}
+  - user: "show me the leather wallet"
+    expect: {fast_path: product_name}
+  - user: "mujhe photo dikhao"
+    expect: {fast_path: images, images: 0, reply_contains: ["Leather Wallet ki photos abhi mere paas nahi hain"], ends_with_question: true}

@@ -12,13 +12,31 @@ module references a `_raw_` sender or the Graph messages endpoint.
 """
 
 import logging
+from contextvars import ContextVar
 
 import httpx
 
 from app.config import get_settings
+from app.services import http_client
 
 META_API_VERSION = "v21.0"
 META_API_BASE_URL = "https://graph.facebook.com"
+
+# What Meta answered to the last refused interactive (button / list) send of this task: {"status": 400, "code": 131009, "message": "..."}.
+# The adapter reads it to log ``wa_interactive_fallback`` with the real reason before it sends the numbered plain-text version.
+last_interactive_error: ContextVar["dict | None"] = ContextVar("wa_last_interactive_error", default=None)
+
+
+def _remember_interactive_error(response) -> None:
+    """Store Meta's status / error code of a refused interactive send for the adapter's fallback log."""
+    code = message = None
+    try:
+        err = (response.json() or {}).get("error") or {}
+        code, message = err.get("code"), err.get("message") or err.get("error_data", {}).get("details")
+    except Exception:  # noqa: BLE001 - a non-JSON body is just "no code"
+        pass
+    last_interactive_error.set({"status": response.status_code, "code": code, "message": message})
+
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +86,7 @@ async def _raw_send_text_message(
         "text": {"preview_url": False, "body": message_text},
     }
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with http_client.meta_session() as client:
         response = await client.post(url, headers=headers, json=payload)
         if not response.is_success:
             logger.error(
@@ -122,7 +140,7 @@ async def _raw_send_typing_indicator(
         "typing_indicator": {"type": "text"},
     }
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with http_client.meta_session() as client:
         response = await client.post(url, headers=headers, json=payload)
         response.raise_for_status()
         return response.json()
@@ -181,7 +199,7 @@ async def _raw_send_button_message(
             },
         },
     }
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with http_client.meta_session() as client:
         response = await client.post(url, headers=headers, json=payload)
         if response.status_code != 200:
             logger.warning(
@@ -189,6 +207,7 @@ async def _raw_send_button_message(
                 response.status_code,
                 response.text,
             )
+            _remember_interactive_error(response)
         return response.status_code == 200
 
 
@@ -240,7 +259,7 @@ async def _raw_send_list_message(
             },
         },
     }
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with http_client.meta_session() as client:
         response = await client.post(url, headers=headers, json=payload)
         if response.status_code != 200:
             logger.warning(
@@ -248,6 +267,7 @@ async def _raw_send_list_message(
                 response.status_code,
                 response.text,
             )
+            _remember_interactive_error(response)
         return response.status_code == 200
 
 
@@ -300,7 +320,7 @@ async def _raw_send_image_message(
         "image": image_payload,
     }
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with http_client.meta_session() as client:
         response = await client.post(url, headers=headers, json=payload)
         response.raise_for_status()
         return response.json()
@@ -356,7 +376,7 @@ async def _raw_send_document_message(
         "document": document_payload,
     }
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with http_client.meta_session() as client:
         response = await client.post(url, headers=headers, json=payload)
         response.raise_for_status()
         return response.json()
@@ -407,7 +427,7 @@ async def _raw_send_template_message(
         "type": "template",
         "template": template,
     }
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with http_client.meta_session() as client:
         response = await client.post(url, headers=headers, json=payload)
         if not response.is_success:
             logger.error(

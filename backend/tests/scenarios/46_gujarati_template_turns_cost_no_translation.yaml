@@ -1,0 +1,26 @@
+name: gujarati_template_turns_cost_no_translation
+description: 'A Roman-Gujarati customer''s order runs entirely on the pre-translated template table: Gujarati replies, zero localizer (translate) calls, localizer=0ms.'
+turns:
+  - user: "mare 2 kurti joi che"
+    plan: {actions: [{type: add_line, sku: KU10001, variant: {}, qty: 2}]}
+    expect:
+      reply_contains: ["Kayo rang"]
+      reply_not_contains: ["Which colour"]
+      translate_calls: 0
+      turn_contains: ["localizer=0ms"]
+  - user: "1"
+    expect: {fast_path: option, reply_contains: ["tamaru naam"], reply_not_contains: ["your name"], translate_calls: 0}
+  - user: "Asha Patel"
+    plan: {actions: [{type: set_customer, name: Asha Patel}]}
+    expect: {reply_contains: ["address"], reply_not_contains: ["Please share"], translate_calls: 0}
+  - user: "12 MG Road, Adajan, Surat 395009"
+    plan: {actions: [{type: set_customer, address: "12 MG Road, Adajan, Surat 395009"}]}
+    expect: {reply_not_contains: ["How would you like to pay"], translate_calls: 0}
+  - tap: v3_pay_cod
+    expect:
+      stage: confirming
+      reply_not_contains: ["Order summary", "Shall I place"]
+      buttons_absent: [v3_pay_cod]
+      translate_calls: 0
+  - user: "haa"
+    expect: {fast_path: confirm, orders: 1, reply_not_contains: ["Order confirmed", "Thank you for shopping"], translate_calls: 0, turn_contains: ["localizer=0ms"]}

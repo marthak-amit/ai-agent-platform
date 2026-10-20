@@ -1,0 +1,16 @@
+name: upsell_within_cap_and_once
+description: 'The summary offers one cheap add-on (≤30% of the cart, never the ₹2,499 saree) with a short "+ Name ₹price" label — and only ONCE per order: later summaries of the same cart carry no upsell.'
+turns:
+  - macro: complete_cart_cod
+  - user: "make it 3"
+    plan: {actions: [{type: update_line, line_id: "$line[0]", fields: {qty: 3}}]}
+    expect:
+      reply_contains: ["Total: ₹1,497"]
+      reply_not_contains: ["Banarasi", "Lehenga", "Handmade Tote Bag (₹250)", "Many customers also add"]
+      buttons_absent: [v3_upsell_tb30001]
+      buttons_contain: [v3_confirm, v3_change]
+  - user: "make it 2"
+    plan: {actions: [{type: update_line, line_id: "$line[0]", fields: {qty: 2}}]}
+    expect:
+      reply_not_contains: ["Many customers also add"]
+      buttons_absent: [v3_upsell_tb30001]

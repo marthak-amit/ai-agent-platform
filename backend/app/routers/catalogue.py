@@ -14,6 +14,7 @@ Endpoints:
 - GET    /catalogue/products/{id}/stock-history — last 10 log entries
 """
 
+import asyncio
 import logging
 from typing import Annotated, Optional, Any
 
@@ -137,6 +138,7 @@ class ProductOut(BaseModel):
     low_stock_alert: int = 5
     has_variants: bool = False
     delivery_days: Optional[int] = None
+    is_demo: bool = False
     variants: list[ProductVariantOut] = []
     available_colors: list[str] = []
     available_sizes: list[str] = []
@@ -161,6 +163,7 @@ class ProductOut(BaseModel):
             low_stock_alert=p.low_stock_alert,
             has_variants=p.has_variants,
             delivery_days=getattr(p, "delivery_days", None),
+            is_demo=bool(getattr(p, "is_demo", False)),
             variants=[ProductVariantOut.model_validate(v) for v in variants],
             available_colors=list(dict.fromkeys(v.color for v in variants if v.color)),
             available_sizes=list(dict.fromkeys(v.size for v in variants if v.size)),
@@ -222,7 +225,7 @@ async def upload_product_image(
         )
 
     try:
-        url = storage_service.upload_product_image(current_client.id, contents, product_id)
+        url = await asyncio.to_thread(storage_service.upload_product_image, current_client.id, contents, product_id)
     except UnidentifiedImageError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

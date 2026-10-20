@@ -1,0 +1,20 @@
+name: hinglish_variants
+description: '"2 laal 1 hara" — colour words the planner did not map are resolved by the engine; an unknown colour goes back to the planner with the real options.'
+turns:
+  - user: "2 laal 1 hara kurti"
+    plan:
+      actions:
+        - {type: add_line, sku: KU10001, variant: {color: laal}, qty: 2}
+        - {type: add_line, sku: KU10001, variant: {color: hara}, qty: 1}
+    expect:
+      repairs: 0
+      cart: {lines: [{sku: KU10001, color: Red, qty: 2}, {sku: KU10001, color: Green, qty: 1}]}
+      reply_contains: ["Added 2× Cotton Kurti (Red)", "Added 1× Cotton Kurti (Green)"]
+  - user: "kaala bhi chahiye"
+    plan: {actions: [{type: add_line, sku: KU10001, variant: {color: kaala}}]}
+    repair:
+      - {actions: [{type: ask_clarify, question: "Which colour would you like?", options: [Red, Green, Blue], slot: color}]}
+    expect:
+      repairs: 1
+      cart: {lines: [{sku: KU10001, color: Red, qty: 2}, {sku: KU10001, color: Green, qty: 1}]}
+      reply_contains: ["Available: Red, Green, Blue"]

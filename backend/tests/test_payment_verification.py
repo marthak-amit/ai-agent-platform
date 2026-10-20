@@ -563,8 +563,19 @@ def inbound_stubs(monkeypatch):
         log.proofs.append(media_url)
         return pvs.ProofSubmission(proof=SimpleNamespace(id=1), transitioned=log.transitioned)
 
+    async def find_all(*_a, **_k):
+        """The (single) open order as the list the multi-order lookup returns."""
+        order = await find(None, None)
+        return [order] if order is not None else []
+
     monkeypatch.setattr(pvs, "find_open_payment_order", find)
+    monkeypatch.setattr(pvs, "find_open_payment_orders", find_all)
+    async def no_unfiled_images(*_a, **_k):
+        """The DB-free stubs have no earlier images lying around."""
+        return []
+
     monkeypatch.setattr(pvs, "submit_proof", submit)
+    monkeypatch.setattr(payment_inbound, "_unattached_images", no_unfiled_images)
     monkeypatch.setattr(payment_inbound.conversation_service, "save_message", save)
     return log
 
@@ -601,12 +612,14 @@ async def test_paid_text_without_image_asks_for_screenshot(inbound_stubs):
     assert inbound_stubs.proofs == []
 
 
-async def test_paid_text_when_already_submitted_gets_throttled_progress_reply(inbound_stubs):
-    """'paid' after a screenshot is already under review → throttled progress ack."""
+async def test_paid_text_when_already_submitted_always_gets_a_reply(inbound_stubs):
+    """'paid' after a screenshot is already under review → the short progress ack first, then (the ack is throttled) the full "being verified"
+    line: v1.7 — every typed message is answered; only a burst of IMAGES is throttled."""
     inbound_stubs.order = _order("payment_submitted")
     ctx = _ctx("text", "paid")
     assert (await payment_inbound._handle_payment_message(ctx)).text == "Received, verification in progress."
-    assert (await payment_inbound._handle_payment_message(ctx)).skip_send is True
+    second = await payment_inbound._handle_payment_message(ctx)
+    assert second.skip_send is False and "being verified" in second.text.lower() or "verifying" in second.text.lower()
 
 
 async def test_image_without_pending_order_falls_through(inbound_stubs):

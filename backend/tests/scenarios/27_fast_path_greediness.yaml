@@ -1,0 +1,15 @@
+name: fast_path_greediness
+description: 'A cancel inside a longer sentence naming something else is not a fast path: the planner returns [cancel, search_catalog("shoes")]; a shop without shoes says so and lists its categories.'
+turns:
+  - user: "I want 2 red kurtis"
+    plan: {actions: [{type: add_line, sku: KU10001, variant: {color: Red}, qty: 2}]}
+  - user: "I don't want to buy this, I want to buy shoes"
+    plan: {actions: [{type: cancel}, {type: search_catalog, query: shoes}]}
+    expect:
+      fast_path: null
+      planner_calls: 1
+      actions_contains: [cancel, search_catalog]
+      cart: {empty: true}
+      reply_contains: ["cancelled", "We don't have shoes", "We have: Saree, Kurti, Lehenga"]
+      buttons_contain: [v3_browse]
+      ends_with_question: true

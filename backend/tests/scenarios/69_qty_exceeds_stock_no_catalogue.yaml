@@ -1,0 +1,20 @@
+name: qty_exceeds_stock_no_catalogue
+description: 'conv=60 v1.6: "1000" for a lehenga with 3 in stock is answered with "Only 3 …" and [Take 3][Remove item][See similar] — never an unrelated catalogue list — and the "1" that follows is a quantity of 1, not product number 1.'
+turns:
+  - user: "I want a blue xxl lehenga"
+    plan: {actions: [{type: add_line, sku: LH10042, variant: {color: Blue, size: XXL}}]}
+    expect: {reply_contains: ["How many"], cart: {lines: [{sku: LH10042, color: Blue, size: XXL, qty: null}]}}
+  - user: "1000"
+    expect:
+      fast_path: quantity
+      planner_calls: 0
+      reply_contains: ["Only 3 of Cotton Lehenga (Blue / XXL)"]
+      reply_not_contains: ["Cotton Kurti", "Banarasi", "Reply with its number", "Handmade Tote Bag"]
+      issues_contain: [QTY_EXCEEDS_STOCK]
+      cart: {lines: [{sku: LH10042, color: Blue, size: XXL, qty: null}]}
+  - user: "1"
+    expect:
+      fast_path: quantity
+      planner_calls: 0
+      cart: {lines: [{sku: LH10042, color: Blue, size: XXL, qty: 1}]}
+      reply_not_contains: ["Cotton Kurti", "Banarasi"]

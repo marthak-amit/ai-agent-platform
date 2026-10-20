@@ -1,0 +1,25 @@
+name: out_of_stock_variant
+description: 'A sold-out variant is never reported without the options that ARE available; a sold-out product gets alternatives.'
+turns:
+  - user: "pink xxl lehenga"
+    plan: {actions: [{type: add_line, sku: LH10042, variant: {color: Pink, size: XXL}}]}
+    expect:
+      issues_contain: [OUT_OF_STOCK_VARIANT]
+      cart: {lines: []}
+      reply_contains: ["Cotton Lehenga in Pink / XXL is sold out", "Pink / M", "Blue / XXL"]
+      ends_with_question: true
+  - user: "1"
+    expect:
+      fast_path: option
+      cart: {lines: [{sku: LH10042, color: Pink, size: M, qty: null}]}
+      reply_contains: ["How many"]
+  - user: "I would like the silk scarf please"
+    plan: {actions: [{type: add_line, sku: SC40001}]}
+    expect:
+      issues_contain: [OUT_OF_STOCK]
+      reply_contains: ["Silk Scarf is sold out", "These are available", "Would you like to see any of these"]
+      reply_not_contains: ["Silk Scarf —"]
+  - user: "red kurti in pink"
+    plan: {actions: [{type: add_line, sku: KU10001, variant: {color: Pink}}]}
+    expect:
+      reply_contains: ["Cotton Kurti in Pink is sold out", "Available: Red, Green, Blue"]

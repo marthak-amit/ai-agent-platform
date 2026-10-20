@@ -1,0 +1,9 @@
+name: bestsellers_without_sales
+description: 'No orders yet: "best seller" shows what the shop has, with its categories, and never pretends to know the best sellers.'
+turns:
+  - user: "best seller"
+    expect:
+      fast_path: bestseller
+      planner_calls: 0
+      reply_contains: ["Categories:", "Cotton Kurti"]
+      reply_not_contains: ["best sellers"]

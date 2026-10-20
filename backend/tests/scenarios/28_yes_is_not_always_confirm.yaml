@@ -1,0 +1,9 @@
+name: yes_is_not_always_confirm
+description: A longer sentence that merely starts with "yes" / contains a product noun is not the summary's gate word — it goes to the planner, and nothing is ordered.
+turns:
+  - macro: complete_cart_cod
+  - user: "yes but first show me the saree collection"
+    plan: {actions: [{type: search_catalog, query: saree}]}
+    expect: {fast_path: null, planner_calls: 1, orders: 0, reply_contains: ["Banarasi Silk Saree"], actions_absent: [confirm_order]}
+  - user: "cancel kurti"
+    expect: {fast_path: remove, planner_calls: 0, cart: {empty: true}, reply_contains: ["Removed Cotton Kurti"]}

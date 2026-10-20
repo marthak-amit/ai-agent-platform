@@ -292,7 +292,7 @@ async def get_client_detail(db: AsyncSession, client: Client) -> dict[str, Any]:
         )
         or 0
     )
-    order_count = int(await db.scalar(select(func.count(Order.id)).where(Order.client_id == cid)) or 0)
+    order_count = int(await db.scalar(select(func.count(Order.id)).where(Order.client_id == cid, Order.is_sandbox.is_(False))) or 0)
     pending_pay = int(await db.scalar(select(func.count(Order.id)).where(Order.client_id == cid, Order.status == "payment_submitted")) or 0)
     product_count = int(await db.scalar(select(func.count(Product.id)).where(Product.client_id == cid)) or 0)
 
@@ -330,6 +330,7 @@ async def get_client_detail(db: AsyncSession, client: Client) -> dict[str, Any]:
         },
         "flags": {
             "router_v2_enabled": client.router_v2_enabled,
+            "agent_v3_enabled": client.agent_v3_enabled,
             "billing_exempt": bool(client.billing_exempt),
             "plan_grandfathered": bool(client.plan_grandfathered),
             "daily_message_limit": client.daily_message_limit,
@@ -389,7 +390,7 @@ async def recent_client_audit(db: AsyncSession, client_id: int, limit: int = 10)
     )
 
 
-_FLAG_FIELDS = ("router_v2_enabled", "daily_message_limit", "bot_auto_resume_minutes", "plan_grandfathered")
+_FLAG_FIELDS = ("router_v2_enabled", "agent_v3_enabled", "daily_message_limit", "bot_auto_resume_minutes", "plan_grandfathered")
 
 
 async def update_client_flags(
@@ -407,7 +408,7 @@ async def update_client_flags(
         if field not in updates:
             continue
         new_value = updates[field]
-        if field != "router_v2_enabled" and new_value is None:
+        if field not in ("router_v2_enabled", "agent_v3_enabled") and new_value is None:
             continue
         old_value = getattr(client, field)
         if old_value != new_value:
@@ -511,7 +512,7 @@ async def list_client_orders(
     db: AsyncSession, client_id: int, *, status_filter: str = "", page: int, page_size: int
 ) -> dict[str, Any]:
     """A client's orders, newest first, optionally filtered by status."""
-    filters = [Order.client_id == client_id]
+    filters = [Order.client_id == client_id, Order.is_sandbox.is_(False)]
     if status_filter:
         filters.append(Order.status == status_filter)
     total = int(await db.scalar(select(func.count(Order.id)).where(*filters)) or 0)

@@ -1,0 +1,12 @@
+name: catalogue_words_without_planner
+description: 'conv=60 v1.6: a single category word, or only the shop''s nouns / colours / fabrics plus Hindi-roman chatter, is a ₹0 lookup; an order sentence still goes to the planner.'
+turns:
+  - user: "Saree"
+    expect: {fast_path: category, planner_calls: 0, reply_contains: ["Banarasi Silk Saree"], reply_not_contains: ["Cotton Kurti"]}
+  - user: "dikha bhai kurti"
+    expect: {fast_path: category, planner_calls: 0, reply_contains: ["Cotton Kurti"]}
+  - user: "red kurti dekh"
+    expect: {fast_path: catalogue_search, planner_calls: 0, reply_contains: ["Cotton Kurti"]}
+  - user: "I want a red kurti, 2 pieces"
+    plan: {actions: [{type: add_line, sku: KU10001, variant: {color: Red}, qty: 2}]}
+    expect: {planner_calls: 1, cart: {lines: [{sku: KU10001, color: Red, qty: 2}]}}

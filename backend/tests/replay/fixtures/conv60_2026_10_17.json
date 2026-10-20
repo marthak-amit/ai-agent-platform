@@ -1,0 +1,38 @@
+{
+  "_doc": "Customer turns of the real conv=60 (Riya Sarees) transcript of 2026-10-17 (messages 4397-4447). 'router' is the verdict the LIVE model returned for that message (cancel_order for 'sorry i cant get it!', start_order for 'please', ...); the expectations are the fixed behaviour.",
+  "browsing_after_order": [
+    {"say": "when will i receive my order?", "router": {"action": "order_status", "args": {"focus": "delivery"}},
+     "contains": ["Expected delivery"], "not_matches": ["(\\d{2} \\w{3}) – \\1"]},
+    {"say": "ok thanks!", "contains": ["You're welcome"]},
+    {"say": "show me some more products like that",
+     "not_contains": ["JW10944", "golden necklace"], "state": {"pending_product_sku": null}},
+    {"say": "another one?", "not_contains": ["JW10944", "golden necklace"], "state": {"pending_product_sku": null}},
+    {"say": "Paisley Georgette Saree", "contains": ["SR63896", "Would you like to order"], "state": {"pending_product_sku": "SR63896"}},
+    {"say": "too expensive!", "contains": ["prices are fixed", "Would you like to order Paisley Georgette Saree"],
+     "not_contains": ["continue with the order"]},
+    {"say": "please", "router": {"action": "start_order", "args": {"sku": "SR63896"}},
+     "contains": ["price is the same for everyone"], "not_contains": ["Colour?"], "state": {"current_stage": "product_inquiry"}},
+    {"say": "give me some discount!", "contains": ["same for everyone"], "not_contains": ["Colour?"]}
+  ],
+  "order_confusion_cancel_restore": [
+    {"say": "yes", "contains": ["Colour? Green / Grey / Orange / Red"], "state": {"current_stage": "order_collection"}},
+    {"say": "red", "contains": ["Quantity?"]},
+    {"say": "1", "contains": ["Order Summary", "Paisley Georgette Saree Red × 1", "💳 UPI only (riyasarees@paytm)"],
+     "not_contains": ["We currently accept payments via UPI only"], "buttons": ["Confirm & Pay", "Cancel"],
+     "state": {"current_stage": "awaiting_final_confirmation", "selected_color": "Red"}},
+    {"say": "sorry i want 2 quantity", "router": {"action": "change_slot", "args": {"slot": "quantity", "value": "2"}, "confidence": 0.97},
+     "contains": ["Updated ✅ Quantity: 2", "Paisley Georgette Saree Red × 2 = ₹11,198"],
+     "not_contains": ["Same for all", "different for each", "How many of"],
+     "state": {"selected_color": "Red", "pending_order_quantity": 2, "cart_variant_mode": "same", "current_stage": "awaiting_final_confirmation"}},
+    {"say": "sorry i cant get it!", "router": {"action": "cancel_order", "args": {}, "confidence": 0.9},
+     "contains": ["Sorry for the confusion", "Order Summary"], "not_contains": ["cancelled"],
+     "state": {"pending_product_sku": "SR63896", "current_stage": "awaiting_final_confirmation"}},
+    {"say": "cancel", "contains": ["Order cancelled"], "state": {"pending_product_sku": null, "current_stage": "greeting"}},
+    {"say": "what are you trying to say", "router": {"action": "confused", "args": {}, "confidence": 0.9},
+     "contains": ["Sorry for the confusion"], "not_contains": ["Sure, let me clarify"]},
+    {"say": "I want to continue this", "router": {"action": "smalltalk", "args": {}, "confidence": 0.9},
+     "contains": ["Restored your order: Paisley Georgette Saree Red × 2", "Order Summary"], "not_contains": ["Sure, let's continue"],
+     "state": {"pending_product_sku": "SR63896", "selected_color": "Red", "pending_order_quantity": 2, "current_stage": "awaiting_final_confirmation"}},
+    {"say": "confirm", "contains": ["riyasarees@paytm", "11,198"]}
+  ]
+}

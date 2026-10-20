@@ -1,0 +1,21 @@
+name: remove_item_by_negation
+description: 'conv=60 bug 1 + 4: "Mare kurtinathi joti" (I do not want the kurti) with a kurti line and a just-added lehenga line removes the KURTI at once (₹0, no planner, no clarify about the other line), shows what is left and goes on with the line being filled — which is the one added last, not the older unfinished kurti.'
+turns:
+  - user: "I want a red cotton kurti"
+    plan: {actions: [{type: add_line, sku: KU10001, variant: {color: Red}}]}
+    expect: {cart: {lines: [{sku: KU10001, color: Red, qty: null}]}, reply_contains: ["How many"]}
+  - user: "LH10042"
+    expect: {fast_path: sku, reply_contains: ["Cotton Lehenga"]}
+  - user: "yes"
+    expect:
+      fast_path: offer_yes
+      reply_contains: ["Which colour", "Cotton Lehenga"]
+      reply_not_contains: ["How many"]
+  - user: "Mare kurtinathi joti"
+    expect:
+      fast_path: remove
+      planner_calls: 0
+      actions_contains: [remove_line]
+      cart: {lines: [{sku: LH10042, color: null, size: null, qty: null}]}
+      reply_contains: ["Removed Cotton Kurti (Red)", "In your cart now", "1. Cotton Lehenga", "Which colour"]
+      reply_not_contains: ["How many", "Which colour would you like for Cotton Kurti"]

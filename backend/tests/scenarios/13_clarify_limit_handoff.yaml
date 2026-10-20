@@ -1,0 +1,12 @@
+name: clarify_limit_handoff
+description: 'After two unresolved clarifies on the same slot the bot hands over to a person instead of asking a third time.'
+turns:
+  - user: "I want the Cotton Kurti"
+    plan: {actions: [{type: add_line, sku: KU10001}]}
+    expect: {reply_contains: ["Which colour"], handoff: false}
+  - user: "dunno"
+    plan: {actions: [{type: ask_clarify, question: "Which colour would you like?", options: [], slot: color}]}
+    expect: {reply_contains: ["Which colour"], handoff: false}
+  - user: "umm not sure"
+    plan: {actions: [{type: ask_clarify, question: "Which colour would you like?", options: [], slot: color}]}
+    expect: {handoff: true, reply_contains: ["Our team will reply"]}

@@ -1,0 +1,11 @@
+name: priority_other_product_hindi
+description: Same priority rule in Hindi (Roman) — "mujhe ek choli chahiye" while a kurti line is open.
+turns:
+  - user: "I want the Cotton Kurti"
+    plan: {actions: [{type: add_line, sku: KU10001}]}
+  - user: "mujhe ek choli chahiye"
+    plan: {actions: [{type: search_catalog, query: choli}]}
+    expect:
+      cart: {lines: [{sku: KU10001, color: null, qty: null}]}
+      reply_contains: ["Zari Choli Set"]
+      reply_not_contains: ["Which colour would you like for Cotton Kurti"]

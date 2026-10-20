@@ -14,6 +14,9 @@ class LLMUsageMetrics(BaseModel):
     calls: int
     prompt_tokens: int
     completion_tokens: int
+    cached_tokens: int = 0
+    audio_seconds: float = 0.0
+    cost_usd: float = 0.0
     cost_inr: float
     failures: int
     avg_latency_ms: float
@@ -63,3 +66,24 @@ class LLMUsageReport(BaseModel):
     per_model: list[LLMUsageByModel]
     per_conversation: list[LLMUsageByConversation]
     per_order: list[LLMUsageByOrder]
+    orders_created: int = 0                                  # non-sandbox orders created in the window
+    cost_per_order_created_inr: Optional[float] = None       # total ₹ / orders_created (None when no order was created)
+    cost_per_order_created_usd: Optional[float] = None
+
+
+class LLMClientCost7d(BaseModel):
+    """One client's LLM spend over the last 7 days against the orders its customers confirmed."""
+
+    client_id: int
+    business_name: Optional[str] = None
+    llm_calls: int
+    cost_inr: float
+    cost_usd: float
+    confirmed_orders: int                                   # placed in chat, not cancelled, not sandbox
+    avg_inr_per_confirmed_order: Optional[float] = None     # None when the client had no confirmed order
+
+
+class LLMCostReport(LLMUsageReport):
+    """GET /admin/llm-cost response: the usage report with $ and ₹, the cost per order created and the per-client 7-day average."""
+
+    per_client_last_7d: list[LLMClientCost7d] = []

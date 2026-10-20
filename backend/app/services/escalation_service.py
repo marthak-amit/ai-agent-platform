@@ -257,8 +257,8 @@ async def notify_owner_escalation(
         f"Dashboard: /conversations"
     )
 
-    if not (client and client.phone):
-        return
+    if not (client and client.phone) or getattr(conversation, "is_sandbox", False):
+        return      # (simulator conversations never ping the owner)
 
     try:
         await outbound.send_owner_text(client.phone, message)

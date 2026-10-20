@@ -37,10 +37,44 @@ _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
 
 
+_clients: dict[tuple, AsyncOpenAI] = {}
+
+
+async def _observe_response(response) -> None:
+    """httpx response hook: feed Groq's ``x-ratelimit-*`` headers (success AND 429) to the client-side limiter. Never raises."""
+    try:
+        from app.services import llm_rate_limiter
+
+        model = json.loads(response.request.content).get("model")
+        llm_rate_limiter.observe_headers(model, response.headers)
+    except Exception:  # noqa: BLE001 - observability only
+        pass
+
+
 def get_client() -> AsyncOpenAI:
-    """AsyncOpenAI pointed at Groq. max_retries=0: callers own retry/fallback policy."""
+    """
+    AsyncOpenAI pointed at Groq. max_retries=0: callers own retry/fallback policy.
+
+    One client (and so one keep-alive connection pool) per event loop and key: building a new client per call paid a TLS handshake on
+    every LLM call. Its httpx hook reads the rate-limit headers of every response for ``llm_rate_limiter``.
+    """
+    import httpx
+
     settings = get_settings()
-    return AsyncOpenAI(api_key=settings.groq_api_key, base_url=settings.groq_base_url, max_retries=0)
+    try:
+        loop_id = id(asyncio.get_running_loop())
+    except RuntimeError:
+        loop_id = 0
+    key = (loop_id, settings.groq_api_key, settings.groq_base_url)
+    client = _clients.get(key)
+    if client is None:
+        if len(_clients) > 8:            # event loops come and go in tests; never keep a pile of dead ones
+            _clients.clear()
+        client = _clients[key] = AsyncOpenAI(
+            api_key=settings.groq_api_key, base_url=settings.groq_base_url, max_retries=0,
+            http_client=httpx.AsyncClient(event_hooks={"response": [_observe_response]}, timeout=httpx.Timeout(60.0, connect=10.0)),
+        )
+    return client
 
 
 def is_reasoning_model(model: str) -> bool:
@@ -133,6 +167,13 @@ async def chat(
     return resp
 
 
+def _cached_tokens(usage: Any) -> int:
+    """Input tokens the provider served from its prompt cache (``usage.prompt_tokens_details.cached_tokens``; 0 when absent)."""
+    details = getattr(usage, "prompt_tokens_details", None)
+    value = getattr(details, "cached_tokens", 0) if details is not None else 0
+    return int(value) if isinstance(value, (int, float)) else 0
+
+
 def _tokens(usage: Any, field: str) -> int:
     """Read an int token count from a response.usage object; 0 if absent or not an int."""
     value = getattr(usage, field, 0)
@@ -191,9 +232,11 @@ async def llm_call(
             # Groq's server-side JSON validation rejected the generation (400 json_validate_failed).
             # Retry ONCE without strict response_format; callers parse the text leniently (first {...} block).
             await _record_failure(exc)
+            body = getattr(exc, "body", None)
+            err = body.get("error") if isinstance(body, dict) and isinstance(body.get("error"), dict) else (body if isinstance(body, dict) else {})
             logger.warning(
-                "LLM json_validate_failed (purpose=%s model=%s) — retrying once without strict response_format",
-                purpose, model,
+                "LLM json_validate_failed (purpose=%s model=%s) — retrying once without strict response_format; failed_generation=%r",
+                purpose, model, str((err or {}).get("failed_generation") or "")[:700],
             )
             t0 = time.perf_counter()
             retry_messages = messages
@@ -207,6 +250,7 @@ async def llm_call(
     await llm_usage_service.record_usage(
         purpose=purpose, model=model,
         prompt_tokens=_tokens(usage, "prompt_tokens"), completion_tokens=_tokens(usage, "completion_tokens"),
+        cached_tokens=_cached_tokens(usage),
         latency_ms=int((time.perf_counter() - t0) * 1000),
         client_id=client_id, conversation_id=conversation_id, order_id=order_id,
     )
@@ -243,8 +287,9 @@ async def llm_transcribe(
     """
     Speech-to-text through Groq Whisper, recorded like any other call.
 
-    Whisper has no token usage, so tokens are 0 and cost is an estimate from the audio size
-    (per-hour pricing with a 10 s minimum). The blocking SDK call runs in a worker thread.
+    Whisper has no tokens: it is billed per audio hour, so the call records the transcribed ``audio_seconds`` (the provider's
+    ``duration`` from ``verbose_json``; an estimate from the audio size when it is missing; 10 s minimum) and the USD / ₹ cost.
+    The blocking SDK call runs in a worker thread.
     """
     t0 = time.perf_counter()
     stt = client or get_stt_client()
@@ -252,21 +297,23 @@ async def llm_transcribe(
     try:
         result = await asyncio.to_thread(
             stt.audio.transcriptions.create,
-            file=(filename, audio_bytes, mime_type), model=model, response_format="text", **extra,
+            file=(filename, audio_bytes, mime_type), model=model, response_format="verbose_json", **extra,
         )
     except Exception as exc:
         await llm_usage_service.record_usage(
             purpose=purpose, model=model, latency_ms=int((time.perf_counter() - t0) * 1000), success=False,
             error_code=llm_usage_service.error_code_for(exc),
-            client_id=client_id, conversation_id=conversation_id, order_id=order_id, cost_inr=0.0,
+            client_id=client_id, conversation_id=conversation_id, order_id=order_id, cost_usd=0.0,
         )
         raise
+    text = result if isinstance(result, str) else (getattr(result, "text", None) or (result.get("text") if isinstance(result, dict) else None) or str(result))
+    duration = None if isinstance(result, str) else (getattr(result, "duration", None) or (result.get("duration") if isinstance(result, dict) else None))
+    seconds = llm_usage_service.stt_billed_seconds(duration, len(audio_bytes))
     await llm_usage_service.record_usage(
-        purpose=purpose, model=model, latency_ms=int((time.perf_counter() - t0) * 1000),
-        client_id=client_id, conversation_id=conversation_id, order_id=order_id,
-        cost_inr=llm_usage_service.stt_cost_inr(len(audio_bytes)),
+        purpose=purpose, model=model, latency_ms=int((time.perf_counter() - t0) * 1000), audio_seconds=seconds,
+        client_id=client_id, conversation_id=conversation_id, order_id=order_id, cost_usd=llm_usage_service.stt_cost_usd(seconds),
     )
-    return result if isinstance(result, str) else str(result)
+    return text
 
 
 def strip_reasoning(text: str) -> str:

@@ -1,0 +1,12 @@
+name: upi_full_flow
+description: 'A UPI-only shop never asks for the payment method; confirming creates a pending_payment order with the pay-here instruction.'
+shop: upi_only
+turns:
+  - macro: complete_cart_single_payment
+  - user: "yes"
+    expect:
+      orders: 1
+      order: {status: pending_payment, payment_method: UPI, total: 998, lines: [{sku: KU10001, color: Red, qty: 2}]}
+      reply_contains: ["shop@upi", "Total: ₹998", "screenshot"]
+      conv_stage: payment
+      cart: {empty: true}

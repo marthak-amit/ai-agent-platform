@@ -4,6 +4,9 @@ Entitlement: may this client's assistant answer NEW customers right now?
 States (EntitlementState):
   EXEMPT   client.billing_exempt (e.g. the house account) — never restricted, never counted against a plan
   ACTIVE   a subscription period is running (active, or a queued period whose start has passed)
+  SETUP    account_status 'setup': the owner has not pressed "Go live" yet — unlimited simulator, no expiry, no
+           countdown (the bot does not answer real customers at all yet, see order_pipeline._billing_preflight)
+  TRIAL    went live on the free trial (TRIAL_DAYS / TRIAL_CONVERSATION_LIMIT, see trial_service); fully served
   GRACE    no running period, but within GRACE_DAYS of the last period's end (or of signup, for a
            client that never subscribed): the bot keeps working; the dashboard shows a red banner
   EXPIRED  no running period and the grace is over
@@ -47,6 +50,8 @@ class EntitlementState(str, Enum):
 
     EXEMPT = "exempt"
     ACTIVE = "active"
+    SETUP = "setup"
+    TRIAL = "trial"
     GRACE = "grace"
     EXPIRED = "expired"
 
@@ -59,7 +64,10 @@ class Entitlement:
     subscription_id: int | None = None
     over_limit: bool = False
     grace_ends_at: datetime | None = None
-    anchor_key: str = ""          # identifies WHICH lapse this is (for one-time alerts): last sub id or "never"
+    anchor_key: str = ""          # identifies WHICH lapse this is (for one-time alerts): last sub id, "trial:<id>" or "never"
+    trial_ends_at: datetime | None = None
+    trial_conversations_used: int | None = None
+    trial_conversation_limit: int | None = None
 
     @property
     def restricted(self) -> bool:
@@ -103,9 +111,24 @@ async def get_entitlement(db: AsyncSession, client, now: datetime | None = None)
     if running is not None:
         return Entitlement(EntitlementState.ACTIVE, subscription_id=running.id, over_limit=bool(running.over_limit))
 
+    status = getattr(client, "account_status", "active")
+    if status == "setup":
+        return Entitlement(EntitlementState.SETUP)
+
     last = (await db.execute(last_period_query(client.id))).first()
     if last is not None:
         anchor, anchor_key = last.current_period_end, str(last.id)
+    elif status == "trial" and getattr(client, "trial_started_at", None) is not None:
+        from app.services import trial_service
+
+        standing = await trial_service.trial_standing(db, client, now)
+        if standing.active:
+            return Entitlement(
+                EntitlementState.TRIAL, trial_ends_at=standing.ends_at,
+                trial_conversations_used=standing.used, trial_conversation_limit=standing.limit,
+            )
+        # The grace period counts from the moment the trial stopped (time or conversation cap).
+        anchor, anchor_key = standing.ended_at or now, f"trial:{client.id}"
     else:
         anchor, anchor_key = getattr(client, "created_at", None) or now, "never"
 
@@ -182,12 +205,14 @@ async def automation_allowed(db: AsyncSession, client_id: int, now: datetime | N
     True unless enforcement is on and the client is EXPIRED. Fails open. Used by the send gate.
     """
     try:
-        if not enforcement_enabled():
-            return True
         from app.models.client import Client
 
         client = await db.get(Client, client_id)
         if client is None:
+            return True
+        if getattr(client, "bot_active", True) is False:
+            return False                      # not live yet: nothing automated reaches real customers
+        if not enforcement_enabled():
             return True
         return not (await get_entitlement(db, client, now)).restricted
     except Exception:

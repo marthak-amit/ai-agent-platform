@@ -1,0 +1,14 @@
+name: language_detection_per_script
+description: 'Each first message in its own language is answered in it: Roman Gujarati, Gujarati script, Hinglish, Devanagari Hindi; a script change switches at once.'
+turns:
+  - user: "Mane kurti batavo"
+    plan: {actions: [{type: search_catalog, query: kurti}]}
+    expect: {reply_contains: ["mate aa malyu"]}
+  - user: "મને કુર્તી બતાવો"
+    plan: {actions: [{type: search_catalog, query: kurti}]}
+    expect: {reply_contains: ["માટે આ મળ્યું"], reply_not_contains: ["mate aa malyu"]}
+  - user: "Mujhe saree dikhao"
+    expect: {fast_path: category, reply_contains: ["Hamare products dekhiye"]}
+  - user: "मुझे साड़ी दिखाओ"
+    plan: {actions: [{type: search_catalog, query: saree}]}
+    expect: {reply_contains: ["के लिए यह मिला"], reply_not_contains: ["ke liye yeh mila"]}

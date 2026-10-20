@@ -8,6 +8,7 @@ import {
   exportOrdersCSV,
 } from "../api/client";
 import Layout from "../components/Layout";
+import EmptyStateCta from "../components/setup/EmptyStateCta";
 import type { Order, OrderStats } from "../types";
 import {
   Package,
@@ -516,11 +517,12 @@ export default function Orders() {
               <div key={i} className="h-14 animate-pulse bg-gray-50" />
             ))}
           </div>
+        ) : orders.length === 0 && statusFilter === "all" && !search ? (
+          <EmptyStateCta kind="orders" />
         ) : orders.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 text-center">
             <Package size={40} className="text-gray-200 mb-3" />
-            <p className="text-sm text-gray-400">No orders yet.</p>
-            <p className="text-xs text-gray-300 mt-1">Orders are auto-created from completed conversations.</p>
+            <p className="text-sm text-gray-400">No orders match this filter.</p>
           </div>
         ) : (
           <div className="overflow-x-auto">

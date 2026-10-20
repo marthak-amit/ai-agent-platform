@@ -1,0 +1,25 @@
+name: planner_failure_fallback
+description: 'Planner error / invalid JSON → a catalogue word becomes a search, otherwise the current step is re-shown with its buttons (never a bare apology); a 429 is retried once after a backoff.'
+turns:
+  - user: "I want 2 kurtis"
+    plan: {actions: [{type: add_line, sku: KU10001, variant: {}, qty: 2}]}
+  - user: "show me sarees please"
+    expect:
+      fast_path: category
+      planner_calls: 0
+      reply_contains: ["Banarasi Silk Saree"]
+      reply_not_contains: ["trouble"]
+      cart: {lines: [{sku: KU10001, color: null, qty: 2}]}
+  - user: "hmmmm let me think"
+    plan: {error: "provider exploded"}
+    expect:
+      reply_contains: ["Which colour", "Available: Red, Green, Blue"]
+      reply_not_contains: ["trouble"]
+      buttons_contain: [v3_opt_1]
+  - user: "I want a blue lehenga, 1 piece"
+    plan: {error: "rate limited", status_code: 429}
+    repair: [{actions: [{type: add_line, sku: LH10042, variant: {color: Blue}, qty: 1}]}]
+    expect:
+      planner_calls: 2
+      cart: {lines: [{sku: KU10001, color: null, qty: 2}, {sku: LH10042, color: Blue, size: null, qty: 1}]}
+      reply_contains: ["Added 1× Cotton Lehenga (Blue)"]

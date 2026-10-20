@@ -3,6 +3,8 @@
 export type Channel = "whatsapp" | "instagram" | "website" | string;
 export type SenderType = "customer" | "bot" | "human" | "system";
 export type ProofStatus = "pending" | "approved" | "rejected";
+/** A proof card in a chat can also be "withdrawn": the customer said the image was not a payment (it never appears in the pending queue). */
+export type ProofCardStatus = ProofStatus | "withdrawn";
 
 export interface LastMessage {
   text: string;
@@ -35,7 +37,7 @@ export interface ProofCard {
   order_id: number;
   order_number: string;
   amount_expected: number;
-  status: ProofStatus;
+  status: ProofCardStatus;
   order_status: string;
   reviewed_by: string | null;
   reviewed_at: string | null;

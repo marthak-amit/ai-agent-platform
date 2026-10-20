@@ -26,7 +26,7 @@ def test_defaults_are_exclusive_18_percent_test_mode_auto_mock(monkeypatch):
     s = _settings(monkeypatch)
     assert s.prices_include_gst is False          # plan prices are GST-exclusive
     assert s.gst_rate_bps == 1800
-    assert s.razorpay_mode == "test"
+    assert s.razorpay_mode == "auto"            # the key prefix decides test vs live
     assert s.sellertalk24_billing_mock is None
     assert s.razorpay_webhook_secret == ""
 
@@ -63,7 +63,7 @@ def test_blank_mock_flag_means_auto_not_a_parse_error(monkeypatch, blank):
     assert s.sellertalk24_billing_mock is None and s.billing_mock_enabled is True
 
 
-@pytest.mark.parametrize("raw,expected", [("LIVE", "live"), (" Test ", "test"), ("live", "live")])
+@pytest.mark.parametrize("raw,expected", [("LIVE", "live"), (" Test ", "test"), ("live", "live"), ("", "auto"), ("  ", "auto"), ("AUTO", "auto")])
 def test_razorpay_mode_is_normalised(monkeypatch, raw, expected):
     assert _settings(monkeypatch, {"RAZORPAY_MODE": raw}).razorpay_mode == expected
 
@@ -81,4 +81,4 @@ def test_gst_rate_must_be_between_0_and_10000_bps(monkeypatch, bad):
 
 def test_blank_normaliser_helpers_pass_non_strings_through(monkeypatch):
     assert Settings.blank_billing_mock_means_auto(True) is True
-    assert Settings.normalise_razorpay_mode(None) is None
+    assert Settings.normalise_razorpay_mode(None) == "auto"

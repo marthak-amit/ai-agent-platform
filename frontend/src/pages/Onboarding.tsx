@@ -6,26 +6,35 @@ import {
   completeWhatsAppEmbeddedSignup,
   getInstagramConnectUrl,
   getWhatsAppSignupConfig,
-  updateOnboardingStep,
   updateProfile,
   type WhatsAppSignupConfig,
 } from "../api/client";
 import { api } from "../api/client";
 import { useAuth } from "../context/AuthContext";
+import { useSetup } from "../context/SetupContext";
+import Layout from "../components/Layout";
 import { launchWhatsAppEmbeddedSignup } from "../utils/whatsappEmbeddedSignup";
-import { SandboxUI } from "./Sandbox";
-import CheckoutModals from "../components/billing/CheckoutModals";
-import PlanPicker from "../components/billing/PlanPicker";
-import { useBilling } from "../context/BillingContext";
-import { useRazorpayCheckout } from "../hooks/useRazorpayCheckout";
 import {
   CheckCircle2,
   ChevronRight,
-  Copy,
   ExternalLink,
   Loader2,
   SkipForward,
 } from "lucide-react";
+
+/**
+ * The old onboarding stepper, kept as ordinary pages. Each section reuses the step bodies below:
+ *   agent     business profile -> agent personality  (checklist "Set up your agent")
+ *   products  quick-add products                      (checklist "Add your products")
+ *   whatsapp  Embedded Signup / manual credentials    (checklist "Connect WhatsApp")
+ *   instagram Instagram OAuth                         (checklist "Connect Instagram")
+ * There is no forced order, no step bar and no completion gate: the dashboard checklist (derived from real state)
+ * decides what is done. "Test your agent" is the chat simulator (/sandbox); "Go live" is a dashboard action.
+ */
+export type SetupSection = "agent" | "products" | "whatsapp" | "instagram";
+
+/** The wizard step body each section starts on. */
+const SECTION_START_STEP: Record<SetupSection, number> = { agent: 1, products: 2, whatsapp: 4, instagram: 5 };
 
 // ── constants ─────────────────────────────────────────────────────────────────
 
@@ -134,57 +143,6 @@ function buildPrompt(
   );
 }
 
-// ── step bar ─────────────────────────────────────────────────────────────────
-
-const STEP_LABELS = [
-  "Profile",
-  "Products",
-  "Agent",
-  "WhatsApp",
-  "Instagram",
-  "Test",
-  "Plan",
-  "Done",
-];
-const TOTAL_STEPS = STEP_LABELS.length;
-
-function StepBar({ current }: { current: number }) {
-  return (
-    <div className="px-8 pt-8 pb-6">
-      <div className="flex items-center gap-1">
-        {STEP_LABELS.map((label, i) => {
-          const n = i + 1;
-          const done = n < current;
-          const active = n === current;
-          return (
-            <div key={n} className="flex-1 flex flex-col items-center gap-1">
-              <div
-                className={`w-full h-1.5 rounded-full transition-colors ${
-                  done || active ? "bg-brand-primary" : "bg-gray-200"
-                }`}
-              />
-              <span
-                className={`text-[10px] font-medium ${
-                  active
-                    ? "text-brand-primaryDark"
-                    : done
-                    ? "text-brand-primaryDark"
-                    : "text-gray-400"
-                }`}
-              >
-                {label}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-      <p className="text-xs text-gray-400 mt-2">
-        Step {Math.min(current, TOTAL_STEPS)} of {TOTAL_STEPS}
-      </p>
-    </div>
-  );
-}
-
 // ── skip link ────────────────────────────────────────────────────────────────
 
 function SkipLink({
@@ -208,20 +166,14 @@ function SkipLink({
 
 // ── main component ────────────────────────────────────────────────────────────
 
-export default function Onboarding() {
+export default function Onboarding({ section }: { section: SetupSection }) {
   const { client, refreshProfile } = useAuth();
+  const { refresh: refreshSetup } = useSetup();
   const navigate = useNavigate();
   const { t } = useTranslation();
-  const { state: billingState } = useBilling();
-  // Step 7 — "Choose plan". Not persisted: the backend marks onboarding complete at step 7, so this step only
-  // sits between "Test" (persisted as 6) and the summary (persisted as 7 on "Go to Dashboard").
-  const checkout = useRazorpayCheckout();
 
-  // Initialise wizard step from server state — resume if partially complete
-  const [step, setStep] = useState<number>(() => {
-    const s = client?.onboarding_step ?? 0;
-    return s >= TOTAL_STEPS ? TOTAL_STEPS : s + 1;
-  });
+  // The step body currently shown. "agent" has two screens (profile, then personality); the rest are one screen.
+  const [step, setStep] = useState<number>(SECTION_START_STEP[section]);
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -260,18 +212,6 @@ export default function Onboarding() {
   const [igStatus, setIgStatus] = useState<string | null>(null);
   const igConnected = !!client?.instagram_connected;
 
-  // Step 7 — summary
-  const [productCount, setProductCount] = useState(0);
-  const [catUrl, setCatUrl] = useState("");
-  const [copiedCat, setCopiedCat] = useState(false);
-
-  // Redirect if already completed
-  useEffect(() => {
-    if (client?.onboarding_completed) {
-      navigate("/dashboard", { replace: true });
-    }
-  }, [client, navigate]);
-
   // Sync prompt whenever type / tone / name / desc change
   useEffect(() => {
     setSystemPrompt(buildPrompt(businessType, businessName, businessDesc, toneKey));
@@ -299,11 +239,13 @@ export default function Onboarding() {
 
   // ── helpers ──────────────────────────────────────────────────────────────
 
-  async function advance(nextStep: number) {
-    await updateOnboardingStep(nextStep);
+  /** A screen was saved (or skipped): the agent section moves from profile to personality, everything else returns to the dashboard. */
+  async function advance(doneStep: number) {
     await refreshProfile();
-    setStep(nextStep + 1);
+    await refreshSetup();
     setError("");
+    if (section === "agent" && doneStep === 1) setStep(3);
+    else navigate("/dashboard");
   }
 
   function addRow() {
@@ -385,8 +327,7 @@ export default function Onboarding() {
     try {
       if (!skip) {
         const valid = products.filter((r) => r.name.trim() && r.price.trim());
-        const count = valid.length;
-        if (count > 0) {
+        if (valid.length > 0) {
           await Promise.allSettled(
             valid.map((r) =>
               addProduct({
@@ -397,7 +338,6 @@ export default function Onboarding() {
               })
             )
           );
-          setProductCount(count);
         }
       }
       await advance(2);
@@ -482,47 +422,21 @@ export default function Onboarding() {
     }
   }
 
-  async function handleStep6() {
-    // Sandbox auto-advances step 6 on first message; just move wizard forward
-    await advance(6);
-  }
-
-  async function handleStep7() {
-    setSubmitting(true);
-    try {
-      await updateOnboardingStep(7);
-      await refreshProfile();
-      // Build catalogue URL if slug exists
-      if (client?.catalogue_slug) {
-        setCatUrl(`${window.location.origin}/shop/${client.catalogue_slug}`);
-      }
-      setStep(9); // "done" screen
-    } catch {
-      // Still navigate even if step update fails
-      navigate("/dashboard");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  function copyCat() {
-    navigator.clipboard.writeText(catUrl);
-    setCopiedCat(true);
-    setTimeout(() => setCopiedCat(false), 2000);
-  }
-
   // ── render ────────────────────────────────────────────────────────────────
 
-  // Count products added (approximate from DB via profile)
-  const addedProducts = productCount;
   const waConnected = !!(waPhoneId && waToken) || waEmbeddedConnected || !!client?.whatsapp_connected;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-brand-primary/5 via-white to-brand-primary/5 flex items-center justify-center px-4 py-12">
-      <div className="bg-white rounded-2xl shadow-lg border border-gray-100 w-full max-w-2xl">
-        {step <= TOTAL_STEPS && <StepBar current={step} />}
-
-        <div className="px-8 pb-10">
+    <Layout>
+      <div className="max-w-2xl mx-auto">
+        <button
+          type="button"
+          onClick={() => navigate("/dashboard")}
+          className="text-sm text-gray-500 hover:text-gray-800 mb-3"
+        >
+          ← {t("setup.page.back")}
+        </button>
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 px-6 sm:px-8 py-8">
 
           {/* ── STEP 1: Business Profile ──────────────────────────────────── */}
           {step === 1 && (
@@ -711,10 +625,10 @@ export default function Onboarding() {
 
               <div className="flex gap-3">
                 <button
-                  onClick={() => setStep(1)}
+                  onClick={() => navigate("/dashboard")}
                   className="flex-1 border border-gray-200 text-gray-700 rounded-xl py-2.5 text-sm font-medium hover:bg-gray-50 transition-colors"
                 >
-                  ← Back
+                  ← {t("setup.page.back")}
                 </button>
                 <button
                   onClick={() => handleStep2(false)}
@@ -801,7 +715,7 @@ export default function Onboarding() {
 
               <div className="flex gap-3">
                 <button
-                  onClick={() => setStep(2)}
+                  onClick={() => setStep(1)}
                   className="flex-1 border border-gray-200 text-gray-700 rounded-xl py-2.5 text-sm font-medium hover:bg-gray-50 transition-colors"
                 >
                   ← Back
@@ -848,10 +762,10 @@ export default function Onboarding() {
 
                   <div className="flex gap-3">
                     <button
-                      onClick={() => setStep(3)}
+                      onClick={() => navigate("/dashboard")}
                       className="flex-1 border border-gray-200 text-gray-700 rounded-xl py-2.5 text-sm font-medium hover:bg-gray-50 transition-colors"
                     >
-                      ← Back
+                      ← {t("setup.page.back")}
                     </button>
                     {waConnected ? (
                       <button
@@ -932,10 +846,10 @@ export default function Onboarding() {
 
                   <div className="flex gap-3">
                     <button
-                      onClick={() => setStep(3)}
+                      onClick={() => navigate("/dashboard")}
                       className="flex-1 border border-gray-200 text-gray-700 rounded-xl py-2.5 text-sm font-medium hover:bg-gray-50 transition-colors"
                     >
-                      ← Back
+                      ← {t("setup.page.back")}
                     </button>
                     <button
                       onClick={() => handleStep4(false)}
@@ -1009,10 +923,10 @@ export default function Onboarding() {
 
               <div className="flex gap-3">
                 <button
-                  onClick={() => setStep(4)}
+                  onClick={() => navigate("/dashboard")}
                   className="flex-1 border border-gray-200 text-gray-700 rounded-xl py-2.5 text-sm font-medium hover:bg-gray-50 transition-colors"
                 >
-                  ← Back
+                  ← {t("setup.page.back")}
                 </button>
                 {igConnected ? (
                   <button
@@ -1040,179 +954,9 @@ export default function Onboarding() {
             </div>
           )}
 
-          {/* ── STEP 6: Test Agent ────────────────────────────────────────── */}
-          {step === 6 && (
-            <div className="flex flex-col gap-5">
-              <div>
-                <h2 className="text-2xl font-bold text-gray-900">Test your agent</h2>
-                <p className="text-sm text-gray-400 mt-1">
-                  Send a message to see how your agent replies. Messages here won't reach real customers.
-                </p>
-              </div>
-
-              <SandboxUI />
-
-              {error && <p className="text-sm text-red-600">{error}</p>}
-
-              <div className="flex gap-3">
-                <button
-                  onClick={() => setStep(5)}
-                  className="flex-1 border border-gray-200 text-gray-700 rounded-xl py-2.5 text-sm font-medium hover:bg-gray-50 transition-colors"
-                >
-                  ← Back to configure
-                </button>
-                <button
-                  onClick={handleStep6}
-                  disabled={submitting}
-                  className="flex-1 flex items-center justify-center gap-2 bg-brand-primaryDark text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors"
-                >
-                  {submitting ? <Loader2 size={16} className="animate-spin" /> : null}
-                  This looks good! <ChevronRight size={16} />
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* ── STEP 7: Choose plan ───────────────────────────────────────── */}
-          {step === 7 && (
-            <div className="flex flex-col gap-5">
-              <div>
-                <h2 className="text-2xl font-bold text-gray-900">{t("billing.onboarding_title")}</h2>
-                <p className="text-sm text-gray-400 mt-1">{t("billing.onboarding_desc")}</p>
-              </div>
-
-              {billingState?.subscription && (
-                <div className="rounded-xl bg-brand-primary/10 border border-brand-primary/30 px-4 py-3 text-sm text-brand-primaryDark font-medium">
-                  {t("billing.onboarding_subscribed", { plan: billingState.subscription.plan.name })}
-                </div>
-              )}
-
-              <PlanPicker checkout={checkout} />
-
-              <div className="flex gap-3">
-                <button
-                  onClick={() => setStep(6)}
-                  disabled={checkout.busy}
-                  className="flex-1 border border-gray-200 text-gray-700 rounded-xl py-2.5 text-sm font-medium hover:bg-gray-50 disabled:opacity-50 transition-colors"
-                >
-                  {t("billing.onboarding_back")}
-                </button>
-                <button
-                  onClick={() => setStep(8)}
-                  disabled={checkout.busy}
-                  className="flex-1 flex items-center justify-center gap-2 bg-brand-primaryDark text-white rounded-xl py-2.5 text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors"
-                >
-                  {billingState?.subscription ? t("billing.onboarding_continue") : t("billing.onboarding_skip")}
-                  <ChevronRight size={16} />
-                </button>
-              </div>
-              <CheckoutModals checkout={checkout} />
-            </div>
-          )}
-
-          {/* ── STEP 8: Ready summary ─────────────────────────────────────── */}
-          {step === 8 && (
-            <div className="flex flex-col gap-6">
-              <div className="text-center">
-                <div className="text-5xl mb-3">🎉</div>
-                <h2 className="text-2xl font-bold text-gray-900">Your AI agent is ready!</h2>
-                <p className="text-sm text-gray-400 mt-1">
-                  Review your setup and go live whenever you're ready.
-                </p>
-              </div>
-
-              {/* Summary checklist */}
-              <div className="bg-gray-50 rounded-xl border border-gray-100 p-5 flex flex-col gap-3">
-                {[
-                  { label: "Business profile complete", done: true },
-                  {
-                    label: `${addedProducts > 0 ? addedProducts : "0"} product${addedProducts !== 1 ? "s" : ""} added`,
-                    done: addedProducts > 0,
-                    skipped: addedProducts === 0,
-                  },
-                  { label: "Agent configured", done: true },
-                  {
-                    label: "WhatsApp connected",
-                    done: waConnected,
-                    skipped: !waConnected,
-                  },
-                  {
-                    label: "Instagram connected",
-                    done: igConnected,
-                    skipped: !igConnected,
-                  },
-                  { label: "Agent tested", done: true },
-                ].map((item, i) => (
-                  <div key={i} className="flex items-center gap-3 text-sm">
-                    {item.done ? (
-                      <CheckCircle2 size={18} className="text-green-500 shrink-0" />
-                    ) : (
-                      <span className="text-lg leading-none shrink-0">⏭️</span>
-                    )}
-                    <span
-                      className={
-                        item.done ? "text-gray-800" : "text-gray-400"
-                      }
-                    >
-                      {item.label}
-                      {item.skipped && !item.done && (
-                        <span className="ml-1 text-xs text-gray-400">(skipped)</span>
-                      )}
-                    </span>
-                  </div>
-                ))}
-              </div>
-
-              {/* Catalogue URL */}
-              {catUrl && (
-                <div>
-                  <p className="text-xs text-gray-500 mb-1.5">Your public catalogue link:</p>
-                  <div className="flex gap-2">
-                    <code className="flex-1 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs font-mono truncate text-gray-700">
-                      {catUrl}
-                    </code>
-                    <button
-                      onClick={copyCat}
-                      className="flex items-center gap-1.5 border border-gray-200 rounded-lg px-3 py-2 text-xs text-gray-600 hover:bg-gray-50 transition-colors"
-                    >
-                      <Copy size={13} />
-                      {copiedCat ? "Copied!" : "Copy"}
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              <div className="flex gap-3">
-                <button
-                  onClick={handleStep7}
-                  disabled={submitting}
-                  className="flex-1 flex items-center justify-center gap-2 bg-brand-primaryDark text-white rounded-xl py-3 text-sm font-semibold hover:bg-brand-primary/90 disabled:opacity-50 transition-colors"
-                >
-                  {submitting ? <Loader2 size={16} className="animate-spin" /> : null}
-                  Go to Dashboard
-                </button>
-                {catUrl && (
-                  <button
-                    onClick={copyCat}
-                    className="flex items-center gap-2 border border-gray-200 text-gray-700 rounded-xl px-4 py-3 text-sm font-medium hover:bg-gray-50 transition-colors"
-                  >
-                    <Copy size={15} /> Share Catalogue
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* ── STEP 9: Navigate after done ──────────────────────────────── */}
-          {step === 9 && (
-            <div className="flex flex-col items-center gap-4 py-8">
-              <Loader2 size={32} className="animate-spin text-brand-primaryDark" />
-              <p className="text-sm text-gray-500">Taking you to your dashboard...</p>
-            </div>
-          )}
 
         </div>
       </div>
-    </div>
+    </Layout>
   );
 }

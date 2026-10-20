@@ -88,6 +88,7 @@ async def get_eligible_leads(
         .where(
             Lead.status.in_(["warm", "cold"]),
             Conversation.channel.in_(["whatsapp", "instagram"]),
+            Conversation.is_sandbox.is_(False),
             Lead.conversation_id.is_not(None),
             last_msg_subq.c.last_msg_at < cutoff_msg,
             ~recent_followup_exists,

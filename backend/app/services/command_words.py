@@ -141,6 +141,45 @@ def matches_whole(command: str, text: str) -> bool:
     return bool(norm) and (norm in WORDS[command] or norm in PHRASES[command])
 
 
+#: Words that may follow a greeting without adding a request: "hello buddy", "hi bro", "hey there", "hello ji", "good morning sir".
+GREETING_FILLER = frozenset("""
+buddy bro bruh broo dear there ji jii sir sirji madam mam maam ma'am team guys guy everyone everybody all friend friends frnd frnds
+bhai bhaiya bhaiyya bhaisaab yaar yar yaara dost boss mate sis sister didi dida ben behen behan bhabhi anna akka saheb sahab saab
+shop store seller admin there's folks people hii hiii hello hey hi helo hlo namaste namaskar welcome again
+""".split())
+_MAX_GREETING_TAIL = 3
+
+
+def is_greeting_message(text: str) -> bool:
+    """
+    True when the message is a greeting plus nothing but filler: "hello buddy", "hi bro", "hey there", "hello ji", "good morning sir",
+    "namaste didi". The whole message counts (``matches_whole``) or a greeting word / phrase followed by up to three filler words; any
+    other word ("hi kurti", "hello price?") makes it a request, not a greeting.
+    """
+    norm = normalize(text)
+    if not norm:
+        return False
+    if matches_whole("greeting", norm):
+        return True
+    words = norm.split()
+    for size in (3, 2, 1):                                   # the longest greeting phrase first ("good morning")
+        head = " ".join(words[:size])
+        if len(words) > size and (head in WORDS["greeting"] or head in PHRASES["greeting"]):
+            tail = words[size:]
+            return len(tail) <= _MAX_GREETING_TAIL and all(w in GREETING_FILLER or w in WORDS["greeting"] for w in tail)
+    return False
+
+
+def strip_leading_greeting(text: str) -> str:
+    """`text` without a greeting at its start ("hi I want kurti" → "I want kurti"); the text unchanged when it is not greeting + request."""
+    words = (text or "").split()
+    for size in (3, 2, 1):
+        head = normalize(" ".join(words[:size]))
+        if len(words) > size and (head in WORDS["greeting"] or head in PHRASES["greeting"]):
+            return " ".join(words[size:])
+    return text
+
+
 def is_smalltalk_only(text: str) -> bool:
     """True when the whole message is only a greeting / thanks / goodbye / yes / no — no product claim in it."""
     return any(matches_whole(c, text) for c in ("greeting", "thanks", "bye", "yes", "no"))

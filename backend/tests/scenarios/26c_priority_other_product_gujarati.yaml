@@ -1,0 +1,18 @@
+name: priority_other_product_gujarati
+description: 'Gujarati: "mare ek choli joi che" with a planner that returns NO actions still searches (engine guard); "aa saree ketla ni che" shows the saree card without re-asking the kurti''s colour.'
+turns:
+  - user: "I want the Cotton Kurti"
+    plan: {actions: [{type: add_line, sku: KU10001}]}
+  - user: "mare ek choli joi che"
+    plan: {actions: [], reply_intent: none}
+    expect:
+      actions_contains: [search_catalog]
+      cart: {lines: [{sku: KU10001, color: null, qty: null}]}
+      reply_contains: ["Zari Choli Set"]
+      reply_not_contains: ["Which colour would you like for Cotton Kurti"]
+  - user: "aa saree ketla ni che"
+    plan: {actions: [{type: show_product, sku: SR20001}]}
+    expect:
+      cart: {lines: [{sku: KU10001, color: null, qty: null}]}
+      reply_contains: ["Banarasi Silk Saree", "₹2,499"]
+      reply_not_contains: ["Which colour would you like for Cotton Kurti"]

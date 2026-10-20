@@ -1,0 +1,25 @@
+name: different_confused_recover
+description: '"different colours" without naming them is never guessed; a confused follow-up re-asks simply (no example values the customer could copy); the answer then recovers.'
+turns:
+  - user: "I want 3 kurtis"
+    plan: {actions: [{type: add_line, sku: KU10001, variant: {}, qty: 3}], reply_intent: none}
+    expect: {cart: {lines: [{sku: KU10001, color: null, qty: 3}]}}
+  - user: "I want different colours"
+    plan: {actions: [{type: ask_clarify, question: "Which colours would you like, and how many of each?", options: [Red, Green, Blue, Orange], slot: split}], reply_intent: none}
+    expect:
+      actions_contains: [ask_clarify]
+      cart: {lines: [{sku: KU10001, color: null, qty: 3}]}
+      reply_contains: ["Which colours and how many of each"]
+      reply_not_contains: ["Orange", "Pink", "e.g.", "2 Red, 1 Green"]
+  - user: "what do you mean?"
+    plan: {actions: [{type: ask_clarify, question: "Which colours would you like?", options: [], slot: split}], reply_intent: none}
+    expect:
+      handoff: false
+      cart: {lines: [{sku: KU10001, color: null, qty: 3}]}
+      reply_contains: ["Which colours and how many of each"]
+      reply_not_contains: ["e.g.", "2 Red, 1 Green"]
+  - user: "2 red 1 green"
+    expect:
+      fast_path: multi_variant
+      planner_calls: 0
+      cart: {lines: [{sku: KU10001, color: Red, qty: 2}, {sku: KU10001, color: Green, qty: 1}]}

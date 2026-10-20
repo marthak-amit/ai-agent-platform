@@ -1,0 +1,10 @@
+name: planner_down
+description: 'When the planner fails the customer still gets a deterministic next step, ₹0 fast paths keep working, and nothing is guessed.'
+turns:
+  - user: "I need some kurti stuff for my daughter please"
+    plan: {error: "provider down"}
+    expect: {reply_contains: ["Cotton Kurti"], reply_not_contains: ["trouble"], ends_with_question: true, orders: 0, cart: {lines: []}}
+  - user: "hi"
+    expect: {fast_path: greeting, planner_calls: 0, reply_contains: ["Welcome to Riya Boutique"]}
+  - user: "KU10001"
+    expect: {fast_path: sku, reply_contains: ["Cotton Kurti"]}

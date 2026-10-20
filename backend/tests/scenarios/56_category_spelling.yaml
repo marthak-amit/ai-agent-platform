@@ -1,0 +1,20 @@
+name: category_spelling
+description: 'conv=60 bug 6: misspelt / transliterated category words ("lahemgha", "lehnga", "sari") are matched against the shop''s own categories — a search for them finds the product, a category browse lists exactly that category; a word that is neither category nor product is answered with the real category list instead of silently listing the first products.'
+turns:
+  - user: "Give me lahemgha"
+    expect:
+      fast_path: category
+      planner_calls: 0
+      reply_contains: ["Cotton Lehenga", "₹1,299"]
+      reply_not_contains: ["We don't have"]
+      log_not_contains: ["INVARIANT"]
+  - user: "lehnga"
+    expect: {fast_path: category, reply_contains: ["Cotton Lehenga"], reply_not_contains: ["Zari Choli Set", "We don't have", "Cotton Kurti"]}
+  - user: "sari"
+    expect: {fast_path: category, reply_contains: ["Banarasi Silk Saree"], reply_not_contains: ["We don't have"]}
+  - user: "I need a lahemgha in blue"
+    plan: {actions: [{type: search_catalog, query: lahemgha blue}]}
+    expect: {reply_contains: ["Cotton Lehenga", "Blue"], reply_not_contains: ["We don't have"]}
+  - user: "show me shoes"
+    plan: {actions: [{type: browse_catalog, category: shoes}]}
+    expect: {reply_contains: ["We don't have \"shoes\"", "We have:", "Lehenga"], reply_not_contains: ["Cotton Kurti ", "(code"]}

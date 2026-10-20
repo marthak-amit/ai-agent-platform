@@ -3,6 +3,8 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useAuth } from "../context/AuthContext";
 import { useRealtime } from "../context/RealtimeContext";
+import { useSetup } from "../context/SetupContext";
+import { trialDaysLeft } from "../utils/setup";
 import Logo from "./Logo";
 import BillingBanners from "./billing/BillingBanners";
 import type { CurrentUser, PermissionKey } from "../types";
@@ -65,26 +67,53 @@ const LANG_OPTIONS = [
   { code: "gu", label: "GU" },
 ];
 
-function AgentStatusDot({ client }: { client: { whatsapp_phone_number_id?: string | null; whatsapp_connected?: boolean | null } | null }) {
+function AgentStatusDot({
+  client,
+}: {
+  client: {
+    account_status?: string;
+    bot_active?: boolean;
+    trial_ends_at?: string | null;
+    whatsapp_connected?: boolean | null;
+    instagram_connected?: boolean | null;
+  } | null;
+}) {
+  const { t } = useTranslation();
+  const { checklist } = useSetup();
   if (!client) return null;
-  const configured = !!(client.whatsapp_phone_number_id && client.whatsapp_connected);
-  if (configured) {
+  if (client.bot_active === false) {
+    // Not live yet ("setup"): the bot is silent to real customers; the dashboard checklist is the next step.
     return (
-      <span className="flex items-center gap-1 text-[10px] text-emerald-600 font-medium">
-        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-        Active
-      </span>
+      <Link
+        to="/dashboard"
+        className="flex items-center gap-1 text-[10px] text-amber-600 font-medium hover:text-amber-800 transition-colors"
+        title={t("setup.title")}
+      >
+        <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+        {t("setup.status_setup")}
+        {checklist && ` · ${checklist.done_count}/${checklist.total}`}
+      </Link>
     );
   }
+  if (!client.whatsapp_connected && !client.instagram_connected) {
+    // Switched on but no channel to answer on (accounts that pre-date the checklist).
+    return (
+      <Link
+        to="/channels"
+        className="flex items-center gap-1 text-[10px] text-amber-500 font-medium hover:text-amber-700 transition-colors"
+        title="Connect WhatsApp to go live"
+      >
+        <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+        Not live · Connect WhatsApp →
+      </Link>
+    );
+  }
+  const days = client.account_status === "trial" ? trialDaysLeft(client.trial_ends_at) : null;
   return (
-    <Link
-      to="/channels"
-      className="flex items-center gap-1 text-[10px] text-amber-500 font-medium hover:text-amber-700 transition-colors"
-      title="Connect WhatsApp to go live"
-    >
-      <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-      Not live · Connect WhatsApp →
-    </Link>
+    <span className="flex items-center gap-1 text-[10px] text-emerald-600 font-medium">
+      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+      {days !== null && days > 0 ? t("setup.status_trial", { days }) : t("setup.status_live")}
+    </span>
   );
 }
 

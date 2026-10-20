@@ -2,8 +2,10 @@
 Authentication router.
 
 Endpoints:
-- POST /auth/register  : create a new client account
+- POST /auth/register  : create a new client account (starts in account_status "setup")
 - POST /auth/login     : JSON login — returns 30-day JWT
+- GET  /auth/google/config : whether "Continue with Google" is configured, and the OAuth client id
+- POST /auth/google    : sign in / sign up with a Google ID token (links to an existing login with the same email)
 - POST /auth/logout    : stateless logout (client discards token)
 - GET  /auth/me        : current client profile (protected)
 - PATCH /auth/me       : update business_name, phone, or system prompt (protected)
@@ -13,28 +15,22 @@ header on every protected request.
 """
 
 import logging
-import re
-from datetime import date
+import secrets
+from datetime import date, datetime, timezone
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel
-from sqlalchemy import select
+from pydantic import BaseModel, field_validator
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.db import get_db
 from app.models.client import Client
 from app.models.user import User
-from app.services import auth_service, plan_cache
+from app.services import account_lifecycle, auth_service, google_auth_service, plan_cache
 
-
-def _generate_slug(business_name: str) -> str:
-    """Generate a URL-safe catalogue slug from a business name."""
-    slug = business_name.lower()
-    slug = re.sub(r"[^a-z0-9\s-]", "", slug)
-    slug = re.sub(r"\s+", "-", slug.strip())
-    return slug[:50]
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -158,9 +154,9 @@ def require_permission(permission_key: str):
 # ---------------------------------------------------------------------------
 
 class RegisterRequest(BaseModel):
-    """Request body for client registration."""
+    """Request body for client registration. business_name is optional: the quick-start screen asks for it."""
 
-    business_name: str
+    business_name: str = ""
     email: str
     password: str
     phone: Optional[str] = None
@@ -178,6 +174,27 @@ class TokenResponse(BaseModel):
 
     access_token: str
     token_type: str = "bearer"
+
+
+class GoogleConfigOut(BaseModel):
+    """GET /auth/google/config: lets the login page render the Google button without a build-time env var."""
+
+    enabled: bool
+    client_id: str = ""
+
+
+class GoogleLoginRequest(BaseModel):
+    """Body of POST /auth/google: the `credential` (ID token) returned by the Google Identity Services button."""
+
+    credential: str
+
+
+class GoogleLoginResponse(TokenResponse):
+    """Session token plus what happened: a brand-new account, a link to an existing login, or a plain sign-in."""
+
+    is_new_account: bool = False
+    linked_existing: bool = False
+    password_login_disabled: bool = False
 
 
 class CurrentUserOut(BaseModel):
@@ -231,6 +248,12 @@ class ClientOut(BaseModel):
     delivery_days_max: Optional[int] = 7
     onboarding_step: int = 0
     onboarding_completed: bool = False
+    # Dashboard-first onboarding (migration 0070). Defaults describe a live legacy account.
+    account_status: str = "active"
+    bot_active: bool = True
+    quick_start_completed: bool = True
+    go_live_at: Optional[datetime] = None
+    trial_ends_at: Optional[datetime] = None
     plan_slug: str = "starter"
     business_type: Optional[str] = None
     business_description: Optional[str] = None
@@ -244,6 +267,14 @@ class ClientOut(BaseModel):
     current_user: Optional[CurrentUserOut] = None
 
     model_config = {"from_attributes": True}
+
+    @field_validator("account_status", "bot_active", mode="before")
+    @classmethod
+    def _lifecycle_defaults(cls, v, info):
+        """A Client built in memory (not yet flushed) has None for column-defaulted fields: treat it as a live legacy account."""
+        if v is None:
+            return "active" if info.field_name == "account_status" else True
+        return v
 
     @classmethod
     def from_client(cls, client: "Client", user: "User") -> "ClientOut":
@@ -264,6 +295,7 @@ class ClientOut(BaseModel):
             obj.razorpay_key_secret = "****"
         obj.whatsapp_connected = bool(client.whatsapp_access_token)
         obj.instagram_connected = bool(client.instagram_access_token)
+        obj.quick_start_completed = client.quick_start_completed_at is not None
         return obj
 
 
@@ -328,32 +360,51 @@ async def register(
         HTTPException 409: If the email is already registered, as a Client or
             as a User (invited team member) of any other business.
     """
-    existing_client = await db.execute(select(Client).where(Client.email == body.email))
-    existing_user = await db.execute(select(User).where(User.email == body.email))
-    if existing_client.scalar_one_or_none() is not None or existing_user.scalar_one_or_none() is not None:
+    if await _email_taken(db, body.email):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Email already registered.",
         )
 
-    # Generate a unique slug; append a numeric suffix on collisions
-    base_slug = _generate_slug(body.business_name)
-    slug = base_slug
-    suffix = 1
-    while True:
-        existing_slug = await db.execute(select(Client).where(Client.catalogue_slug == slug))
-        if existing_slug.scalar_one_or_none() is None:
-            break
-        slug = f"{base_slug}-{suffix}"
-        suffix += 1
+    client, owner = await _create_account(
+        db, email=body.email, password_hash=auth_service.hash_password(body.password),
+        business_name=body.business_name.strip(), phone=body.phone,
+    )
+    await db.commit()
+    await db.refresh(client)
+    await db.refresh(owner)
+    return ClientOut.from_client(client, owner)
 
-    hashed_password = auth_service.hash_password(body.password)
+
+async def _email_taken(db: AsyncSession, email: str) -> bool:
+    """Whether *email* (case-insensitively) already belongs to a Client or a User of any business."""
+    lowered = email.strip().lower()
+    clash_client = await db.execute(select(Client.id).where(func.lower(Client.email) == lowered).limit(1))
+    clash_user = await db.execute(select(User.id).where(func.lower(User.email) == lowered).limit(1))
+    return clash_client.scalar_one_or_none() is not None or clash_user.scalar_one_or_none() is not None
+
+
+async def _create_account(
+    db: AsyncSession,
+    *,
+    email: str,
+    password_hash: Optional[str],
+    business_name: str = "",
+    phone: Optional[str] = None,
+    google_sub: Optional[str] = None,
+) -> tuple[Client, User]:
+    """
+    Create a Client (status "setup": bot silent, no trial) and its Owner User; flushes, does not commit.
+
+    A Google sign-up passes password_hash=None and google_sub: the Client row's (legacy, unused for login) password
+    column gets an unguessable random hash so nobody can ever sign in with a password they were not given.
+    """
     starter_plan = await plan_cache.get_plan(db, "starter")
     client = Client(
-        email=body.email,
-        hashed_password=hashed_password,
-        business_name=body.business_name,
-        phone=body.phone,
+        email=email,
+        hashed_password=password_hash or auth_service.hash_password(secrets.token_urlsafe(32)),
+        business_name=business_name,
+        phone=phone,
         plan_slug="starter",
         daily_message_limit=starter_plan["daily_msg_limit"],
         plan_conv_limit_snapshot=starter_plan["conv_limit"],
@@ -361,24 +412,27 @@ async def register(
         plan_image_quota_snapshot=starter_plan["image_quota"],
         plan_image_overage_price_snapshot=starter_plan["image_overage_price"],
         billing_cycle_start=date.today(),
-        catalogue_slug=slug,
+        account_status="setup",
+        bot_active=False,
     )
     db.add(client)
     await db.flush()  # populate client.id for the owner User row below
+    if business_name:
+        await account_lifecycle.ensure_catalogue_slug(db, client)
 
     owner = User(
         client_id=client.id,
-        email=body.email,
-        hashed_password=hashed_password,
+        email=email,
+        hashed_password=password_hash,
         role="owner",
         permissions=[],
         is_active=True,
+        google_sub=google_sub,
+        email_verified_at=datetime.now(timezone.utc) if google_sub else None,
     )
     db.add(owner)
-    await db.commit()
-    await db.refresh(client)
-    await db.refresh(owner)
-    return ClientOut.from_client(client, owner)
+    await db.flush()
+    return client, owner
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -417,6 +471,69 @@ async def login(
 
     token = auth_service.create_access_token({"sub": user.email})
     return TokenResponse(access_token=token)
+
+
+@router.get("/google/config", response_model=GoogleConfigOut)
+async def google_config() -> GoogleConfigOut:
+    """Report whether "Continue with Google" is configured and the public OAuth client id to render the button with."""
+    return GoogleConfigOut(enabled=google_auth_service.is_enabled(), client_id=get_settings().google_client_id)
+
+
+@router.post("/google", response_model=GoogleLoginResponse)
+async def google_login(
+    body: GoogleLoginRequest,
+    db: AsyncSession = Depends(get_db),
+) -> GoogleLoginResponse:
+    """
+    Sign in — or sign up — with a Google ID token.
+
+    * Known Google account (`sub`) -> sign in.
+    * Same (verified) email as an existing email/password login -> the two are LINKED and the user signs in. If that
+      login's email was never verified (plain sign-up form), its password is revoked at the moment of linking, so a
+      squatter who registered someone else's address first cannot keep access once the real owner signs in with Google.
+    * Otherwise a new account (status "setup") is created; the quick-start screen then asks for the business name.
+
+    Raises:
+        HTTPException 503: Google sign-in is not configured on this server.
+        HTTPException 401: The credential is invalid, expired, for another app, or its email is unverified.
+        HTTPException 403: The login is deactivated.
+        HTTPException 409: This email is already linked to a different Google account.
+    """
+    try:
+        identity = await google_auth_service.verify_id_token(body.credential)
+    except google_auth_service.GoogleNotConfiguredError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except google_auth_service.GoogleAuthError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+
+    is_new = linked = revoked = False
+    user = await db.scalar(select(User).where(User.google_sub == identity.sub))
+    if user is None:
+        user = await db.scalar(select(User).where(func.lower(User.email) == identity.email.lower()))
+        if user is not None:
+            if user.google_sub and user.google_sub != identity.sub:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="This email is already linked to a different Google account.",
+                )
+            if user.email_verified_at is None and user.hashed_password is not None:
+                user.hashed_password = None      # unproven password: the verified Google owner takes over
+                revoked = True
+            user.google_sub = identity.sub
+            user.email_verified_at = user.email_verified_at or datetime.now(timezone.utc)
+            linked = True
+        else:
+            _client, user = await _create_account(db, email=identity.email, password_hash=None, google_sub=identity.sub)
+            is_new = True
+        await db.commit()
+        await db.refresh(user)
+
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This account has been deactivated.")
+    token = auth_service.create_access_token({"sub": user.email})
+    return GoogleLoginResponse(
+        access_token=token, is_new_account=is_new, linked_existing=linked, password_login_disabled=revoked,
+    )
 
 
 @router.post("/logout", status_code=status.HTTP_200_OK)

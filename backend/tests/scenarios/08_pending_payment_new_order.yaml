@@ -1,0 +1,18 @@
+name: pending_payment_new_order
+description: 'A new cart while an order is under payment review is acknowledged once, and the pending order''s stage is never reset.'
+setup:
+  stage: payment
+  orders: [{number: ORD-2026-0099, status: payment_submitted, total: 998}]
+turns:
+  - user: "I want a red kurti"
+    plan: {actions: [{type: add_line, sku: KU10001, variant: {color: Red}}]}
+    expect:
+      conv_stage: order_collection
+      reply_contains: ["Your order #ORD-2026-0099 is being verified", "Meanwhile", "How many"]
+      cart: {lines: [{sku: KU10001, color: Red, qty: null}]}
+  - user: "2"
+    expect:
+      fast_path: quantity
+      conv_stage: order_collection
+      reply_not_contains: ["ORD-2026-0099"]
+      cart: {lines: [{sku: KU10001, color: Red, qty: 2}]}

@@ -1,0 +1,25 @@
+name: reactions
+description: '"wah", "nice", "wow", "mast", "saras", 👍 after a list are not a new search: a brief ack and the same list''s buttons again — for ₹0, and the list still answers to a number.'
+turns:
+  - user: "show me products"
+    plan: {actions: [{type: browse_catalog}]}
+  - user: "wah"
+    expect:
+      fast_path: reaction
+      planner_calls: 0
+      actions_absent: [search_catalog, browse_catalog]
+      reply_contains: ["Glad you like it", "Which one would you like to see"]
+      buttons_contain: [v3_sku_sr20001, v3_sku_ku10001]
+      ends_with_question: true
+  - user: "👍"
+    expect: {fast_path: reaction, planner_calls: 0, buttons_contain: [v3_sku_sr20001]}
+  - user: "nice"
+    expect: {fast_path: reaction, planner_calls: 0}
+  - user: "2"
+    expect: {fast_path: product_number, planner_calls: 0, reply_contains: ["Cotton Kurti"]}
+  - user: "wow"
+    expect: {fast_path: reaction, planner_calls: 0, reply_contains: ["Glad you like it", "Would you like to order this"], buttons_contain: [v3_order_ku10001]}
+  - user: "mast"
+    expect: {fast_path: reaction, planner_calls: 0, buttons_contain: [v3_order_ku10001]}
+  - user: "saras"
+    expect: {fast_path: reaction, planner_calls: 0}

@@ -1,0 +1,27 @@
+name: greeting_with_cart
+description: A hello with items in the cart is a short welcome-back with [Continue order] [Start fresh] — no summary, no upsell; Continue resumes, Start fresh drops the cart.
+turns:
+  - macro: complete_cart_cod
+  - user: "hi"
+    expect:
+      fast_path: greeting
+      planner_calls: 0
+      reply_contains: ["Welcome back! You have 2 items in your cart."]
+      reply_not_contains: ["Order summary", "Total:", "Handmade Tote Bag", "Welcome to Riya Boutique"]
+      buttons_contain: [v3_continue, v3_fresh]
+      buttons_absent: [v3_confirm, v3_upsell_tb30001]
+      cart: {lines: [{sku: KU10001, color: Red, qty: 2}]}
+  - tap: v3_continue
+    expect:
+      planner_calls: 0
+      reply_contains: ["Order summary"]
+      buttons_contain: [v3_confirm]
+  - user: "hello"
+    expect: {reply_contains: ["Welcome back! You have 2 items in your cart."], reply_not_contains: ["Order summary"]}
+  - tap: v3_fresh
+    expect:
+      cart: {empty: true}
+      reply_contains: ["cancelled"]
+      buttons_contain: [v3_browse]
+  - user: "hi"
+    expect: {reply_contains: ["Welcome to Riya Boutique"], reply_not_contains: ["Welcome back"], buttons_absent: [v3_continue]}

@@ -1,0 +1,19 @@
+name: cod_full_flow
+description: 'Product → colour (tap) → quantity → details → COD → summary → confirm: a paid COD order with the right line.'
+turns:
+  - user: "KU10001"
+    expect: {fast_path: sku, planner_calls: 0, reply_contains: ["Cotton Kurti", "Red, Green, Blue"]}
+  - tap: v3_order_ku10001
+    expect: {cart: {lines: [{sku: KU10001, color: null, qty: null}]}, reply_contains: ["Which colour"]}
+  - tap: v3_opt_1
+    expect: {cart: {lines: [{sku: KU10001, color: Red, qty: null}]}, reply_contains: ["How many"]}
+  - user: "2"
+    expect: {fast_path: quantity, cart: {lines: [{sku: KU10001, color: Red, qty: 2}]}, reply_contains: ["your name"]}
+  - user: "Asha Patel"
+    plan: {actions: [{type: set_customer, name: Asha Patel}]}
+  - user: "12 MG Road, Adajan, Surat 395009"
+    plan: {actions: [{type: set_customer, address: "12 MG Road, Adajan, Surat 395009"}]}
+  - user: "cod"
+    expect: {fast_path: payment, stage: confirming, reply_contains: ["Order summary", "(Red) × 2", "Delivery: 3–7 working days"]}
+  - tap: v3_confirm
+    expect: {orders: 1, order: {status: paid, payment_method: COD, total: 998, lines: [{sku: KU10001, color: Red, qty: 2}]}, reply_contains: ["Order confirmed"], conv_stage: completed}

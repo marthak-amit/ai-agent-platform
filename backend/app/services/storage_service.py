@@ -11,6 +11,7 @@ configured, so local dev keeps working without R2 credentials.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import logging
@@ -208,13 +209,21 @@ async def get_watermarked_image_url(
         A publicly fetchable URL to the watermarked copy, or None on failure.
     """
     settings = get_settings()
+    cached = _watermark_url_cache.get((client_id, sku, source_image_url))
+    if cached:
+        return cached
 
+    # Everything that blocks (boto3 network calls, Pillow) runs in a worker thread: this coroutine is awaited once per product image
+    # of a customer turn, and a synchronous R2 round trip on the event loop stalls EVERY other task (DB replies, other customers,
+    # the scheduler) for its whole duration.
     if is_r2_configured():
         key = _watermark_key(client_id, sku, source_image_url)
         try:
-            _r2_client().head_object(Bucket=settings.r2_bucket_name, Key=key)
+            await asyncio.to_thread(_r2_client().head_object, Bucket=settings.r2_bucket_name, Key=key)
             if settings.r2_public_base_url:
-                return f"{settings.r2_public_base_url.rstrip('/')}/{key}"
+                url = f"{settings.r2_public_base_url.rstrip('/')}/{key}"
+                _remember_watermark(client_id, sku, source_image_url, url)
+                return url
         except ClientError:
             pass  # not generated yet — fall through and create it
         except Exception as exc:
@@ -230,33 +239,52 @@ async def get_watermarked_image_url(
         return None
 
     try:
-        watermarked = watermark_sku(original_bytes, sku)
+        watermarked = await asyncio.to_thread(watermark_sku, original_bytes, sku)
     except Exception as exc:
         logger.warning("Watermarking failed for sku=%s: %s", sku, exc)
         return None
 
     if not is_r2_configured():
         filename = f"wm_{client_id}_{uuid.uuid4().hex[:12]}.jpg"
-        os.makedirs(_UPLOADS_DIR, exist_ok=True)
-        with open(os.path.join(_UPLOADS_DIR, filename), "wb") as f:
-            f.write(watermarked)
+        await asyncio.to_thread(_write_local, filename, watermarked)
+        _remember_watermark(client_id, sku, source_image_url, f"/uploads/{filename}")
         return f"/uploads/{filename}"
 
     key = _watermark_key(client_id, sku, source_image_url)
-    _r2_client().put_object(
-        Bucket=settings.r2_bucket_name,
-        Key=key,
-        Body=watermarked,
-        ContentType="image/jpeg",
+    await asyncio.to_thread(
+        _r2_client().put_object, Bucket=settings.r2_bucket_name, Key=key, Body=watermarked, ContentType="image/jpeg",
     )
     if settings.r2_public_base_url:
-        return f"{settings.r2_public_base_url.rstrip('/')}/{key}"
+        url = f"{settings.r2_public_base_url.rstrip('/')}/{key}"
+        _remember_watermark(client_id, sku, source_image_url, url)
+        return url
     logger.warning(
         "Watermarked image uploaded to R2 key %s but R2_PUBLIC_BASE_URL is unset "
         "— it won't be fetchable by WhatsApp/Instagram.",
         key,
     )
     return f"{settings.r2_endpoint}/{settings.r2_bucket_name}/{key}"
+
+
+def _write_local(filename: str, data: bytes) -> None:
+    """Write bytes into the local uploads folder (run in a worker thread)."""
+    os.makedirs(_UPLOADS_DIR, exist_ok=True)
+    with open(os.path.join(_UPLOADS_DIR, filename), "wb") as fh:
+        fh.write(data)
+
+
+#: (client_id, sku, source url) → the public watermarked URL. The object is immutable per key, so a hit skips the R2 ``head_object``
+#: round trip on every later send of the same product (previously one network call per image per turn).
+_watermark_url_cache: dict[tuple[int, str, str], str] = {}
+_WATERMARK_CACHE_MAX = 5000
+
+
+def _remember_watermark(client_id: int, sku: str, source_url: str, url: str) -> None:
+    """Remember a watermarked URL (bounded: the oldest entries go first)."""
+    if len(_watermark_url_cache) >= _WATERMARK_CACHE_MAX:
+        for stale in list(_watermark_url_cache)[: _WATERMARK_CACHE_MAX // 10]:
+            _watermark_url_cache.pop(stale, None)
+    _watermark_url_cache[(client_id, sku, source_url)] = url
 
 
 def upload_file(key: str, data: bytes, content_type: str) -> Optional[str]:

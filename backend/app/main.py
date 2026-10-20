@@ -5,6 +5,7 @@ Registers all routers and applies global middleware.
 Run with: uvicorn app.main:app --reload --port 8000
 """
 
+import asyncio
 import logging
 import os
 import sys
@@ -19,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.log_redaction import configure_log_hygiene
-from app.routers import admin, admin_auth, admin_billing, admin_panel, admin_users, analytics, auth, billing, billing_health, briefing, campaigns, catalogue, catalogue_public, channels, conversations, customers, followup, instagram, integrations, knowledge, leads, onboarding, orders, payment, payment_settings, payment_verification, photo_enhancement, plans, realtime, sandbox, team, usage, webhook, whatsapp_signup, widget
+from app.routers import admin, admin_auth, admin_billing, admin_panel, admin_users, analytics, auth, billing, billing_health, briefing, campaigns, catalogue, catalogue_public, channels, conversations, customers, followup, instagram, integrations, knowledge, leads, onboarding, orders, payment, payment_settings, payment_verification, photo_enhancement, plans, realtime, sandbox, simulator, team, usage, webhook, whatsapp_signup, widget
 from app.scheduler import start_scheduler, stop_scheduler
 from app.services import channel_status, llm_health
 
@@ -37,14 +38,86 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Start background jobs on startup; shut them down cleanly on exit."""
     _startup_checks()
+    _warm_agent_templates()
+    prewarm_imports()
     await _migration_head_check()
     await _schema_drift_check()
     await _check_whatsapp_token()
     await _check_instagram_token()
     await _check_llm_models()
+    from app.services import loop_monitor
+
+    loop_monitor.start_watchdog()          # LOOP_BLOCKED / LOOP_STALL logs with the blocking stack; asyncio debug in development
     start_scheduler()
+    _schedule_image_index_warmup()
     yield
     stop_scheduler()
+    loop_monitor.stop_watchdog()
+    from app.services import http_client
+
+    await http_client.aclose()
+
+
+def prewarm_imports() -> None:
+    """
+    Import the heavy modules a customer turn would otherwise import lazily on its first use (agent v3, the payment-image classifier, OCR,
+    Pillow's ImageOps …). The first message after a deploy used to pay ~100 ms of import time on the event loop — a stall every other
+    customer felt. Never raises.
+    """
+    try:
+        import importlib
+
+        for name in (
+            "app.services.agent_v3", "app.services.agent_order_edit", "app.services.payment_inbound", "app.services.payment_proof_classifier",
+            "app.services.image_fingerprint", "app.services.ocr_service", "app.services.media_service", "app.services.storage_service",
+            "PIL.ImageOps", "PIL.ImageDraw", "pytesseract", "segno",
+        ):
+            try:
+                importlib.import_module(name)
+            except Exception as exc:  # noqa: BLE001 - an optional dependency is not a reason to fail startup
+                logger.debug("prewarm import %s skipped: %s", name, exc)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("import prewarm failed: %s", exc)
+
+
+def _schedule_image_index_warmup() -> asyncio.Task:
+    """Build every tenant's catalogue-photo hash index in the background right after startup (never inside a customer turn)."""
+    async def _run() -> None:
+        """Load each tenant that has product photos (the snapshot load schedules its index); never raises."""
+        try:
+            from sqlalchemy import select
+
+            from app.db import _get_session_factory
+            from app.models.product import Product
+            from app.services import catalogue_snapshot
+
+            async with _get_session_factory()() as db:
+                ids = (await db.execute(
+                    select(Product.client_id).where(Product.is_active.is_(True), Product.image_url.isnot(None)).distinct()
+                )).scalars().all()
+                for client_id in ids:
+                    await catalogue_snapshot.load_rows(db, client_id)
+                logger.info("IMAGE_INDEX warm-up scheduled for %d tenant(s)", len(ids))
+        except Exception as exc:  # noqa: BLE001 - an optimisation: the next snapshot load schedules the index anyway
+            logger.warning("image index warm-up failed: %s", exc)
+
+    task = asyncio.get_running_loop().create_task(_run())
+    _background_tasks.add(task)                      # a task nobody references can be garbage-collected mid-run
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
+
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _warm_agent_templates() -> None:
+    """Load the agent-v3 reply tables (Hindi / Gujarati) and log what is wrong with them; never blocks startup."""
+    try:
+        from app.services import agent_renderer, agent_templates
+
+        agent_templates.warm(agent_renderer._EN)       # asserts all 5 languages carry the same keys (logs ERROR instead of blocking startup)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("agent templates warm-up failed: %s", exc)
 
 
 async def _migration_head_check() -> None:
@@ -251,7 +324,9 @@ def _startup_checks() -> None:
     )
     logger.info(
         "Razorpay    : %s",
-        "configured" if s.razorpay_key_id else "not set",
+        f"configured ({'live' if s.razorpay_key_id.startswith('rzp_live_') else 'test'} keys)"
+        if s.razorpay_key_id
+        else "not set",
     )
     logger.info(sep)
     ocr_service.check_tesseract_installed()
@@ -306,6 +381,7 @@ app.include_router(customers.router)
 app.include_router(knowledge.router)
 app.include_router(orders.router)
 app.include_router(sandbox.router)
+app.include_router(simulator.router)
 app.include_router(widget.router)
 app.include_router(catalogue_public.router, prefix="")
 

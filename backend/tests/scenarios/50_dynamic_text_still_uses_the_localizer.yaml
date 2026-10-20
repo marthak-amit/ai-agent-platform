@@ -1,0 +1,11 @@
+name: dynamic_text_still_uses_the_localizer
+description: 'The planner''s own clarify question is the only free text in a table language. In the customer''s language it is kept (and, being free text, is still checked by the localizer); in another language it is replaced by the template (lang_mismatch) — no translation call either way. A hello on a recent cart is the short welcome-back, not the old line''s question.'
+turns:
+  - user: "mare Cotton Kurti joi che"
+    plan: {actions: [{type: add_line, sku: KU10001}]}
+    expect: {translate_calls: 0}
+  - user: "gift wrap thase?"
+    plan: {actions: [{type: ask_clarify, question: "Shu tamne gift wrapping joiye chhe?", options: [], slot: other}]}
+    expect: {reply_contains: ["gift wrapping joiye"]}
+  - user: "hi"
+    expect: {fast_path: greeting, reply_contains: ["Pacha aavva badal swagat"], buttons_contain: [v3_continue, v3_fresh]}

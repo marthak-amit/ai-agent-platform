@@ -1,0 +1,25 @@
+name: session_cost_not_reset_by_image
+description: 'The COST session counter is reset by confirm_order only — never by an inbound photo (or any other message). After the confirmed order it starts again from that moment.'
+turns:
+  - user: "show me products"
+    plan: {actions: [{type: browse_catalog}]}
+    usage: {input: 10000, cached: 0, output: 1000}
+    expect: {turn_contains: ["COST turn=₹0.17 session=₹0.17 lifetime=₹0.17"]}
+  - user: "I want 2 red cotton kurtis"
+    plan: {actions: [{type: add_line, sku: KU10001, variant: {color: Red}, qty: 2}]}
+    usage: {input: 10000, cached: 0, output: 1000}
+  - image: true
+    expect: {turn_contains: ["COST turn=₹0.00 session=₹0.35 lifetime=₹0.35"], reply_contains: ["your name"]}
+  - user: "Asha Patel"
+    plan: {actions: [{type: set_customer, name: Asha Patel}]}
+  - user: "12 MG Road, Adajan, Surat 395009"
+    plan: {actions: [{type: set_customer, address: "12 MG Road, Adajan, Surat 395009"}]}
+  - tap: v3_pay_cod
+  - user: "yes"
+    expect: {fast_path: confirm, orders: 1}
+  - image: true
+    expect: {turn_contains: ["COST turn=₹0.00 session=₹0.00 lifetime=₹0.35"]}
+  - user: "show me products"
+    plan: {actions: [{type: browse_catalog}]}
+    usage: {input: 4000, cached: 0, output: 400}
+    expect: {turn_contains: ["COST turn=₹0.07 session=₹0.07 lifetime=₹0.42"]}

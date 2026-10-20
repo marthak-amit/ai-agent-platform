@@ -217,6 +217,7 @@ class ClientFlagsUpdate(BaseModel):
     """
 
     router_v2_enabled: Optional[bool] = None
+    agent_v3_enabled: Optional[bool] = None      # true/false force agent v3 (cart + planner + validator) on/off, null = env default
     daily_message_limit: Optional[int] = Field(default=None, ge=0, le=1_000_000)
     bot_auto_resume_minutes: Optional[int] = Field(default=None, ge=1, le=10_080)
     plan_grandfathered: Optional[bool] = None

@@ -22,19 +22,13 @@ def get_delivery_time_str(product=None, client=None) -> str:
     Returns:
         Delivery time string, e.g. "1 business day" or "3–7 business days".
     """
-    if product is not None:
-        days = getattr(product, "delivery_days", None)
-        if days:
-            unit = "business day" if days == 1 else "business days"
-            return f"{days} {unit}"
-
-    if client is not None:
-        min_days = getattr(client, "delivery_days_min", None)
-        max_days = getattr(client, "delivery_days_max", None)
-        if min_days and max_days:
-            return f"{min_days}–{max_days} business days"
-
-    return "3–7 business days"
+    # ONE source for the number of days: the same function the order-status ETA window uses.
+    product_days = [getattr(product, "delivery_days", None)] if product is not None else None
+    lo, hi = order_delivery_days(client, product_days)
+    if lo == hi:
+        unit = "business day" if lo == 1 else "business days"
+        return f"{lo} {unit}"
+    return f"{lo}–{hi} business days"
 
 
 # ── Order ETA window (computed by the engine; the LLM never states dates) ────

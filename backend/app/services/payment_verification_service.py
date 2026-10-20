@@ -35,8 +35,10 @@ from app.models.payment_proof import (
     PROOF_APPROVED,
     PROOF_PENDING,
     PROOF_REJECTED,
+    PROOF_WITHDRAWN,
     PaymentProof,
 )
+from app.config import get_settings
 from app.services import (
     channel_sender,
     media_service,
@@ -70,11 +72,53 @@ OVERDUE_AFTER = timedelta(hours=2)
 # ─── errors ───────────────────────────────────────────────────────────────────
 
 
+class ManualReviewRequired(Exception):
+    """
+    A high-value order cannot be approved until the seller acknowledges the manual review (HTTP 409).
+
+    Carries PLAIN values captured when it is raised — never the ORM ``Order``. The router rolls the transaction back before it
+    answers, which expires every ORM instance; reading ``exc.order.total_amount`` after that is a lazy load in async code
+    (``MissingGreenlet`` → HTTP 500). Rule for every exception that crosses a transaction boundary: copy what the handler needs.
+    """
+
+    def __init__(self, order: "Order", threshold: float):
+        self.order_id: int = int(order.id)
+        self.order_number: str = str(order.order_number)
+        self.total: float = float(order.total_amount or 0)
+        self.threshold: float = float(threshold)
+        super().__init__(
+            f"Order {self.order_number} (₹{int(self.total):,}) is above the high-value limit "
+            f"(₹{int(self.threshold):,}): verify the payment in your bank, then approve with confirm_high_value."
+        )
+
+    def payload(self) -> dict:
+        """The 409 body the dashboard turns into its "verify ₹X in your bank" dialog."""
+        return {
+            "code": "high_value_confirmation_required", "order_number": self.order_number, "order_id": self.order_id,
+            "total": self.total, "threshold": self.threshold,
+            "message": f"Order {self.order_number} is ₹{int(self.total):,}. Verify the money in your bank before approving.",
+        }
+
+
 class OrderNotFound(Exception):
     """The order does not exist for this client."""
 
 
 # ─── small pure helpers ───────────────────────────────────────────────────────
+
+
+def high_value_threshold(client: Client | None) -> float:
+    """Orders above this total need the seller's explicit review: the shop's own limit, else the platform default (₹50,000)."""
+    own = getattr(client, "high_value_order_threshold", None)
+    if isinstance(own, (int, float)) and not isinstance(own, bool) and own > 0:
+        return float(own)
+    return float(get_settings().high_value_order_threshold)
+
+
+def is_high_value(order: Order, client: Client | None) -> bool:
+    """True when the order total is above the high-value threshold."""
+    total = getattr(order, "total_amount", None)
+    return isinstance(total, (int, float)) and float(total) > high_value_threshold(client)
 
 
 def is_valid_upi_id(value: str) -> bool:
@@ -181,6 +225,54 @@ def is_paid_intent(text: str) -> bool:
     return bool(_PAID_RE.search(t)) and not _NOT_PAID_RE.search(t)
 
 
+# "This is payment photo" / "payment photo" / "maine pay kar diya" / "screenshot hai" / "aa payment chhe" / "already paid" — the customer
+# saying the image(s) they sent ARE the payment (the mirror of the denial below). Deterministic: the planner never sees these.
+_PAYMENT_AFFIRMATION_RE = re.compile(
+    # English
+    r"(?:\b(?:this|that|these|those|it)\s+(?:is|was|are)\s+(?:the\s+|my\s+|a\s+)?(?:payment|paid|proof|receipt)\b)"
+    r"|(?:\b(?:it'?s|its)\s+(?:the\s+|my\s+|a\s+)?(?:payment|proof|receipt)\b)"
+    r"|(?:^\s*(?:the\s+|my\s+)?payment\s+(?:photo|screenshot|pic|picture|image|proof|receipt|ss)\s*[.!]*\s*$)"
+    r"|(?:\b(?:already|just|i\s*(?:have|'ve|ve)?)\s*paid\b)|(?:\bi\s+(?:have\s+)?(?:made|done)\s+(?:the\s+)?payment\b)|(?:\bpayment\s+(?:is\s+)?(?:done|made|complete|completed)\b)"
+    r"|(?:^\s*(?:paid|done|payment\s+done)\s*[.!]*\s*$)"
+    # Hinglish
+    r"|(?:\b(?:maine|maene|mene|main\s*ne|ne)\s+(?:pay|payment|paisa|paise)\s+(?:kar|kiya|bhej)\b)|(?:\b(?:pay|payment)\s+kar\s*(?:diya|di)\b)"
+    r"|(?:\bscreenshot\s+(?:hai|h|he|bheja|bhej\s*diya)\b)|(?:\b(?:ye|yeh|yah)\s+(?:to\s+)?payment\s+(?:ka\s+)?(?:screenshot\s+|photo\s+)?(?:hai|h|he)\b)"
+    r"|(?:\bpayment\s+(?:ka\s+)?(?:photo|screenshot)\s+(?:hai|h|he)\b)|(?:\bpaisa\s+(?:bhej|de)\s*diya\b)"
+    # Gujarati (Roman)
+    r"|(?:\bmaine?\s+payment\s+kari\b)|(?:\bpayment\s+kari\s*(?:didhu|didhi|lidhu|nakhyu)\b)|(?:\b(?:aa|a)\s+(?:to\s+)?payment\s+(?:no\s+|nu\s+)?(?:screenshot\s+|photo\s+)?(?:chhe|che|chee)\b)"
+    r"|(?:\bscreenshot\s+(?:chhe|che|moklyo|mokli\s*didho)\b)|(?:\bpaisa\s+moklya\b)"
+    # Devanagari / Gujarati script
+    r"|(?:(?:यह|ये|यही)\s+(?:तो\s+)?पेमेंट\s+(?:का\s+)?(?:स्क्रीनशॉट\s+|फोटो\s+|फ़ोटो\s+)?है)|(?:पेमेंट\s+(?:का\s+)?(?:फोटो|फ़ोटो|स्क्रीनशॉट)(?:\s+है)?\s*$)|(?:स्क्रीनशॉट\s+है)"
+    r"|(?:मैंने\s+(?:पेमेंट|पैसे)\s+(?:कर|भेज)\s*(?:दिया|दिए))"
+    r"|(?:આ\s+(?:તો\s+)?પેમેન્ટ\s+(?:નો\s+)?(?:સ્ક્રીનશૉટ\s+|સ્ક્રીનશોટ\s+|ફોટો\s+)?છે)|(?:પેમેન્ટ\s+(?:નો\s+)?(?:ફોટો|સ્ક્રીનશૉટ|સ્ક્રીનશોટ)(?:\s+છે)?\s*$)|(?:સ્ક્રીનશૉટ\s+છે)"
+    r"|(?:મેં\s+પેમેન્ટ\s+કરી\s*(?:દીધું|દીધી|લીધું))",
+    re.IGNORECASE,
+)
+
+
+def is_payment_affirmation(text: str) -> bool:
+    """True when the customer says the image(s) they sent are the payment ("this is payment photo", "payment kari didhu", "already paid")."""
+    t = (text or "").replace("’", "'").strip()
+    if not t or "?" in t or len(t.split()) > 10:
+        return False
+    return bool(_PAYMENT_AFFIRMATION_RE.search(t)) and not _NOT_PAID_RE.search(t) and not is_payment_denial(t)
+
+
+_PAYMENT_STATUS_RE = re.compile(
+    r"(?:\b(?:confirm|check|verify|status|update)\b[^.?!\n]{0,24}\bpayments?\b)|(?:\bpayments?\b[^.?!\n]{0,16}\b(?:status|confirm(?:ed|ation)?|verified|verification|received|recieved|check|update)\b)"
+    r"|(?:\bdid\s+(?:you|u)\s+(?:get|receive|recieve|see)\b[^.?!\n]{0,24}\bpayments?\b)|(?:\bhave\s+(?:you|u)\s+(?:got|received|recieved)\b[^.?!\n]{0,24}\bpayments?\b)"
+    r"|(?:\bpayments?\b[^.?!\n]{0,16}\b(?:mila|mil\s*gaya|aaya|aa\s*gaya|malyu|aavyu)\b)|(?:\bpayment\s+(?:confirm|check)\s+(?:karo|kar\s*do|karjo)\b)"
+    r"|(?:पेमेंट[^.?!\n]{0,12}(?:मिला|कन्फर्म|कन्फ़र्म|स्टेटस))|(?:પેમેન્ટ[^.?!\n]{0,12}(?:મળ્યું|કન્ફર્મ|સ્ટેટસ))",
+    re.IGNORECASE,
+)
+
+
+def is_payment_status_request(text: str) -> bool:
+    """True for "please confirm my payments" / "payment status?" / "did you get my payment" / "payment mila?" (a status question, not a claim)."""
+    t = (text or "").strip()
+    return bool(t) and len(t.split()) <= 12 and bool(_PAYMENT_STATUS_RE.search(t)) and not is_payment_denial(t)
+
+
 # Messages from a customer who owes (or says they don't owe) a payment: asking for the details, the UPI id /
 # QR, how to pay, or saying they haven't paid / haven't sent the screenshot yet. All are answered by
 # re-sending the open order's payment instruction — never by resetting the conversation.
@@ -198,8 +290,49 @@ _PAYMENT_HELP_RE = re.compile(
 )
 
 
+# "This is product, not the payment" / "ye payment nahi hai" / "aa payment nathi" / "galat photo" — the customer saying the image they just
+# sent is NOT a payment proof. Deliberately strict (a demonstrative + "payment", or an explicit "wrong photo"): "I haven't paid yet" and
+# "payment nahi hua" are payment-HELP requests, not denials.
+_PAYMENT_DENIAL_RE = re.compile(
+    # English
+    r"(?:\b(?:not|isn'?t|is\s+not|wasn'?t|was\s+not)\s+(?:a\s+|the\s+|my\s+|any\s+)?payment\b)"
+    r"|(?:\b(?:this|that|these|those|it)\s+(?:is|was|are)\s+(?:a\s+|the\s+|my\s+)?(?:product|item|dress|saree|sari|kurti|design|catalogue)\b)"
+    r"|(?:\bit'?s\s+(?:a\s+|the\s+|my\s+)?(?:product|item|dress|saree|sari|kurti|design)\b)"
+    r"|(?:\bwrong\s+(?:photo|image|pic|picture|screenshot|file|one)\b)|(?:\b(?:by|from)\s+mistake\b)|(?:\bmistakenly\b)"
+    r"|(?:\b(?:photo|image|pic|picture)\s+(?:of|is)\s+(?:a\s+|the\s+)?product\b)"
+    # Hinglish
+    r"|(?:\b(?:ye|yeh|yah|isko|ise)\s+(?:to\s+)?(?:payment|pay|bhugtan)\s+(?:ka\s+)?(?:screenshot\s+)?(?:nahi|nahin|nhi)\b)"
+    r"|(?:\bpayment\s+(?:ka\s+)?(?:screenshot\s+)?(?:nahi|nahin|nhi)\s+hai\s+(?:ye|yeh)\b)"
+    r"|(?:\b(?:ye|yeh|yah)\s+(?:to\s+)?(?:product|item|kapda|saree|kurti)\s+(?:hai|h|he|ki\s+(?:photo|image|pic))\b)"
+    r"|(?:\bgalat\s+(?:photo|image|pic|picture|screenshot)\b)|(?:\bgalti\s+se\b)"
+    # Gujarati (Roman)
+    r"|(?:\baa\s+(?:to\s+)?(?:payment|pay)\s+(?:no\s+)?(?:screenshot\s+)?nathi\b)|(?:\baa\s+(?:to\s+)?(?:product|item)\s+(?:chhe|che|no\s+(?:photo|image))\b)"
+    r"|(?:\bkhot[ua]\s+(?:photo|image|pic|screenshot)\b)|(?:\bbhul\s*(?:thi|thii|se)\b)|(?:\bbhool\s*(?:thi|se)\b)"
+    # Devanagari
+    r"|(?:(?:ये|यह)\s+(?:पेमेंट|भुगतान|पेमन्ट)\s+(?:का\s+)?(?:स्क्रीनशॉट\s+)?(?:नहीं|नही))|(?:(?:ये|यह)\s+(?:तो\s+)?(?:प्रोडक्ट|आइटम|साड़ी|कुर्ती)\s+है)"
+    r"|(?:गलत\s+(?:फोटो|फ़ोटो|इमेज|तस्वीर|स्क्रीनशॉट))|(?:गलती\s+से)"
+    # Gujarati script
+    r"|(?:આ\s+(?:તો\s+)?(?:પેમેન્ટ|ચુકવણી)\s+(?:નો\s+)?(?:સ્ક્રીનશૉટ\s+|સ્ક્રીનશોટ\s+)?નથી)|(?:આ\s+(?:તો\s+)?(?:પ્રોડક્ટ|આઇટમ|સાડી|કુર્તી)\s+છે)"
+    r"|(?:ખોટ[ોુ]\s+(?:ફોટો|ઇમેજ|સ્ક્રીનશૉટ|સ્ક્રીનશોટ))|(?:ભૂલથી)",
+    re.IGNORECASE,
+)
+
+
+def is_payment_denial(text: str) -> bool:
+    """True when the customer says the image they sent is not a payment proof ("this is product not the payment", "ye payment nahi hai")."""
+    text = (text or "").replace("’", "'")
+    return "?" not in text and bool(_PAYMENT_DENIAL_RE.search(text))
+
+
 def is_payment_help_request(text: str) -> bool:
-    """True when the message asks for payment details / how to pay, or says the customer hasn't paid yet."""
+    """
+    True when the message asks for payment details / how to pay, or says the customer hasn't paid yet.
+
+    A denial of the image just sent ("this is not the payment") is NOT a help request: re-sending the payment instruction to someone who is
+    telling us the screenshot was the wrong picture is the loop conv=60 got stuck in.
+    """
+    if is_payment_denial(text):
+        return False
     return bool(_PAYMENT_HELP_RE.search(text or ""))
 
 
@@ -271,6 +404,8 @@ async def build_payment_instruction(
     instruction still ends with "send the screenshot".
     """
     lang = _lang(conv)
+    if conv is not None:
+        conv.last_payment_instruction_at = datetime.now(timezone.utc)      # the "recent payment instructions" prior of the proof classifier
     payee = getattr(client, "upi_display_name", None)
     text = instruction_text(order, client, lang)
     # WhatsApp can't always render the QR (private URL, suppressed image): the deep link keeps a one-tap
@@ -310,8 +445,11 @@ async def raise_missing_upi_alert(db: AsyncSession, client: Client, conv: Conver
     A customer reached the payment step but the seller has no UPI ID.
 
     Stamps Client.payment_setup_alert_at (dashboard banner), pushes a realtime
-    event, and pings the owner on WhatsApp — the latter at most once an hour.
+    event, and pings the owner on WhatsApp — the latter at most once an hour. A simulator conversation raises
+    nothing: the owner is the one testing.
     """
+    if conv is not None and getattr(conv, "is_sandbox", False):
+        return
     now = datetime.now(timezone.utc)
     previous = client.payment_setup_alert_at
     client.payment_setup_alert_at = now
@@ -395,13 +533,21 @@ async def _notify_customer(
     seller decisions, and the customer must hear about them even while the
     seller is handling the chat by hand. Still subject to opt-out/block/24h.
     """
+    event = {"pay_confirmed": "payment_approved", "pay_rejected": "payment_rejected", "pay_cancelled": "payment_cancelled"}.get(key, key)
     if conv is None or getattr(conv, "is_sandbox", False):
+        logger.info("notify_%s order=%s sent=false reason=%s", event, kwargs.get("order_number"), "no_conversation" if conv is None else "sandbox")
         return None
     text = get_template(_lang(conv), key, **kwargs)
-    return await channel_sender.send_to_conversation(
+    outcome = await channel_sender.send_to_conversation(
         db, client, conv, text=text,
         kind=MessageKind.UTILITY_TEMPLATE, sender_type="system",
     )
+    # One line per seller decision: the customer is told (or why not) — the dashboard's "customer notified" flag is built from the same outcome.
+    logger.info(
+        "notify_%s order=%s sent=%s%s", event, kwargs.get("order_number"), str(bool(getattr(outcome, "sent", False))).lower(),
+        "" if getattr(outcome, "sent", False) else f" reason={getattr(outcome, 'reason', None)}",
+    )
+    return outcome
 
 
 async def _reset_conversation_after_terminal(db: AsyncSession, conv: Conversation | None) -> None:
@@ -435,17 +581,110 @@ async def find_open_payment_order(db: AsyncSession, conversation_id: int) -> Ord
     ).scalar_one_or_none()
 
 
+async def find_open_payment_orders(db: AsyncSession, client_id: int, conversation_id: int, customer_phone: str | None = None, *, limit: int = 6) -> list[Order]:
+    """
+    Every non-COD order of this customer still in the payment flow (newest first): the conversation's own, plus — when the phone is known —
+    the same customer's orders from another conversation. A real screenshot is matched to ONE of them by amount (see ``payment_proof_classifier``).
+    """
+    cond = Order.conversation_id == conversation_id
+    if customer_phone:
+        cond = or_(cond, Order.customer_phone == customer_phone)
+    rows = await db.execute(
+        select(Order)
+        .where(Order.client_id == client_id, Order.status.in_(tuple(PAYMENT_OPEN_STATES)), Order.payment_method != "COD", cond)
+        .order_by(Order.created_at.desc()).limit(limit)
+    )
+    return list(rows.scalars().all())
+
+
+async def recent_payment_orders(
+    db: AsyncSession, client_id: int, conversation_id: int, customer_phone: str | None = None, *, days: int = 7, limit: int = 6,
+) -> list[Order]:
+    """This customer's non-COD orders of the last `days` that are (or were) in the payment flow — unpaid, under review or paid — newest first."""
+    cond = Order.conversation_id == conversation_id
+    if customer_phone:
+        cond = or_(cond, Order.customer_phone == customer_phone)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    rows = await db.execute(
+        select(Order).where(
+            Order.client_id == client_id, Order.status.in_((ORDER_PENDING_PAYMENT, ORDER_PAYMENT_SUBMITTED, ORDER_PAID)),
+            Order.payment_method != "COD", Order.created_at >= since, cond,
+        ).order_by(Order.created_at.desc()).limit(limit)
+    )
+    return list(rows.scalars().all())
+
+
+@dataclass
+class Withdrawal:
+    """Plain values of a withdrawn proof (never the ORM rows: the transaction is over by the time a caller reads them)."""
+
+    order_id: int
+    order_number: str
+    proof_id: int
+    order_back_to_pending: bool        # no other pending proof was left, so the order is waiting for a payment screenshot again
+
+
+#: A denial only withdraws a proof the customer sent recently.
+WITHDRAW_WINDOW = timedelta(hours=6)
+
+
+async def withdraw_last_proof(db: AsyncSession, client: Client, conversation_id: int, *, reason: str = "customer says the image is not a payment proof") -> Withdrawal | None:
+    """
+    The customer says the last image they sent as payment proof was NOT one ("this is product not the payment").
+
+    The newest still-pending proof of the conversation becomes ``withdrawn`` (the row and an audit entry stay — nothing is deleted), so it drops out
+    of the seller's pending queue; when no other pending proof remains the order goes back ``payment_submitted → pending_payment``. Returns None when
+    there is no recent pending proof (the denial then needs no action). One transaction, row-locked, idempotent.
+    """
+    proof = (await db.execute(
+        select(PaymentProof)
+        .where(PaymentProof.client_id == client.id, PaymentProof.conversation_id == conversation_id, PaymentProof.status == PROOF_PENDING)
+        .order_by(PaymentProof.id.desc()).limit(1).with_for_update()
+    )).scalar_one_or_none()
+    if proof is None:
+        return None
+    created = proof.created_at if proof.created_at is None or proof.created_at.tzinfo else proof.created_at.replace(tzinfo=timezone.utc)
+    if created is not None and datetime.now(timezone.utc) - created > WITHDRAW_WINDOW:
+        return None
+    order = await _lock_order(db, client.id, proof.order_id)
+    others = int((await db.execute(
+        select(func.count()).select_from(PaymentProof).where(
+            PaymentProof.order_id == order.id, PaymentProof.status == PROOF_PENDING, PaymentProof.id != proof.id)
+    )).scalar_one())
+    proof.status = PROOF_WITHDRAWN
+    proof.reviewed_at = datetime.now(timezone.utc)
+    proof.reviewed_by_name = "customer"
+    proof.reject_reason = reason
+    from_status = order.status
+    reverted = False
+    if order.status == ORDER_PAYMENT_SUBMITTED and others == 0:
+        assert_order_transition(order.status, ORDER_PENDING_PAYMENT)
+        order.status = ORDER_PENDING_PAYMENT
+        order.payment_submitted_at = None
+        reverted = True
+    _audit(db, order, actor_user=None, actor_name="customer", action="proof_withdrawn", from_status=from_status, to_status=order.status,
+           detail={"proof_id": proof.id, "reason": reason})
+    out = Withdrawal(order_id=int(order.id), order_number=str(order.order_number), proof_id=int(proof.id), order_back_to_pending=reverted)
+    conv_id = proof.conversation_id
+    await db.commit()          # plain values were copied above: the commit expires every ORM instance
+    realtime_service.publish(client.id, "payment_reviewed", {
+        "order_id": out.order_id, "conversation_id": conv_id, "decision": "withdrawn", "reviewed_by": "customer",
+    })
+    return out
+
+
 @dataclass
 class ProofSubmission:
     """Outcome of attaching a screenshot to an order."""
 
     proof: PaymentProof
     transitioned: bool  # True when this proof moved the order pending_payment → payment_submitted
+    high_value: bool = False  # the order is above the high-value limit: manual review, no automatic confirmation
 
 
 async def submit_proof(
     db: AsyncSession, client: Client, conv: Conversation, order_id: int, *,
-    message_id: int | None, media_url: str,
+    message_id: int | None, media_url: str, reclassified: bool = False,
 ) -> ProofSubmission:
     """
     Attach a customer screenshot to an order.
@@ -466,19 +705,29 @@ async def submit_proof(
         transitioned = True
     elif order.status != ORDER_PAYMENT_SUBMITTED:
         raise InvalidOrderTransition(order.status, ORDER_PAYMENT_SUBMITTED)
+    high_value = is_high_value(order, client)
+    if high_value and not getattr(order, "requires_manual_review", False):
+        order.requires_manual_review = True
+        _audit(db, order, actor_user=None, actor_name="system", action="manual_review_required",
+               from_status=order.status, to_status=order.status,
+               detail={"total": float(order.total_amount or 0), "threshold": high_value_threshold(client)})
 
     proof = PaymentProof(
         order_id=order.id, client_id=client.id, conversation_id=conv.id,
-        message_id=message_id, media_url=media_url, status=PROOF_PENDING,
+        message_id=message_id, media_url=media_url, status=PROOF_PENDING, reclassified_by_customer=reclassified,
     )
     db.add(proof)
+    if reclassified:
+        # The customer told us an image we had not taken as a proof IS the payment: keep that on the audit trail.
+        _audit(db, order, actor_user=None, actor_name="customer", action="proof_reclassified_by_customer",
+               from_status=order.status, to_status=order.status, detail={"message_id": message_id})
     await db.commit()
     await db.refresh(proof)
     realtime_service.publish(client.id, "payment_submitted", {
         "order_id": order.id, "conversation_id": conv.id,
         "proof_id": proof.id, "additional": not transitioned,
     })
-    return ProofSubmission(proof=proof, transitioned=transitioned)
+    return ProofSubmission(proof=proof, transitioned=transitioned, high_value=high_value)
 
 
 def proof_ack_due(conv: Conversation, now: datetime | None = None) -> bool:
@@ -519,9 +768,15 @@ def _apply_outcome(result: DecisionResult, outcome: channel_sender.SendOutcome |
     result.notify_failure = None if outcome.sent else outcome.reason
 
 
-async def approve(db: AsyncSession, client: Client, order_id: int, user) -> DecisionResult:
+async def approve(
+    db: AsyncSession, client: Client, order_id: int, user, *, confirm_high_value: bool = False,
+) -> DecisionResult:
     """
     payment_submitted → paid. Idempotent.
+
+    A high-value order (total above `high_value_threshold`) is never approved by a plain click: it raises
+    `ManualReviewRequired` until the seller passes `confirm_high_value=True` (recorded in the audit trail), so no
+    "payment confirmed" message can go out for it without a deliberate manual review.
 
     One transaction: lock order → validate edge → approve pending proofs →
     deduct stock + consume reservation → mark paid → audit → commit. Then
@@ -539,6 +794,13 @@ async def approve(db: AsyncSession, client: Client, order_id: int, user) -> Deci
 
     now = datetime.now(timezone.utc)
     name = actor_label(user)
+    if (getattr(order, "requires_manual_review", False) or is_high_value(order, client)) and getattr(order, "manual_review_cleared_at", None) is None:
+        if not confirm_high_value:
+            raise ManualReviewRequired(order, high_value_threshold(client))
+        order.requires_manual_review = True
+        order.manual_review_cleared_at = now
+        _audit(db, order, actor_user=user, actor_name=name, action="manual_review_cleared",
+               from_status=order.status, to_status=order.status, detail={"total": float(order.total_amount or 0)})
     for proof in await _pending_proofs(db, order.id):
         proof.status = PROOF_APPROVED
         proof.reviewed_by = getattr(user, "id", None)

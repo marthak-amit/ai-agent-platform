@@ -85,8 +85,11 @@ class UpgradeOptionOut(BaseModel):
 class EntitlementOut(BaseModel):
     """What the assistant is currently allowed to do for this tenant (drives the dashboard banners)."""
 
-    state: str = Field(description="'active' | 'exempt' | 'grace' | 'expired'")
+    state: str = Field(description="'active' | 'exempt' | 'setup' | 'trial' | 'grace' | 'expired'")
     grace_ends_at: Optional[datetime] = None
+    trial_ends_at: Optional[datetime] = Field(default=None, description="Set while state is 'trial'")
+    trial_conversations_used: Optional[int] = None
+    trial_conversation_limit: Optional[int] = None
     enforced: bool = Field(description="True when billing enforcement is on (expired => new customers get the fallback)")
     restricted: bool = Field(description="True when the assistant is currently refusing NEW customers")
     over_limit: bool = False

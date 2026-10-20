@@ -19,11 +19,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.order import Order
 from app.models.order_line_item import OrderLineItem
 from app.services.language_templates import format_price
+from app.services.sandbox_guard import is_sandbox_phone
 
 logger = logging.getLogger(__name__)
 
 
-async def _next_order_number(db: AsyncSession, year: int) -> str:
+async def _next_order_number(db: AsyncSession, year: int, prefix: str = "ORD") -> str:
     """
     Next globally unique order number 'ORD-<year>-NNNN'.
 
@@ -32,14 +33,16 @@ async def _next_order_number(db: AsyncSession, year: int) -> str:
     (the customer's confirmed order was lost). A transaction-level advisory lock now serialises number
     allocation until the creating transaction commits, and the number comes from the highest number issued
     this year (not a row count, which also repeats after any deletion).
+
+    Simulator orders use their own "SIM" sequence so they never leave a gap in the seller's real ORD numbers.
     """
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": 7_240_000 + year})
     last = await db.scalar(
         select(func.max(cast(func.split_part(Order.order_number, "-", 3), Integer))).where(
-            Order.order_number.like(f"ORD-{year}-%")
+            Order.order_number.like(f"{prefix}-{year}-%")
         )
     )
-    return f"ORD-{year}-{(last or 0) + 1:04d}"
+    return f"{prefix}-{year}-{(last or 0) + 1:04d}"
 
 
 async def mark_order_paid(
@@ -83,6 +86,10 @@ async def mark_order_paid(
         logger.error("mark_order_paid commit failed for %s: %s", order.order_number, exc)
         raise
 
+    if getattr(order, "is_sandbox", False):
+        # Simulator order: the status flip above is all that happens — no stock deduction, owner alert or invoice.
+        return True
+
     # Stock deduction — best-effort after status commit so the order row is safe
     # even if the stock update fails (it will be retried via admin or background job).
     try:
@@ -104,7 +111,10 @@ async def run_post_paid_side_effects(db: AsyncSession, order: Order, client) -> 
     Best-effort follow-ups after an order has been committed as paid: owner
     notification and GST invoice generation/send. Never raises — the paid
     transition has already committed and must not be affected.
+    Simulator orders (`order.is_sandbox`) have no side effects at all.
     """
+    if getattr(order, "is_sandbox", False):
+        return
     # Owner notification — best-effort
     try:
         await _notify_owner_new_order(order, client)
@@ -225,7 +235,8 @@ async def create_cart_order(
         )
 
     year = datetime.now(timezone.utc).year
-    order_number = await _next_order_number(db, year)
+    sandbox = is_sandbox_phone(customer_phone)   # the in-dashboard simulator's fake customer
+    order_number = await _next_order_number(db, year, "SIM" if sandbox else "ORD")
     grand_total = sum(li["quantity"] * li["unit_price"] for li in line_items)
     first = line_items[0]
 
@@ -249,6 +260,7 @@ async def create_cart_order(
         payment_method=payment_method,
         status=initial_status,
         idempotency_key=idempotency_key,
+        is_sandbox=sandbox,
         # confirmed_at is set only when transitioning to paid (in mark_order_paid).
         # Orders start as pending_payment regardless of payment method.
     )
@@ -275,7 +287,8 @@ async def create_cart_order(
     # Manual-UPI flow: reserve stock in the same transaction as the order so two
     # customers can't both hold the last piece. COD orders skip this — they are
     # marked paid (and stock deducted) immediately after creation.
-    if initial_status == "pending_payment" and payment_method != "COD":
+    if initial_status == "pending_payment" and payment_method != "COD" and not sandbox:
+        # (simulator orders never hold real stock)
         from app.services import stock_reservation_service
 
         await stock_reservation_service.reserve_lines(
@@ -361,6 +374,8 @@ async def _notify_owner_new_order(order: Order, client) -> None:
     Itemizes every line item when the cart has more than one; otherwise keeps
     today's single-line "Product × Qty" format unchanged.
     """
+    if getattr(order, "is_sandbox", False):
+        return
 
     if not client.phone:
         return
@@ -406,7 +421,7 @@ async def _notify_owner_invoice_failed(order: Order, client) -> None:
     silently in a log, so they can share the PDF manually. Full error detail
     goes to the logger (see the caller in mark_order_paid), not this message.
     """
-    if not client.phone:
+    if not client.phone or getattr(order, "is_sandbox", False):
         return
 
     message = (
@@ -503,7 +518,7 @@ async def _notify_customer_dispatched(order: Order, client, db=None) -> None:
     from app.services import outbound
     from app.services.send_gate import MessageKind
 
-    if not client.whatsapp_phone_number_id:
+    if not client.whatsapp_phone_number_id or getattr(order, "is_sandbox", False):
         return
 
     message = (
@@ -557,7 +572,7 @@ async def get_orders(
     """
     from sqlalchemy import or_
 
-    q = select(Order).where(Order.client_id == client_id)
+    q = select(Order).where(Order.client_id == client_id, Order.is_sandbox.is_(False))
     if status:
         q = q.where(Order.status == status)
     if search:
@@ -597,17 +612,19 @@ async def get_orders_stats(client_id: int, db: AsyncSession) -> dict:
         r = await db.execute(select(func.sum(Order.total_amount)).where(*where_clauses))
         return float(r.scalar_one() or 0)
 
-    today_orders = await _count([Order.client_id == client_id, Order.created_at >= today_start])
-    today_revenue = await _sum([Order.client_id == client_id, Order.created_at >= today_start])
-    pending_dispatch = await _count([Order.client_id == client_id, Order.status == "confirmed"])
+    real = Order.is_sandbox.is_(False)   # simulator orders are never counted
+    today_orders = await _count([Order.client_id == client_id, real, Order.created_at >= today_start])
+    today_revenue = await _sum([Order.client_id == client_id, real, Order.created_at >= today_start])
+    pending_dispatch = await _count([Order.client_id == client_id, real, Order.status == "confirmed"])
     cod_pending = await _count([
         Order.client_id == client_id,
+        real,
         Order.payment_method == "COD",
         Order.payment_status == "pending",
         Order.status.notin_(["cancelled"]),
     ])
-    total_orders = await _count([Order.client_id == client_id])
-    total_revenue = await _sum([Order.client_id == client_id])
+    total_orders = await _count([Order.client_id == client_id, real])
+    total_revenue = await _sum([Order.client_id == client_id, real])
 
     return {
         "today_orders": today_orders,
@@ -650,6 +667,10 @@ async def apply_stock_deduction(db: AsyncSession, order: Order) -> None:
     """
     from app.models.product import Product
     from app.models.product_variant import ProductVariant
+
+    if getattr(order, "is_sandbox", False):
+        order.stock_deducted = True      # simulator orders never touch real stock
+        return
 
     items = getattr(order, "line_items", None) or []
     if not items:

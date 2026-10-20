@@ -205,10 +205,14 @@ async def test_decide_inbound_fails_open_on_any_error(monkeypatch, caplog):
 @pytest.mark.asyncio
 async def test_automation_allowed_matrix(monkeypatch):
     _patch_settings(monkeypatch, sellertalk24_billing_enforce=False)
-    assert await entitlement.automation_allowed(MagicMock(), 1) is True          # enforcement off: no DB use
+    live = MagicMock(get=AsyncMock(return_value=SimpleNamespace(id=1, bot_active=True)))
+    assert await entitlement.automation_allowed(live, 1) is True                  # enforcement off: always allowed ...
+    not_live = MagicMock(get=AsyncMock(return_value=SimpleNamespace(id=1, bot_active=False)))
+    assert await entitlement.automation_allowed(not_live, 1) is False             # ... except before "Go live"
 
     _patch_settings(monkeypatch)
-    db = MagicMock(get=AsyncMock(return_value=SimpleNamespace(id=1)))
+    db = MagicMock(get=AsyncMock(return_value=SimpleNamespace(id=1, bot_active=True)))
+    assert await entitlement.automation_allowed(not_live, 1) is False             # not live beats enforcement too
     monkeypatch.setattr(entitlement, "get_entitlement", AsyncMock(return_value=entitlement.Entitlement(EntitlementState.EXPIRED)))
     assert await entitlement.automation_allowed(db, 1) is False
     monkeypatch.setattr(entitlement, "get_entitlement", AsyncMock(return_value=entitlement.Entitlement(EntitlementState.GRACE)))

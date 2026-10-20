@@ -23,6 +23,8 @@ class RouterAction(str, Enum):
     HANDOFF_HUMAN = "handoff_human"
     GENERAL_ANSWER = "general_answer"
     SMALLTALK = "smalltalk"
+    OUT_OF_SCOPE = "out_of_scope"
+    CONFUSED = "confused"
 
 
 ROUTER_ACTIONS: tuple[str, ...] = tuple(a.value for a in RouterAction)

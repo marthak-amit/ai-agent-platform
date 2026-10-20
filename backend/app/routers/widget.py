@@ -152,6 +152,12 @@ async def widget_message(
     """
     client = await _get_client_by_api_key(db, body.api_key)
     await _require_website_plan(db, client)
+    if getattr(client, "bot_active", True) is False:
+        # Not live yet ("Go live" not pressed): the public widget must not answer real visitors.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="This assistant is not live yet.",
+        )
 
     session_id = body.session_id or str(uuid.uuid4())
 

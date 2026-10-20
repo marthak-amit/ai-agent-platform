@@ -39,6 +39,7 @@ import logging
 from datetime import datetime, timezone
 
 from app.services import channel_status, instagram_service, whatsapp_service
+from app.services.sandbox_guard import is_sandbox_phone
 from app.services.send_gate import (
     DenyReason,
     MessageKind,
@@ -68,7 +69,11 @@ async def _gate(
     Returns (decision, customer). A free-form send may proceed only when
     decision.allowed — ALLOW_TEMPLATE_ONLY is converted to a logged refusal
     here because no approved template exists yet.
+
+    The simulator's fake customer (`sandbox_<client_id>`) is refused first: no channel send is ever attempted.
     """
+    if is_sandbox_phone(recipient):
+        return SendDecision(Verdict.DENY, DenyReason.SANDBOX), customer
     if customer is None and db is not None and client_id is not None:
         try:
             from app.models.customer import Customer
@@ -320,6 +325,8 @@ async def send_template(
     Opt-out and block verdicts still apply. Returns Meta's response, or None
     if suppressed.
     """
+    if is_sandbox_phone(to_phone_number):
+        return None
     if customer is None and db is not None and client_id is not None:
         try:
             from app.models.customer import Customer

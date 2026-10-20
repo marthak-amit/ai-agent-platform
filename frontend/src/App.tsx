@@ -1,13 +1,16 @@
-import { BrowserRouter, Navigate, Outlet, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from "react-router-dom";
 import { AuthProvider } from "./context/AuthContext";
 import { RealtimeProvider } from "./context/RealtimeContext";
 import { ToastProvider } from "./context/ToastContext";
 import { BillingProvider } from "./context/BillingContext";
+import { SetupProvider } from "./context/SetupContext";
 import ProtectedRoute from "./components/ProtectedRoute";
 import RequirePermission from "./components/RequirePermission";
 import PlanParamCapture from "./components/PlanParamCapture";
+import HighValueConfirmHost from "./components/payments/HighValueConfirmHost";
 import Login from "./pages/Login";
-import Onboarding from "./pages/Onboarding";
+import Onboarding, { type SetupSection } from "./pages/Onboarding";
+import QuickStart from "./pages/QuickStart";
 import Dashboard from "./pages/Dashboard";
 import Conversations from "./pages/Conversations";
 import Leads from "./pages/Leads";
@@ -40,6 +43,24 @@ import AdminAudit from "./pages/admin/AdminAudit";
 import AdminOperators from "./pages/admin/AdminOperators";
 import AdminAccount from "./pages/admin/AdminAccount";
 
+/** The old wizard URL. The Instagram OAuth callback still returns here (?ig_status=…); forward it to the Instagram page. */
+function LegacyOnboardingRedirect() {
+  const { search } = useLocation();
+  const hasIgStatus = new URLSearchParams(search).has("ig_status");
+  return <Navigate to={hasIgStatus ? `/setup/instagram${search}` : "/dashboard"} replace />;
+}
+
+/** One of the former wizard steps, as a normal Owner-only page. */
+function setupPage(section: SetupSection) {
+  return (
+    <ProtectedRoute>
+      <RequirePermission ownerOnly>
+        <Onboarding section={section} />
+      </RequirePermission>
+    </ProtectedRoute>
+  );
+}
+
 export default function App() {
   return (
     <AuthProvider>
@@ -47,17 +68,18 @@ export default function App() {
        <ToastProvider>
         <RealtimeProvider>
         <BillingProvider>
+        <SetupProvider>
         <PlanParamCapture />
+        <HighValueConfirmHost />
         <Routes>
           <Route path="/login" element={<Login />} />
-          <Route
-            path="/onboarding"
-            element={
-              <ProtectedRoute>
-                <Onboarding />
-              </ProtectedRoute>
-            }
-          />
+          {/* Dashboard-first onboarding: one quick-start screen, then the dashboard checklist. */}
+          <Route path="/welcome" element={<ProtectedRoute><QuickStart /></ProtectedRoute>} />
+          <Route path="/setup/agent" element={setupPage("agent")} />
+          <Route path="/setup/products" element={setupPage("products")} />
+          <Route path="/setup/whatsapp" element={setupPage("whatsapp")} />
+          <Route path="/setup/instagram" element={setupPage("instagram")} />
+          <Route path="/onboarding" element={<LegacyOnboardingRedirect />} />
           <Route
             path="/dashboard"
             element={
@@ -218,6 +240,7 @@ export default function App() {
           <Route path="/accept-invite" element={<AcceptInvite />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
+        </SetupProvider>
         </BillingProvider>
         </RealtimeProvider>
        </ToastProvider>

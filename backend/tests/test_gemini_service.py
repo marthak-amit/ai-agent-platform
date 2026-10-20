@@ -209,11 +209,10 @@ def test_get_client_uses_openai_api_key(mock_settings):
     with patch("app.services.llm_client.AsyncOpenAI") as mock_cls:
         mock_cls.return_value = MagicMock(spec=AsyncOpenAI)
         _get_client()
-        mock_cls.assert_called_once_with(
-            api_key=mock_settings.groq_api_key,
-            base_url="https://api.groq.com/openai/v1",
-            max_retries=0,
-        )
+        mock_cls.assert_called_once()
+        kwargs = mock_cls.call_args.kwargs
+        assert kwargs["api_key"] == mock_settings.groq_api_key and kwargs["base_url"] == "https://api.groq.com/openai/v1" and kwargs["max_retries"] == 0
+        assert kwargs["http_client"] is not None          # one keep-alive pool whose hook feeds the rate-limit headers to the limiter
 
 
 def test_format_product_for_whatsapp_in_stock():

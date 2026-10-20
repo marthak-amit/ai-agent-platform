@@ -536,6 +536,7 @@ async def test_returning_customer_name_autofills_address_does_not(replay_http, r
     # ever asking, by checking the conversation row right after this turn.
     from app.services import whatsapp_service
     whatsapp_service._raw_send_text_message.reset_mock()
+    whatsapp_service._raw_send_button_message.reset_mock()
     resp = await _msg(replay_http, phone, "1", pnid=pnid, wamid=f"wamid.rc.3.{int(time.time())}")
     assert resp.status_code == 200, resp.text
 
@@ -550,11 +551,7 @@ async def test_returning_customer_name_autofills_address_does_not(replay_http, r
     # auto-filled and skipped) — it should move straight to asking about
     # delivery address (a confirm-saved-address prompt, since address is
     # known but NOT silently filled).
-    replied_texts = []
-    for call in whatsapp_service._raw_send_text_message.call_args_list:
-        args, kwargs = call
-        replied_texts.append(kwargs.get("message_text") or (args[1] if len(args) > 1 else ""))
-    joined_reply = "\n".join(replied_texts)
+    joined_reply = _joined_replies()
     print(f"\n[GAP-5] reply after quantity turn: {joined_reply!r}")
     print(f"[GAP-5] conv.customer_name={conv.customer_name!r} conv.delivery_address={conv.delivery_address!r}")
 
@@ -717,11 +714,15 @@ async def _seed_returning_customer_at_address_confirm(
 
 
 def _joined_replies():
+    """Bodies of every outbound reply — plain text AND button messages (the saved-address offer has buttons)."""
     from app.services import whatsapp_service
     replied_texts = []
     for call in whatsapp_service._raw_send_text_message.call_args_list:
         args, kwargs = call
         replied_texts.append(kwargs.get("message_text") or (args[1] if len(args) > 1 else ""))
+    for call in whatsapp_service._raw_send_button_message.call_args_list:
+        args, kwargs = call
+        replied_texts.append(kwargs.get("body_text") or (args[1] if len(args) > 1 else ""))
     return "\n".join(replied_texts)
 
 
@@ -738,6 +739,7 @@ async def test_address_confirm_garbage_reply_reprompts_without_validating(replay
 
     from app.services import whatsapp_service
     whatsapp_service._raw_send_text_message.reset_mock()
+    whatsapp_service._raw_send_button_message.reset_mock()
     resp = await _msg(replay_http, phone, "Hi", pnid=pnid, wamid=f"wamid.ac.hi.{int(time.time())}")
     assert resp.status_code == 200, resp.text
 

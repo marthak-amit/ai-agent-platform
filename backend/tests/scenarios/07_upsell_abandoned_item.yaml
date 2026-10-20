@@ -1,0 +1,19 @@
+name: upsell_abandoned_item
+description: 'A product the customer looked at and walked away from is never offered as an upsell.'
+turns:
+  - user: "show me the tote bag"
+    expect: {fast_path: product_name, planner_calls: 0, reply_contains: ["Handmade Tote Bag", "₹250"], stage: browsing}
+  - user: "no, I want 2 red kurtis"
+    plan: {actions: [{type: add_line, sku: KU10001, variant: {color: Red}, qty: 2}]}
+    expect: {cart: {lines: [{sku: KU10001, color: Red, qty: 2}]}}
+  - user: "Asha Patel"
+    plan: {actions: [{type: set_customer, name: Asha Patel}]}
+  - user: "12 MG Road, Adajan, Surat 395009"
+    plan: {actions: [{type: set_customer, address: "12 MG Road, Adajan, Surat 395009"}]}
+  - tap: v3_pay_cod
+    expect:
+      stage: confirming
+      reply_contains: ["Order summary", "Total: ₹998"]
+      reply_not_contains: ["Handmade Tote Bag"]
+      buttons_contain: [v3_change]
+      buttons_absent: [v3_upsell_tb30001]

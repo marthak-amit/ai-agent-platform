@@ -1,0 +1,20 @@
+name: hindi_devanagari_template_turns
+description: 'A Devanagari-Hindi customer is answered from the pre-translated table (no English words, no localizer call) from the first hello to the confirmed order.'
+turns:
+  - user: "नमस्ते"
+    expect: {fast_path: greeting, reply_contains: ["स्वागत है"], reply_not_contains: ["Welcome"], translate_calls: 0, turn_contains: ["localizer=0ms"]}
+  - user: "मुझे 2 कुर्ती चाहिए"
+    plan: {actions: [{type: add_line, sku: KU10001, variant: {}, qty: 2}]}
+    expect: {reply_contains: ["जोड़ा गया", "कौन सा रंग चाहिए", "उपलब्ध:"], reply_not_contains: ["Which colour", "Added"], translate_calls: 0}
+  - user: "1"
+    expect: {fast_path: option, reply_contains: ["आपका नाम"], translate_calls: 0}
+  - user: "आशा पटेल"
+    plan: {actions: [{type: set_customer, name: आशा पटेल}]}
+    expect: {reply_contains: ["डिलीवरी पता"], translate_calls: 0}
+  - user: "12 एमजी रोड अडाजन सूरत 395009"
+    plan: {actions: [{type: set_customer, address: "12 एमजी रोड अडाजन सूरत 395009"}]}
+    expect: {reply_contains: ["पेमेंट"], translate_calls: 0}
+  - tap: v3_pay_cod
+    expect: {stage: confirming, reply_contains: ["ऑर्डर का सारांश", "कुल:", "दिन में"], reply_not_contains: ["Order summary", "working days"], translate_calls: 0}
+  - user: "हाँ"
+    expect: {fast_path: confirm, orders: 1, reply_contains: ["ऑर्डर पक्का हो गया"], translate_calls: 0, turn_contains: ["localizer=0ms"]}

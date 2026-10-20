@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import logging
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -32,6 +33,7 @@ from app.db import get_db
 from app.schemas.webhook import WhatsAppWebhookPayload
 from app.services import catalogue_service, conversation_service, outbound, vision_service
 from app.services.send_gate import MessageKind
+from app.services import message_batcher, turn_trace
 from app.services.order_pipeline import InboundContext, _decode_btn, ensure_reply, handle_inbound_message
 from app.routers._whatsapp_adapter import send_pipeline_result
 
@@ -313,7 +315,9 @@ async def receive_message(
         return {"status": "ok"}
 
     if message.type not in ("text", "image", "audio", "interactive"):
-        logger.info("Skipping unsupported message type '%s'.", message.type)
+        logger.info("Unsupported message type '%s'.", message.type)
+        if message.type in UNSUPPORTED_REPLY_TYPES:
+            await _notify_unsupported(db, payload, message)
         return {"status": "ok"}
 
     sender_phone = message.from_
@@ -325,6 +329,12 @@ async def receive_message(
     wamid = getattr(message, "id", None)
 
     # Deduplicate: Meta retries webhooks on timeout — skip if already processed.
+    if wamid and message_batcher.seen_recently(wamid):
+        logger.info("Duplicate message %s (already in a batch) — skipping.", wamid)
+        return {"status": "ok"}
+    if wamid and wamid in _inflight_wamids:
+        logger.info("Duplicate message %s (still being processed) — skipping.", wamid)
+        return {"status": "ok"}
     if wamid:
         from app.models.message import Message as MessageModel
         dup_result = await db.execute(
@@ -334,6 +344,143 @@ async def receive_message(
             logger.info("Duplicate message %s — skipping.", wamid)
             return {"status": "ok"}
 
+    settings = get_settings()
+    if settings.webhook_background_processing:
+        # Answer Meta now: it retries any webhook that takes longer than a few seconds, and a turn can wait on the LLM.
+        if wamid:
+            _inflight_wamids.add(wamid)
+        try:
+            pnid = payload.entry[0].changes[0].value.metadata.phone_number_id
+        except (IndexError, AttributeError):
+            pnid = None
+        ticket = _take_ticket((pnid, sender_phone))          # synchronously, so the order of arrival is the order of service
+        task = asyncio.create_task(_process_in_background(payload, message, wamid, ticket))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+        return {"status": "accepted"}
+    return await _process_message(db, payload, message, wamid)
+
+
+# Message types the bot cannot read but a customer expects an answer to (a reaction / system event gets none).
+UNSUPPORTED_REPLY_TYPES = frozenset({"unsupported", "document", "video", "location", "contacts", "order"})
+_unsupported_notified: dict[tuple, float] = {}        # (client id, sender) → monotonic time of the last notice (in-process, like the rate limiter)
+
+
+def _unsupported_due(key: tuple, now: float, window_seconds: float) -> bool:
+    """True when this sender has not been told "I can't open that" within the window; records the notice when due."""
+    last = _unsupported_notified.get(key)
+    if last is not None and now - last < window_seconds:
+        return False
+    _unsupported_notified[key] = now
+    if len(_unsupported_notified) > 5000:                      # forget old entries
+        for k in [k for k, t in _unsupported_notified.items() if now - t >= window_seconds]:
+            _unsupported_notified.pop(k, None)
+    return True
+
+
+async def _notify_unsupported(db: AsyncSession, payload, message) -> None:
+    """
+    Tell the customer once per ``unsupported_notice_minutes`` that this kind of message cannot be opened ("send text, a photo or a voice
+    note"), in their language. Silent for numbers that map to no tenant, tenants that are not live, and chats a human has taken over.
+    Never raises: the webhook must still answer Meta.
+    """
+    import time
+
+    from app.services.language_templates import get_template
+
+    try:
+        pnid = payload.entry[0].changes[0].value.metadata.phone_number_id
+    except (IndexError, AttributeError):
+        return
+    try:
+        client = await _get_client_by_phone_number_id(db, pnid)
+        if client is None or getattr(client, "bot_active", True) is False:
+            return
+        sender = message.from_
+        if not _unsupported_due((client.id, sender), time.monotonic(), get_settings().unsupported_notice_minutes * 60.0):
+            return
+        conv = await conversation_service.get_or_create_conversation(db, sender, client_id=client.id)
+        if conv.ai_enabled is False:
+            return
+        text = get_template(getattr(conv, "last_customer_language", None) or "english", "unsupported_message")
+        await outbound.send_text(
+            sender, text, kind=MessageKind.PIPELINE_REPLY, db=db, client_id=client.id, conversation_id=conv.id,
+            phone_number_id=pnid, access_token=getattr(client, "whatsapp_access_token", None),
+        )
+        await conversation_service.save_message(db, conv.id, "assistant", text, channel=conv.channel, sender_type="bot")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Unsupported-type notice failed: %s", exc)
+
+
+# ── background processing ────────────────────────────────────────────────────
+
+_background_tasks: set[asyncio.Task] = set()          # strong references until each task is done
+_inflight_wamids: set[str] = set()                    # accepted but not finished: a Meta retry of these is dropped
+_last_done: dict[tuple, asyncio.Future] = {}          # per sender: the most recently accepted message's completion
+
+
+@dataclass
+class _Ticket:
+    """A message's place in its sender's queue: it may run its turn only after every earlier message of that sender finished."""
+
+    prev: "asyncio.Future | None"
+    done: asyncio.Future
+
+    async def wait_turn(self) -> None:
+        """Wait until the previous message of this sender is completely finished."""
+        if self.prev is not None:
+            await asyncio.shield(self.prev)
+
+    async def finish(self) -> None:
+        """Mark this message finished — but never before its predecessor (a batched follower returns early)."""
+        try:
+            await self.wait_turn()
+        except Exception:  # noqa: BLE001 — the predecessor's failure is its own
+            pass
+        if not self.done.done():
+            self.done.set_result(None)
+
+
+def _take_ticket(key: tuple) -> _Ticket:
+    """Join the end of this sender's queue (call synchronously on accept: the order of arrival is the order of service)."""
+    prev = _last_done.get(key)
+    if prev is not None and prev.done():
+        prev = None
+    done = asyncio.get_running_loop().create_future()
+    _last_done[key] = done
+    done.add_done_callback(lambda f, k=key: _last_done.pop(k, None) if _last_done.get(k) is f else None)
+    return _Ticket(prev=prev, done=done)
+
+
+def _background_session_factory():
+    """The session factory background tasks use (their own session: the request's is closed once the 200 is sent)."""
+    from app.db import _get_session_factory
+
+    return _get_session_factory()
+
+
+async def _process_in_background(payload, message, wamid: str | None, ticket: _Ticket) -> None:
+    """Run ``_process_message`` with a fresh DB session; never raises (nobody is waiting for the result)."""
+    try:
+        async with _background_session_factory()() as db:
+            await _process_message(db, payload, message, wamid, ticket)
+    except Exception:
+        logger.exception("Background processing of message %s failed", wamid)
+    finally:
+        await ticket.finish()
+        if wamid:
+            _inflight_wamids.discard(wamid)
+
+
+async def wait_for_background_tasks() -> None:
+    """Wait until every accepted message has been processed (tests; also useful for a graceful shutdown)."""
+    while _background_tasks:
+        await asyncio.gather(*list(_background_tasks), return_exceptions=True)
+
+
+async def _process_message(db: AsyncSession, payload, message, wamid: str | None, ticket: "_Ticket | None" = None) -> dict:
+    """Everything after verify / parse / rate-limit / dedupe: tenant lookup, typing indicator, batching, the turn, the reply."""
+    sender_phone = message.from_
     # Resolve phone_number_id from webhook metadata now (pure in-memory parse,
     # no I/O) so the typing indicator can fire before any DB/LLM/OCR work.
     webhook_phone_number_id: str | None = None
@@ -352,7 +499,8 @@ async def receive_message(
     # Show "typing..." as early as possible — only for messages that survived
     # rate-limit + dedup and are about to enter real processing. Fire-and-
     # forget: never awaited, never allowed to delay or break the reply.
-    if wamid:
+    live = getattr(client, "bot_active", True) is not False      # not live yet ("Go live" not pressed): stay completely silent
+    if wamid and live:
         asyncio.create_task(_send_typing_indicator(wamid, webhook_phone_number_id))
 
     # Stash nonce parsed from interactive button IDs; validated after conv is loaded.
@@ -390,6 +538,21 @@ async def receive_message(
             elif _btn_id == "offer_no":
                 # E2: single-product offer "No" button — keep browsing.
                 user_text = "no"
+            elif _btn_id in ("cancel_yes", "cancel_no"):
+                # "Cancel this order?" Yes/No: the id is the answer (the label is translated).
+                user_text = "yes" if _btn_id == "cancel_yes" else "no"
+            elif _btn_id == "switch_product":
+                user_text = "switch"
+            elif _btn_id == "add_both":
+                user_text = "add both"
+            elif _btn_id == "keep_current":
+                user_text = "keep current"
+            elif _btn_id == "add_crosssell":
+                # Order-summary option "2️⃣ Add <product> too" as a button.
+                user_text = "2"
+            elif _btn_id == "addr_change":
+                # Saved-address offer "Change" button: the id is the answer (the label is translated).
+                user_text = "change"
             elif _btn_id in ("upi", "cod", "bank_transfer"):
                 # Payment-method buttons: the id is the answer; the title is translated per customer
                 # language, so it must never be parsed as the customer's text.
@@ -436,7 +599,7 @@ async def receive_message(
         # timing. This is the one channel-specific send that stays inline.
         # Guard mirrors the original inline `elif message.type == "audio" and
         # message.audio is not None` — no ack for a malformed audio payload.
-        if message.type == "audio" and message.audio is not None:
+        if message.type == "audio" and message.audio is not None and live:
             try:
                 # Emoji-only on purpose: the customer's language is not known yet (the voice note is not
                 # transcribed), and a fixed Hinglish line was shown to Gujarati / Tamil / English speakers.
@@ -449,6 +612,25 @@ async def receive_message(
             except Exception as exc:
                 logger.warning("Ack send failed for audio: %s", exc)
 
+    # Message batching: a burst of text messages ("I want" / "to buy" / "banarasi silk sadi") is answered once.
+    # A follower just joins the leader's batch and returns; the leader waits out the quiet window below.
+    settings = get_settings()
+    from app.services import agent_v3, catalogue_snapshot
+
+    v3 = agent_v3.enabled(client)           # agent-v3 tenants use shorter windows and do not hold messages answered for ₹0
+    batch_key = ("whatsapp", client.id, sender_phone)
+    batch_window = float((settings.agent_batch_window_seconds if v3 else settings.message_batch_window_seconds) or 0)
+    # The suite turns batching off with MESSAGE_BATCH_WINDOW_SECONDS=0; that switch wins for every tenant.
+    if float(getattr(settings, "message_batch_window_seconds", 0) or 0) <= 0:
+        batch_window = 0.0
+    short_window = float(settings.agent_batch_short_window_seconds if v3 else settings.message_batch_short_window_seconds)
+    extended_window = float(settings.agent_batch_extended_window_seconds if v3 else settings.message_batch_extended_window_seconds)
+    is_plain_text = message.type == "text" and message.text is not None
+    if batch_window > 0 and is_plain_text and message_batcher.try_join(
+        batch_key, user_text, wamid, max_messages=settings.message_batch_max_messages,
+    ):
+        return {"status": "batched"}
+
     try:
         conv = await conversation_service.get_or_create_conversation(
             db, sender_phone, client_id=client.id
@@ -457,6 +639,39 @@ async def receive_message(
         logger.error("DB error creating conversation for %s: %s", sender_phone, exc)
         return {"status": "ok"}
 
+
+    lead = batch_window > 0 and is_plain_text and message_batcher.eligible(
+        conv, user_text, skip_social=v3, product_names=catalogue_snapshot.product_names(client.id) if v3 else None,
+    )
+    async with message_batcher.turn(
+        batch_key, enabled=batch_window > 0, lead=lead, text=user_text, wamid=wamid, window=batch_window,
+        short_window=short_window, extended_window=extended_window,
+        max_wait=float(settings.message_batch_max_wait_seconds), max_messages=int(settings.message_batch_max_messages),
+    ) as batch_turn:
+        if batch_turn.waited > 0.05:
+            try:
+                await db.refresh(conv)      # an earlier turn of this sender may have changed the conversation meanwhile
+            except Exception as exc:
+                logger.warning("conv refresh after batching failed conv=%s: %s", getattr(conv, "id", None), exc)
+        if batch_turn.text != user_text:
+            user_text = batch_turn.text
+            try:
+                message.text.body = user_text   # keep the message object consistent with the merged text
+            except Exception:
+                pass
+        if ticket is not None:
+            await ticket.wait_turn()       # earlier messages of this sender (background mode) are completely done first
+        return await _run_turn(
+            db, client, conv, sender_phone, message, user_text, wamid, _btn_nonce_parsed,
+            webhook_phone_number_id, batch_turn.waited,
+        )
+
+
+async def _run_turn(
+    db: AsyncSession, client, conv, sender_phone: str, message, user_text: str, wamid: str | None,
+    btn_nonce_parsed, webhook_phone_number_id: str | None, reply_delay_credit: float = 0.0,
+) -> dict:
+    """Run the pipeline for one (possibly merged) customer turn and send the reply through the WhatsApp adapter."""
     ctx = InboundContext(
         db=db,
         client=client,
@@ -465,9 +680,11 @@ async def receive_message(
         message=message,
         user_text=user_text,
         wamid=wamid,
-        btn_nonce_parsed=_btn_nonce_parsed,
+        btn_nonce_parsed=btn_nonce_parsed,
         download_media=_media_downloader(vision_service.download_whatsapp_media, getattr(client, "whatsapp_access_token", None)),
         is_whatsapp=getattr(conv, "channel", "whatsapp") == "whatsapp",
+        reply_delay_credit=reply_delay_credit,
+        defer_trace=True,      # the TURN block is printed below, after the send, so wa_send / image_send are in it
     )
     try:
         result = await handle_inbound_message(ctx)
@@ -490,6 +707,10 @@ async def receive_message(
         getattr(client, "whatsapp_phone_number_id", None) if client else None
     )
 
+    from app.db import release_connection
+
+    await release_connection(db)      # the send is a network round trip (and may wait for the 24h window / images): no pooled connection is held for it
+
     # ── WhatsApp adapter — the ONLY place whatsapp_service is called for the
     # main reply path (button nonce encoding, send_text/button/list, the
     # fallback-to-text-on-send-failure behavior, pre_texts, and deferred
@@ -501,5 +722,7 @@ async def receive_message(
         )
     except Exception as exc:
         logger.error("WhatsApp send error: %s", exc)
+    finally:
+        await turn_trace.emit_pending()
 
     return {"status": result.status}

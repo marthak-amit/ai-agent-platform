@@ -1,0 +1,16 @@
+name: option_tap_resolves_from_id
+description: 'conv=60 bug 3: a colour button carries line + slot + value in its id, so the tap is a ₹0 fast path even when it was typed before the newest reply had been delivered (the old positional id would have been read against the PREVIOUS list); a list row for a size does the same.'
+turns:
+  - user: "KU10001"
+    expect: {fast_path: sku}
+  - user: "yes"
+    expect: {fast_path: offer_yes, reply_contains: ["Which colour"], buttons_contain: [v3_opt_1, v3_opt_2, v3_opt_3]}
+  - tap: v3_opt_2
+    ts: before_last_list
+    expect: {fast_path: option, planner_calls: 0, cart: {lines: [{sku: KU10001, color: Green}]}, reply_contains: ["How many"]}
+  - user: "LH10042"
+    expect: {fast_path: sku}
+  - user: "yes"
+    expect: {fast_path: offer_yes, reply_contains: ["Cotton Lehenga"], buttons_contain: [v3_opt_1]}
+  - tap: v3_opt_2
+    expect: {fast_path: option, planner_calls: 0, cart: {lines: [{sku: KU10001, color: Green, qty: null}, {sku: LH10042, color: Blue}]}}

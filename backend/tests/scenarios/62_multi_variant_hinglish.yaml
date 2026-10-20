@@ -1,0 +1,13 @@
+name: multi_variant_hinglish
+description: 'Hinglish number words and colour aliases ("do maroon aur ek gold", "do maroon aur ek hara"): applied at ₹0; the unavailable colour is named in Hinglish.'
+turns:
+  - user: "mujhe banarasi saree chahiye maroon mein"
+    plan: {actions: [{type: add_line, sku: SR20001, variant: {color: Maroon}}]}
+    expect: {cart: {lines: [{sku: SR20001, color: Maroon, qty: null}]}}
+  - user: "do maroon aur ek gold aur ek hara"
+    expect:
+      fast_path: multi_variant
+      planner_calls: 0
+      cart: {lines: [{sku: SR20001, color: Maroon, qty: 2}, {sku: SR20001, color: Gold, qty: 1}]}
+      reply_contains: ["mein available nahi hai", "Available: Maroon, Gold"]
+      reply_not_contains: ["e.g.", "jaise"]

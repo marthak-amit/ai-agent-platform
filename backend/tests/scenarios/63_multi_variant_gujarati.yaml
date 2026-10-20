@@ -1,0 +1,13 @@
+name: multi_variant_gujarati
+description: 'Gujarati (Roman) number words ("be maroon ane ek gold"): applied at ₹0, the customer''s options only.'
+turns:
+  - user: "mane banarasi saree joiye maroon ma"
+    plan: {actions: [{type: add_line, sku: SR20001, variant: {color: Maroon}}]}
+    expect: {cart: {lines: [{sku: SR20001, color: Maroon, qty: null}]}}
+  - user: "be maroon ane ek gold ane ek green"
+    expect:
+      fast_path: multi_variant
+      planner_calls: 0
+      cart: {lines: [{sku: SR20001, color: Maroon, qty: 2}, {sku: SR20001, color: Gold, qty: 1}]}
+      reply_contains: ["ma available nathi", "Available: Maroon, Gold"]
+      reply_not_contains: ["jem ke"]

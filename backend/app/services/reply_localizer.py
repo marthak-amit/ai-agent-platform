@@ -186,7 +186,8 @@ async def localize(
 # freely. Every other button/list row is a product, colour or size whose TITLE is matched back against
 # the catalogue when tapped — those labels must stay exactly as the catalogue spells them.
 _STATIC_BUTTON_IDS = frozenset({
-    "confirm_pay", "cancel_order", "confirm_no", "paid_done", "offer_yes", "offer_no", "upi", "cod", "bank_transfer",
+    "confirm_pay", "cancel_order", "confirm_no", "paid_done", "offer_yes", "offer_no", "addr_change", "upi", "cod", "bank_transfer",
+    "cancel_yes", "cancel_no", "switch_product", "add_both", "keep_current", "add_crosssell",
 })
 
 

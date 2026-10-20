@@ -1,0 +1,32 @@
+name: happy_path_only_wanted_lines
+description: 'catalogue → product → order → colour → size → qty → name → address → pay → confirm; a kurti that was added and then dropped by "Mare kurtinathi joti" is NOT in the summary or the order.'
+turns:
+  - user: "show me products"
+    plan: {actions: [{type: browse_catalog}]}
+    expect: {reply_contains: ["Here are our products"]}
+  - user: "KU10001"
+    expect: {fast_path: sku}
+  - user: "yes"
+    expect: {fast_path: offer_yes, reply_contains: ["Which colour"]}
+  - user: "LH10042"
+    expect: {fast_path: sku}
+  - user: "yes"
+    expect: {fast_path: offer_yes, reply_contains: ["Cotton Lehenga"], reply_not_contains: ["Cotton Kurti"]}
+  - user: "Mare kurtinathi joti"
+    expect: {fast_path: remove, cart: {lines: [{sku: LH10042}]}}
+  - user: "pink"
+    expect: {fast_path: option, reply_contains: ["Only M is available", "How many"]}
+  - user: "2"
+    expect: {fast_path: quantity, reply_contains: ["your name"]}
+  - user: "Asha Patel"
+    plan: {actions: [{type: set_customer, name: Asha Patel}]}
+  - user: "12 MG Road, Adajan, Surat 395009"
+    plan: {actions: [{type: set_customer, address: "12 MG Road, Adajan, Surat 395009"}]}
+    expect: {reply_contains: ["How would you like to pay"]}
+  - tap: v3_pay_cod
+    expect: {stage: confirming, reply_contains: ["Order summary", "Cotton Lehenga (Pink / M) × 2", "Total: ₹2,598"], reply_not_contains: ["Kurti"]}
+  - user: "yes"
+    expect:
+      fast_path: confirm
+      orders: 1
+      order: {status: paid, payment_method: COD, total: 2598, lines: [{sku: LH10042, color: Pink, size: M, qty: 2}]}

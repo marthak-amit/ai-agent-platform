@@ -82,3 +82,27 @@ async def store_media(client_id: int, data: bytes, content_type: str, folder: st
     with open(os.path.join(local_dir, filename), "wb") as fh:
         fh.write(data)
     return f"/uploads/{folder}/{filename}"
+
+
+async def read_media(url: str | None) -> bytes | None:
+    """
+    The bytes of a media file we stored (local ``/uploads/...`` path or an http(s) URL); None when it cannot be read.
+
+    Used to look at an image again later (the customer answers "payment or product photo?" some turns after sending it).
+    """
+    if not url:
+        return None
+    try:
+        if url.startswith("/uploads/"):
+            path = os.path.join(storage_service._UPLOADS_DIR, url[len("/uploads/"):])
+            return await asyncio.to_thread(lambda: open(path, "rb").read())
+        if url.startswith(("http://", "https://")):
+            import httpx
+
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                return resp.content
+    except Exception:  # noqa: BLE001 - the caller degrades (asks the customer) instead of failing the turn
+        return None
+    return None

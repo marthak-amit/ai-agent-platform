@@ -26,6 +26,7 @@ class LLMUsage(Base):
     __table_args__ = (
         Index("ix_llm_usage_client_created", "client_id", "created_at"),
         Index("ix_llm_usage_conversation", "conversation_id"),
+        Index("ix_llm_usage_conversation_id", "conversation_id", "id"),      # the per-turn COST ledger: rows of this conversation newer than the turn mark
         Index("ix_llm_usage_order", "order_id"),
     )
 
@@ -37,6 +38,10 @@ class LLMUsage(Base):
     model: Mapped[str] = mapped_column(String, nullable=False)
     prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # prompt_tokens = input tokens (cached ones included), completion_tokens = output tokens (reasoning included).
+    cached_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    audio_seconds: Mapped[float] = mapped_column(Float, nullable=False, default=0.0, server_default="0")   # Whisper
+    cost_usd: Mapped[Optional[float]] = mapped_column(Float, nullable=True)         # NULL on rows written before migration 0073
     cost_inr: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     success: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

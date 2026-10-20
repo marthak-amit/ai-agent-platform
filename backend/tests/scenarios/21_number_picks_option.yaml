@@ -1,0 +1,11 @@
+name: number_picks_option
+description: 'At an option question a number picks that option; at the quantity question the same number is the quantity.'
+turns:
+  - user: "I want 2 kurtis"
+    plan: {actions: [{type: add_line, sku: KU10001, variant: {}, qty: 2}]}
+    expect: {reply_contains: ["Available: Red, Green, Blue"]}
+  - user: "2"
+    expect: {fast_path: option, planner_calls: 0, cart: {lines: [{sku: KU10001, color: Green, qty: 2}]}}
+  - user: "I want a blue lehenga, 1 piece"
+    plan: {actions: [{type: add_line, sku: LH10042, variant: {color: Blue}, qty: 1}]}
+    expect: {reply_contains: ["Which size", "Available: M, XXL"]}

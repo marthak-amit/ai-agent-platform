@@ -1,0 +1,14 @@
+name: priority_other_product_english
+description: Naming a different product while a line is open searches first, keeps the open line, and does not re-ask its colour.
+turns:
+  - user: "I want the Cotton Kurti"
+    plan: {actions: [{type: add_line, sku: KU10001}]}
+    expect: {cart: {lines: [{sku: KU10001, color: null, qty: null}]}, reply_contains: ["Which colour"]}
+  - user: "show me a lehenga choli"
+    expect:
+      fast_path: category
+      actions_contains: [browse_catalog]
+      cart: {lines: [{sku: KU10001, color: null, qty: null}]}
+      reply_contains: ["Zari Choli Set"]
+      reply_not_contains: ["Which colour would you like for Cotton Kurti"]
+      ends_with_question: true

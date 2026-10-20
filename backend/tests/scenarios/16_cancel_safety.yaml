@@ -1,0 +1,12 @@
+name: cancel_safety
+description: 'A cancel without explicit wording asks first; "No, keep it" keeps the cart; explicit "cancel" drops it.'
+turns:
+  - user: "I want 2 red kurtis"
+    plan: {actions: [{type: add_line, sku: KU10001, variant: {color: Red}, qty: 2}]}
+  - user: "never mind I guess?"
+    plan: {actions: [{type: cancel}]}
+    expect: {reply_contains: ["Cancel this order?"], cart: {lines: [{sku: KU10001, color: Red, qty: 2}]}, buttons_contain: [v3_cancel_yes]}
+  - tap: v3_cancel_no
+    expect: {cart: {lines: [{sku: KU10001, color: Red, qty: 2}]}, reply_contains: ["your name"]}
+  - user: "cancel"
+    expect: {fast_path: cancel, cart: {empty: true}, reply_contains: ["cancelled"]}

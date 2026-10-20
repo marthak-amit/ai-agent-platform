@@ -27,6 +27,8 @@ export interface TeamMember {
   created_at: string;
 }
 
+export type AccountStatus = "setup" | "trial" | "active";
+
 export interface ClientProfile {
   id: number;
   email: string;
@@ -48,6 +50,13 @@ export interface ClientProfile {
   banner_url: string | null;
   onboarding_step: number;
   onboarding_completed: boolean;
+  /** Dashboard-first onboarding: 'setup' (before Go live) | 'trial' | 'active'. */
+  account_status: AccountStatus;
+  /** False until Go live: real customers' messages are saved but not answered. */
+  bot_active: boolean;
+  quick_start_completed: boolean;
+  go_live_at: string | null;
+  trial_ends_at: string | null;
   business_type: string | null;
   business_description: string | null;
   whatsapp_number: string | null;
@@ -98,6 +107,8 @@ export interface Product {
   is_active: boolean;
   low_stock_alert: number;
   has_variants: boolean;
+  /** Sample product seeded for a new account (removable with one click). */
+  is_demo?: boolean;
   variants: ProductVariant[];
   available_colors: string[];
   available_sizes: string[];

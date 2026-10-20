@@ -12,6 +12,7 @@ import {
   type CustomerConversationRecord,
 } from "../api/client";
 import Layout from "../components/Layout";
+import EmptyStateCta from "../components/setup/EmptyStateCta";
 import {
   Users,
   Search,
@@ -581,6 +582,8 @@ export default function Customers() {
             <div className="flex items-center justify-center h-48">
               <div className="w-8 h-8 border-2 border-brand-primary border-t-transparent rounded-full animate-spin" />
             </div>
+          ) : customers.length === 0 && filter === "all" && !search ? (
+            <EmptyStateCta kind="customers" />
           ) : customers.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-48 text-gray-400">
               <Users size={40} className="mb-3 opacity-30" />
